@@ -2200,7 +2200,21 @@ static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
     int dm = bd_open(root, "UISwitcher"), cur = dm ? bd_top_tab(root) : -1;
     // 本地改动：原来 7 / 24 帧一按，玩家看到的是「一页一页翻过去」；每 1–2 帧按一次，四页约 0.1 秒到位
     // Local change: 7 / 24 frames per press made it visibly walk page by page; one press every 1-2 frames covers four pages in about 0.1 s
-    if (tries) { uint64_t dt = fr - pressed; int moved = dm && cur >= 0 && cur != page; if (!((moved && dt >= 1) || dt >= 2)) return; }
+    // 本地改动（已撤回）：上一版每 1-2 帧按一次，22.1 的日志证明按键会被游戏丢掉 ——按了 24 次只到第 4 页（技能树）。节奏退回作者调过的 7 / 24 帧。
+    // Local change (reverted): 1-2 frames per press made the game drop presses (24 presses reached only
+    // page 4 = the skill tree in the 22.1 log). Back to the author's tuned 7 / 24 frames.
+    if (tries) { uint64_t dt = fr - pressed; int moved = dm && cur >= 0 && cur != page; if (!((moved && dt >= 7) || dt >= 24)) return; }
+    // 本地改动：先直接切到佣兵页，切不动才退回走按键。玩家自己点页签的记录（22.1 日志）显示「页号 = 第几个页签」：
+    // 六个页签时 佣兵 = 第 5 个 = 页数 − 1（最后一个是选项）。直接调页签条自己的选页（0xad9b80）+ 页面切换（0x405898）。
+    // Local change: switch to the mercenary page directly first, only falling back to key walking if that does not take.
+    // The player's own tab taps (the 22.1 log) show page number = 1-based tab position: with six tabs the mercenary page is
+    // the 5th = page count - 1 (the last is Options). The tab bar's own selection (0xad9b80) plus one page switch
+    // (0x405898) gets there in one step, without depending on key presses.
+    if (!tries) { uint64_t us = ui_find(root, "UISwitcher", 0), tb = ui_find(root, "UISwitcherTabs", 0);
+        if (us && *(uint8_t *)(us + 0x50)) { int n = *(int32_t *)(us + 0x188), to = n >= 3 ? n - 1 : 5, cur0 = *(int32_t *)(us + 0x1b8);
+            if (tb && *(uint64_t *)tb == (uint64_t)m->base + 0x20ba3a8) ((void (*)(uint64_t, int, int))(m->base + 0xad9b80))(tb, to, 0);
+            if (*(int32_t *)(us + 0x1b8) != to) ((void (*)(uint64_t, int, int))(m->base + 0x405898))(us, to, 1);
+            LOG("佣兵页：直接切到第 %d 页（共 %d 页，原在 %d）", to, n, cur0); } }
     page = cur; pressed = fr; dm_ui_key_pulse(dm ? DM_BTN_R : DM_BTN_PLUS, 4); tries++;
 }
 // 个人仓库页码（个人仓库 2–5 页，dm_pages.c）：写在自己的文字控件 TouchPgPage_Text 里（布局 wide_stash.py），文字照原版共享页页码的写法：
@@ -2358,6 +2372,18 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
             ((void (*)(uint64_t))(m->base + 0xadc434))(t);
             LOG("技能树标签：「毒素和白骨术」放不下，已改成「%s」", rep); } } }
 
+    // 本地改动：说明框单击常驻 —— 每几帧复述最后一次悬停点。22.1 的日志证明 ui_ptr_pump 整局一个指针事件都没发
+    // （它只管按住 / 待发事件），而点技能时真正摆光标的是 dm_ui_hover_now（日志里的「吸附 SkillButton6」）。
+    // 那个函数把落点记进 g_ui_hover_xy（见 dm_actions.c），这里带 2 像素交替抖动再摆一次 —— 游戏那套说明框很可能是
+    // 「悬停状态变化才刷新」，原样复述同一点未必触得动。拖动期间不复述（那时光标要跟手指走）。
+    // Local change: keep the tooltip up after a tap -- repeat the last hover point every few frames. The 22.1 log shows
+    // ui_ptr_pump never sent a single pointer event all session (it only covers held / pending), while what places the
+    // cursor for a tap is dm_ui_hover_now (the log's 「吸附 SkillButton6」). That records the landing point in
+    // g_ui_hover_xy (see dm_actions.c); repeating it with a 2-pixel alternating wobble should make the game re-submit the
+    // tooltip, since it very likely refreshes only when the hover state changes. Not repeated while dragging.
+    { extern _Atomic uint64_t g_ui_hover_xy; static int wob; uint64_t st = atomic_load(&g_ui_hover_xy);
+      if (st && !atomic_load(&g_dg_kind)) { int hx = (int)(st >> 32), hy = (int)(st & 0xffffffffu);
+          wob = !wob; dm_ui_hover_now(hx + (wob ? 2 : 0), hy); } }
 }
 // 小地图任务终点（dm_world.c dm_map_goals）用的地图几何：地图开没开、全屏还是微缩、每格像素。每格像素照游戏自己的算法（同 ui_map_center：0x413280–0x413298），
 // 单位是真实画面像素；地图上的世界格 (x, y) 画在 玩家所在点 + ((Δx−Δy)×1.6, (Δx+Δy)×0.8) × 每格像素（宿主峡谷 4 组墓口拟合，误差 ≤3%）。
