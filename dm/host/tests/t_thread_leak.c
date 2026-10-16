@@ -23,10 +23,11 @@ static void t_free(void *p) { if (!p) return; atomic_fetch_sub(&g_live_blocks, 1
 #undef calloc
 #undef free
 
-pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[2], g_keyaspect, g_keyaspectui;
+pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[2], g_keyaspect, g_keyaspectui, g_keyzoom;
 void dm_gate(void) {}
 uint64_t dm_game_res(int i) { (void)i; return 0; }
 uint64_t front_game_res(int i) { (void)i; return 0; }
+void *dm_cam_zoom_factor_slot(void) { static uint32_t scale_bits; return &scale_bits; }
 
 static int fails, checks;
 #define EXPECT(name, want, got) do { long w_ = (long)(want), g_ = (long)(got); checks++; printf("%-46s 期望 %-8ld → 真结果 %-8ld %s\n", name, w_, g_, w_ == g_ ? "✓" : "✗"); if (w_ != g_) fails++; } while (0)
@@ -34,7 +35,7 @@ static char g_not_heap[64];
 static void *one(void *a) { (void)a; guest_thread_init(); pthread_setspecific(g_keytls, g_not_heap); pthread_setspecific(g_keytlr, g_not_heap + 32); return NULL; }
 int main(void) {
     enum { N = 200 };
-    if (pthread_key_create(&g_key18, NULL) || pthread_key_create(&g_keytls, NULL) || pthread_key_create(&g_keytlr, NULL) || pthread_key_create(&g_keygate, NULL)) { printf("建键失败\n"); return 2; }
+    if (pthread_key_create(&g_key18, NULL) || pthread_key_create(&g_keytls, NULL) || pthread_key_create(&g_keytlr, NULL) || pthread_key_create(&g_keygate, NULL) || pthread_key_create(&g_keyzoom, NULL)) { printf("建键失败\n"); return 2; }
     for (int i = 0; i < N; i++) { pthread_t t; if (pthread_create(&t, NULL, one, NULL)) { printf("建线程失败\n"); return 2; } pthread_join(t, NULL); }
     EXPECT("200 条线程申请过的字节（200 × 9744）", 1948800, atomic_load(&g_total_bytes));
     EXPECT("全部退出后还没释放的块数", 0, atomic_load(&g_live_blocks));

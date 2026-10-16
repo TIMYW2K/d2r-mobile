@@ -46,7 +46,7 @@ def old_counts(directory):
     return counts
 
 
-def new_counts(directory, key_page_off, patch_off):
+def new_counts(directory, key_page_off, patch_off, zoom_slot=None):
     counts = collections.Counter()
     data = open(f'{directory}/main.patched.bin', 'rb').read()
     ins = list(md.disasm(data[patch_off:], patch_off))
@@ -56,8 +56,9 @@ def new_counts(directory, key_page_off, patch_off):
         if prev.operands[0].reg != cur.operands[1].mem.base or prev.operands[1].imm != key_page_off:
             continue
         index = cur.operands[1].mem.disp // 8
-        if 0 <= index < len(KEYS) and cur.operands[1].mem.disp % 8 == 0:
-            counts[KEYS[index]] += 1
+        if cur.operands[1].mem.disp % 8 == 0:
+            if 0 <= index < len(KEYS): counts[KEYS[index]] += 1
+            elif zoom_slot is not None and index == zoom_slot: counts['KZOOM'] += 1
     return counts
 
 
@@ -98,6 +99,8 @@ def main():
     assert m['KEY_PAGE_SIZE'] == 0x4000
     assert m['KEY_PAGE_OFF'] % 0x4000 == 0
     assert m['PATCH_OFF'] % 0x10000 == 0 and m['KEY_PAGE_OFF'] < m['PATCH_OFF']
+    zoom_slot = m.get('KEY_ZOOM_SLOT')
+    assert zoom_slot is None or 8 <= zoom_slot < m['KEY_PAGE_SIZE'] // 8
     raw = open(f'{new_dir}/main.patched.bin', 'rb').read()
     assert raw[m['KEY_PAGE_OFF']:m['KEY_PAGE_OFF'] + 0x4000] == bytes(0x4000)
     bad = []
@@ -108,9 +111,13 @@ def main():
                 if int(nxt[0].op_str.rsplit('#', 1)[1].rstrip(']')) in tuple(x * 8 for x in KEY_OFF):
                     bad.append(ins.address)
     assert not bad, f'仍有直取槽序列: {[hex(x) for x in bad]}'
-    new = new_counts(new_dir, m['KEY_PAGE_OFF'], m['PATCH_OFF'])
+    new = new_counts(new_dir, m['KEY_PAGE_OFF'], m['PATCH_OFF'], zoom_slot)
     old = old_counts(old_dir)
-    assert all(new[k] == old[k] for k in KEYS), f'计数不等: new={new} old={old}'
+    keys = KEYS
+    if zoom_slot is not None:
+        old['KZOOM'] += 1  # one extra key-page reference from the static camera patch
+        keys += ('KZOOM',)
+    assert all(new[k] == old[k] for k in keys), f'计数不等: new={new} old={old}'
     diff, nsites = differences(new_dir, old_dir, m['TEXT_END'])
     assert not diff, f'text 非站点跳转 / 参数 / 剪口差异: {[hex(x) for x in diff[:20]]}'
     print('键页布局与初值：期望 → 真结果：0x4000 对齐、补丁区前、全零 → 通过')

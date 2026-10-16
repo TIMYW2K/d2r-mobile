@@ -244,6 +244,7 @@ for off, ob, nb, why, scope in cuts:
 # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
 KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504}   # KRES*：分辨率参数位；KASPECT：画面宽高比上限（见 PARAMS） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap (see PARAMS)
 KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI'))}
+ZOOM_PAGE_SLOT = 100   # optional extension entry; keeps the indexed key table at eight slots
 
 md = Cs(CS_ARCH_ARM64, CS_MODE_ARM); md.detail = True
 patch = bytearray(); fix = []; gates = []; stats = {}
@@ -254,7 +255,7 @@ def emit(w, kind=None):
     patch.extend(struct.pack('<I', w & 0xFFFFFFFF))
 
 def emit_key_addr(reg, kind):
-    fix.append((len(patch), kind)); emit(ADRP(reg, here(), KEY_PAGE_OFF)); emit(LDRX(reg, reg, KEY_INDEX[kind]))
+    fix.append((len(patch), kind)); emit(ADRP(reg, here(), KEY_PAGE_OFF)); emit(LDRX(reg, reg, ZOOM_PAGE_SLOT if kind == 'KZOOM' else KEY_INDEX[kind]))
 
 def emit_slot_addr(base, key_reg, kind):
     emit_key_addr(key_reg, kind); emit(ADDR(base, base, key_reg))
@@ -264,6 +265,12 @@ def emit_slot_addr(base, key_reg, kind):
 def B(frm, to):
     off = to - frm; assert -(1 << 27) <= off < (1 << 27) and off % 4 == 0
     return 0x14000000 | ((off >> 2) & 0x3FFFFFF)
+def CBZ_W(t, frm, to):
+    off = to - frm; assert -(1 << 20) <= off < (1 << 20) and off % 4 == 0
+    return 0x34000000 | (((off >> 2) & 0x7FFFF) << 5) | t
+def CBZ_X(t, frm, to):
+    off = to - frm; assert -(1 << 20) <= off < (1 << 20) and off % 4 == 0
+    return 0xB4000000 | (((off >> 2) & 0x7FFFF) << 5) | t
 def STP(t, t2, n, off): return 0xA9000000 | (((off // 8) & 0x7F) << 15) | (t2 << 10) | (n << 5) | t
 def LDP(t, t2, n, off): return 0xA9400000 | (((off // 8) & 0x7F) << 15) | (t2 << 10) | (n << 5) | t
 def STP_PRE(t, t2, n, off): return 0xA9800000 | (((off // 8) & 0x7F) << 15) | (t2 << 10) | (n << 5) | t
@@ -271,6 +278,7 @@ def LDP_POST(t, t2, n, off): return 0xA8C00000 | (((off // 8) & 0x7F) << 15) | (
 def STUR(t, n, off): return 0xF8000000 | ((off & 0x1FF) << 12) | (n << 5) | t   # stur xt,[xn,#off]（off 可负） | stur xt,[xn,#off] (off may be negative)
 def LDUR(t, n, off): return 0xF8400000 | ((off & 0x1FF) << 12) | (n << 5) | t   # ldur xt,[xn,#off]
 def LDRX(t, n, imm12=0): return 0xF9400000 | (imm12 << 10) | (n << 5) | t
+def LDRW(t, n, imm12=0): return 0xB9400000 | (imm12 << 10) | (n << 5) | t
 def STRX(t, n, imm12=0): return 0xF9000000 | (imm12 << 10) | (n << 5) | t
 def MRS_TPIDRRO(t): return 0xD53BD060 | t
 def ADRP(dd, pc, target):
@@ -599,6 +607,48 @@ for a in sorted(kinds):
     elif k in ('cntpct', 'cntvct'): st = site_gate(ins, k, arg); stat(k)
     put_branch(a, st)
 
+# ---- Camera zoom (host-only static patch) ----
+# The orthographic camera writes its view extents every frame at main+0x89c8c4 / +0x89c8d0, so changing the host-side
+# camera object is immediately overwritten. Branch before the width store, scale both live extents, replay the
+# original stores and address calculation, then return at +0x89c8dc. KZOOM lives in extension page slot 100; that TSD
+# slot holds a pointer to the host's live atomic factor (0.75 on, zero/off skips both multiplies), leaving the eight
+# indexed keys unchanged.
+ZOOM_138, ZOOM_RET = 0x89c8c4, 0x89c8dc
+if RULE_RUN and NAME == 'main':
+    W_ZOOM138, W_ZOOM13C = 0xBD013A80, 0xBD013E81
+    W_ZOOM140, W_ZOOM144 = 0xBD014289, 0xBD014688
+    W_ZOOM_FMOV, W_ZOOM_MUL0, W_ZOOM_MUL1 = 0x1E270202, 0x1E220800, 0x1E220821
+    W_STR_Q0_SP16, W_STR_Q1_SP32, W_STR_Q2_SP48 = 0x3D8007E0, 0x3D800BE1, 0x3D800FE2
+    W_LDR_Q0_SP16, W_LDR_Q1_SP32, W_LDR_Q2_SP48 = 0x3DC007E0, 0x3DC00BE1, 0x3DC00FE2
+    zoom_words = tuple(struct.unpack_from('<I', IMG, a)[0] for a in range(ZOOM_138, ZOOM_RET, 4))
+    assert zoom_words == (W_ZOOM138, 0xD0014369, 0x91030129, W_ZOOM13C, W_ZOOM140, W_ZOOM144), 'zoom cut: 原指令序列不符'
+    assert ZOOM_138 < ZOOM_RET <= TEXT_END and not any(ZOOM_138 <= a < ZOOM_RET for a in kinds) \
+        and not any(seg[0].address < ZOOM_RET and ZOOM_138 < seg[-1].address + 4 for seg in windows) \
+        and not any(off < ZOOM_RET and ZOOM_138 < off + len(bytes.fromhex(ob)) for off, ob, *_ in cuts)
+    zoom_original = bytes(IMG[ZOOM_138:ZOOM_RET])
+    assert len(zoom_original) == 24
+    zstart = here()
+    emit(SUBI(31, 31, 64)); emit(STP(16, 17, 31, 0))                       # 64-byte aligned frame; preserve all live scratch state
+    emit(W_STR_Q0_SP16); emit(W_STR_Q1_SP32); emit(W_STR_Q2_SP48)          # q0/q1 hold original s0/s1; q2 is the scale temp
+    emit(MRS_TPIDRRO(16)); emit_key_addr(17, 'KZOOM')
+    zoom_key_skip = here(); emit(0)                                           # missing optional extension slot = no zoom, no fault
+    emit(ADDR(16, 16, 17)); emit(LDRX(16, 16)); emit(LDRW(16, 16))
+    zoom_skip = here(); emit(0)                                                # patched cbz w16, original path
+    emit(W_ZOOM_FMOV); emit(W_ZOOM_MUL0); emit(W_ZOOM_MUL1)                    # s0/s1 *= live host scale
+    zoom_skip_target = here()
+    struct.pack_into('<I', patch, zoom_key_skip - PATCH_OFF, CBZ_X(17, zoom_key_skip, zoom_skip_target))
+    struct.pack_into('<I', patch, zoom_skip - PATCH_OFF, CBZ_W(16, zoom_skip, zoom_skip_target))
+    emit(W_ZOOM138)                                                           # replay the first store
+    emit(ADRP(9, here(), 0x310A000)); emit(ADDI(9, 9, 0xC0))                  # replay the skipped adrp/add x9
+    emit(W_ZOOM13C); emit(W_ZOOM140); emit(W_ZOOM144)                        # replay the remaining stores
+    emit(W_LDR_Q0_SP16); emit(W_LDR_Q1_SP32); emit(W_LDR_Q2_SP48)
+    emit(LDP(16, 17, 31, 0)); emit(ADDI(31, 31, 64))
+    zoom_branch = B(ZOOM_138, zstart)
+    emit(B(here(), ZOOM_RET)); put_branch(ZOOM_138, zstart); stat('zoom')
+    zoom_patched = struct.pack('<I', zoom_branch) + zoom_original[4:]
+    cuts.append((ZOOM_138, zoom_original.hex(), zoom_patched.hex(),
+                 'camera zoom: multiply the per-frame orthographic view extents by the live KZOOM factor', '仅宿主'))
+
 # 私有视觉分支；非OBS，0x85只读查询。只有本实验构建显式opt-in；原Qty/children和Update不变。
 # Private visual branch; not OBS, 0x85 is a read-only query. Only this experimental build explicitly opts in; the original Qty/children and Update are unchanged.
 if RULE_RUN and PRIVATE_GATES:
@@ -853,6 +903,7 @@ elif os.path.exists(P('rules.tsv')):
     os.unlink(P('rules.tsv'))  # 重出native时清本模块旧规则登记，不让旧manifest混入原资源域 | When rebuilding native, clear this module's old rule registration so the old manifest does not leak into the original-resource domain
 with open(P('fixups.tsv'), 'w') as f:
     f.write(f'# PATCH_OFF\t{PATCH_OFF:#x}\n# KEY_PAGE_OFF\t{KEY_PAGE_OFF:#x}\n# KEY_PAGE_SIZE\t0x4000\n# TEXT_END\t{TEXT_END:#x}\n# RO_OFF\t{RO_OFF:#x}\n# DATA_OFF\t{DATA_OFF:#x}\n')
+    if RULE_RUN and NAME == 'main': f.write(f'# KEY_ZOOM_SLOT\t{ZOOM_PAGE_SLOT:#x}\n')
     for k in KEY_INDEX: f.write(f'# KEY_{k}_IDX\t{KEY_INDEX[k]}\n')
 with open(P('gates.tsv'), 'w') as f:
     for ret, k, arg, orig in gates: f.write(f'{ret:#x}\t{k}\t{arg}\t{orig:#x}\n')

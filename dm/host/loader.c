@@ -15,7 +15,7 @@
 module_t g_mod[MAX_MOD];
 int g_nmod;
 pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
-pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui;   // g_keyaspect：宽高比上限参数位（KASPECT）          // 分辨率参数位（改写器 PARAMS，KRES0 掌机 / KRES1 主机）；产物没有即 0、不占 | g_keyaspect: aspect ratio upper-limit parameter slot (KASPECT)          // resolution parameter slots (rewriter PARAMS, KRES0 handheld / KRES1 docked); 0 and not allocated if the build output lacks them
+pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui, g_keyzoom;   // KZOOM uses optional key-page extension slot 100; the indexed key table remains eight entries
 enum { KEY_K18, KEY_KTLS, KEY_KTLR, KEY_KGATE, KEY_KRES0, KEY_KRES1, KEY_KASPECT, KEY_KASPECTUI, KEY_N };
 
 uint64_t resolve_import(module_t *m, const char *name);
@@ -34,9 +34,10 @@ static void create_keys(void) {
     // 参数位键一律建（不按产物有没有用到判断：iOS 包里没有 params.tsv，按文件判断会漏建、键页写成 0 → 游戏读到 TSD 0 号槽）
     // Parameter slot keys are always created (not decided by whether the build output uses them: an iOS app has no params.tsv, so deciding by file would miss creating them and the key page would be written as 0 → the game reads TSD slot 0)
     if (pthread_key_create(&g_keyres[0], NULL) || pthread_key_create(&g_keyres[1], NULL) ||
-        pthread_key_create(&g_keyaspect, NULL) || pthread_key_create(&g_keyaspectui, NULL)) die("创建参数位键失败");
-    LOG("键号 K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu KRES0=%lu KRES1=%lu KASPECT=%lu KASPECTUI=%lu",
-        g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[0], g_keyres[1], g_keyaspect, g_keyaspectui);
+        pthread_key_create(&g_keyaspect, NULL) || pthread_key_create(&g_keyaspectui, NULL) ||
+        pthread_key_create(&g_keyzoom, NULL)) die("创建参数位键失败");
+    LOG("键号 K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu KRES0=%lu KRES1=%lu KASPECT=%lu KASPECTUI=%lu KZOOM=%lu",
+        g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[0], g_keyres[1], g_keyaspect, g_keyaspectui, g_keyzoom);
 }
 
 // K 槽校验：pthread TSD 布局固定，槽 = tpidrro_el0 + 8*key
@@ -163,6 +164,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "TEXT_END")) m->text_end = v;
         else if (!strcmp(key, "RO_OFF")) m->ro_off = v;
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
+        else if (!strcmp(key, "KEY_ZOOM_SLOT")) m->zoom_key_slot = (unsigned)v;
         else for (int k = 0; k < 8; k++) {
             size_t n = strlen(kn[k]);
             if (!strncmp(key, "KEY_", 4) && !strncmp(key + 4, kn[k], n) && !strcmp(key + 4 + n, "_IDX")) {
@@ -171,8 +173,11 @@ static void read_layout(module_t *m, const char *dir) {
         }
     }
     fclose(f);
-    if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != 0xff)
+    if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != 0xff ||
+        (m->zoom_key_slot && m->zoom_key_slot >= m->key_page_size / sizeof(uint64_t)))
         die("%s: 产物是旧改写器出的，换成当前代号（dm/PRODUCT）的产物", path);
+    for (int k = 0; m->zoom_key_slot && k < 8; k++)
+        if (m->zoom_key_slot == m->key_idx[k]) die("%s: KZOOM 扩展槽与键表重叠", path);
 }
 
 static void install_key_page(module_t *m) {
@@ -182,6 +187,7 @@ static void install_key_page(module_t *m) {
     for (unsigned i = 0; i < 4; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;
     page[m->key_idx[KEY_KRES0]] = (uint64_t)g_keyres[0] * 8; page[m->key_idx[KEY_KRES1]] = (uint64_t)g_keyres[1] * 8;
     page[m->key_idx[KEY_KASPECT]] = (uint64_t)g_keyaspect * 8; page[m->key_idx[KEY_KASPECTUI]] = (uint64_t)g_keyaspectui * 8;
+    if (m->zoom_key_slot) page[m->zoom_key_slot] = (uint64_t)g_keyzoom * 8;
     for (int k = 0; k < 8; k++) if (!page[m->key_idx[k]]) die("%s: 键页第 %d 项为 0（宿主键没建）——游戏会读到 TSD 0 号槽", m->name, k);
     if (mprotect(m->base + m->key_page_off, m->key_page_size, PROT_READ)) die("%s 键页 mprotect", m->name);
 }

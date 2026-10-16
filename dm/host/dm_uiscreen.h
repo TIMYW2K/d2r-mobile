@@ -13,6 +13,7 @@ int dm_uiscreen_ingame(void);                // 1 = 局内（真全屏）；0 = 
 void dm_uiscreen_set_ingame(int on);          // 只许界面每帧那一处（dm_cursor.c）调 | May only be called from the per-frame UI site (dm_cursor.c)
 void dm_uiscreen_set_panel(int on);           // 局内开着大面板（功能页 / 箱子 / 商人 / 魔盒…，= 触摸前端的面板模式）：界面矩形移到正中；关掉回落前端选的摆法。触摸前端在界面消息回调里调 | A large panel open in a run (function pages / stash / vendor / cube..., = the touch front end's panel mode): the UI rectangle moves to the center; when closed it drops back to the placement the front end chose. Called by the touch front end in the UI message callback
 int dm_uiscreen_panel(void);                 // 上面那个状态：局内开着大面板 = 1 | The state above: a large panel open in a run = 1
+void *dm_cam_zoom_factor_slot(void);          // KZOOM TSD entry points at the live host scale used by the static main-text patch
 #include <stdint.h>
 uint64_t dm_game_res(int docked);            // 游戏出图分辨率参数位此刻该给的值（{u32 宽, u32 高} 打包）：前端的原生值，真全屏打开且不在局里时改成屏宽的 16:9 | The value the game's render resolution parameter slot should give right now (packed {u32 width, u32 height}): the front end's native value, changed to 16:9 of the screen width when true fullscreen is on and not in a run
 void dm_uiscreen_res_reread(void);            // 只许 hle_oe.c 在游戏取走「性能模式变化」通知时调 | May only be called by hle_oe.c when the game takes the "performance mode changed" notification

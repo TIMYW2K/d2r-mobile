@@ -239,11 +239,17 @@ def keyseq(at):
     if len(q) < 5 or q[0].mnemonic != 'mrs' or 'tpidrro_el0' not in q[0].op_str \
             or q[1].mnemonic != 'adrp' or q[1].operands[1].imm != h['KEY_PAGE_OFF'] \
             or q[2].mnemonic != 'ldr' or q[2].operands[1].mem.base != q[1].operands[0].reg \
-            or q[3].mnemonic != 'add' or q[3].operands[0].reg != q[0].operands[0].reg \
-            or q[3].operands[1].reg != q[0].operands[0].reg:
+            or q[2].operands[0].reg != q[1].operands[0].reg:
         return None
     d = q[2].operands[1].mem.disp
-    return (q[3].address + 4, d // 8) if d % 8 == 0 and 0 <= d // 8 < 8 else None
+    add = 3
+    if q[add].mnemonic == 'cbz' and q[add].operands[0].reg == q[2].operands[0].reg: add += 1
+    if len(q) <= add or q[add].mnemonic != 'add' or q[add].operands[0].reg != q[0].operands[0].reg \
+            or q[add].operands[1].reg != q[0].operands[0].reg or q[add].operands[2].reg != q[2].operands[0].reg:
+        return None
+    slot = d // 8
+    extra = h.get('KEY_ZOOM_SLOT')
+    return (q[add].address + 4, slot) if d % 8 == 0 and (0 <= slot < 8 or slot == extra) else None
 def paramseq(at, r):
     q = list(_md.disasm(pat[at:at + 40], at))
     tmp = 17 if r == 16 else 16
@@ -339,7 +345,12 @@ _base = {'K18', 'KTLS', 'KTLR', 'KGATE'}; _extra = set(KEY) - _base   # 额外�
 if set(KEY) != {'K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI'} \
         or not {k for *_, k in params} <= set(KEY) or set(KEY.values()) != set(range(8)):
     bad(f'表头键页下标不合规：{KEY}（须含八个键且下标恰为 0..7）')
-kv = {v: k for k, v in KEY.items()}; nk = {}
+zoom_slot = h.get('KEY_ZOOM_SLOT')
+if zoom_slot is not None and (zoom_slot < 8 or zoom_slot >= h['KEY_PAGE_SIZE'] // 8 or zoom_slot in KEY.values()):
+    bad(f'KZOOM 扩展槽与键页范围或八项键表冲突：{zoom_slot}')
+kv = {v: k for k, v in KEY.items()};
+if zoom_slot is not None: kv[zoom_slot] = 'KZOOM'
+nk = {}
 for o in range(PO, len(pat) - 4, 4):
     w = W(pat, o)
     if w & 0xFFFFFFE0 != 0xD53BD060: continue           # mrs xN, tpidrro_el0
@@ -353,6 +364,7 @@ for kind in sites.values():
     if key: expected[key] = expected.get(key, 0) + 1
 expected['KGATE'] = len(gsites) + len(obs) + nbranch
 for _, _, _, key in params: expected[key] = expected.get(key, 0) + 1
+if zoom_slot is not None: expected['KZOOM'] = 1
 if any(nk.get(k, 0) != v for k, v in expected.items()) or any(k not in expected and v for k, v in nk.items()):
     bad(f'键页槽访问计数不符：期望 {expected} 实际 {nk}')
 

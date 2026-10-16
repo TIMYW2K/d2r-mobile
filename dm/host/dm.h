@@ -29,6 +29,7 @@ typedef struct {
     size_t size;
     uint64_t text_end, ro_off, data_off, patch_off, key_page_off, key_page_size;   // 来自改写器 fixups 头 | From the rewriter fixups header
     unsigned key_idx[8];
+    unsigned zoom_key_slot;    // optional extension entry in the key page; not part of the 8 indexed slots
     const Elf64_Dyn *dyn;
     const Elf64_Sym *symtab;
     const char *strtab;
@@ -42,7 +43,7 @@ extern int g_nmod;
 // 四个线程本地槽：K18 = Switch 的 x18、KTLS = tpidr_el0、KTLR = tpidrro_el0（ThreadLocalRegion）、KGATE = 宿主门入口；实际键号由装载器写入键页
 // Four thread-local slots: K18 = the Switch's x18, KTLS = tpidr_el0, KTLR = tpidrro_el0 (ThreadLocalRegion), KGATE = host gate entry; the actual key numbers are written into the key page by the loader
 extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
-extern pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui;
+extern pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui, g_keyzoom;
 
 void load_modules(const char *dir, const char **names, int n);
 void run_module_inits(void);
