@@ -336,7 +336,7 @@ if set(gates) != seen: bad(f'gates.tsv 有多余行 {len(set(gates) - seen)}')
 # ⑥ 线程槽
 # ⑥ Thread slots
 _base = {'K18', 'KTLS', 'KTLR', 'KGATE'}; _extra = set(KEY) - _base   # 额外键 = 参数门键（KRES* / KASPECT* …；改写器全局键表，三模块表头都列）：须是 K 开头大写名、键号低于基础四键 | Extra keys = parameter-gate keys (KRES* / KASPECT* ...; the rewriter's global key table, listed in the headers of all three modules): must be uppercase names starting with K, with key numbers below the four base keys
-if set(KEY) != {'K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI'} \
+if set(KEY) != {'K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI', 'KZOOM'} \
         or not {k for *_, k in params} <= set(KEY) or set(KEY.values()) != set(range(8)):
     bad(f'表头键页下标不合规：{KEY}（须含八个键且下标恰为 0..7）')
 kv = {v: k for k, v in KEY.items()}; nk = {}
