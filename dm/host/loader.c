@@ -6,7 +6,6 @@
 #include <TargetConditionals.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <libkern/OSCacheControl.h>   // sys_icache_invalidate（拉近补丁写完要刷指令缓存）
 #include <sys/stat.h>
 #include <unistd.h>
 #include <mach-o/getsect.h>
@@ -176,8 +175,6 @@ static void read_layout(module_t *m, const char *dir) {
         die("%s: 产物是旧改写器出的，换成当前代号（dm/PRODUCT）的产物", path);
 }
 
-int dm_custom_get(const char *key);   // 自定义页开关（拉近等）
-
 static void install_key_page(module_t *m) {
     if (m->key_page_off + m->key_page_size > m->size) die("%s: 键页越界", m->name);
     uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
@@ -186,69 +183,7 @@ static void install_key_page(module_t *m) {
     page[m->key_idx[KEY_KRES0]] = (uint64_t)g_keyres[0] * 8; page[m->key_idx[KEY_KRES1]] = (uint64_t)g_keyres[1] * 8;
     page[m->key_idx[KEY_KASPECT]] = (uint64_t)g_keyaspect * 8; page[m->key_idx[KEY_KASPECTUI]] = (uint64_t)g_keyaspectui * 8;
     for (int k = 0; k < 8; k++) if (!page[m->key_idx[k]]) die("%s: 键页第 %d 项为 0（宿主键没建）——游戏会读到 TSD 0 号槽", m->name, k);
-    // 本地改动：拉近 —— 键页空闲槽 100 放缩放系数（float 位型）。1.0f = 不缩放。必须写在这里：
-    // 下面一行就把键页设成只读了，之后再写会当场崩。
-    // Local change: the zoom factor (float bit pattern) goes into spare key-page slot 100; 1.0f means no zoom.
-    // It must be written here, before the key page is made read-only on the next line.
-    { float zf = dm_custom_get("zoom") ? 0.75f : 1.0f; uint32_t zb; memcpy(&zb, &zf, 4); page[100] = zb; }
     if (mprotect(m->base + m->key_page_off, m->key_page_size, PROT_READ)) die("%s 键页 mprotect", m->name);
-}
-
-// 本地改动：拉近 —— 加载时把补丁写进模块。游戏在 0x89C8C4 每帧写"视野宽度"（正交投影按 2/w 用它），
-// 宿主直接写会被当场覆盖（实测一局被改回去 300 次）。所以把那条写改成跳桩，桩里乘上键页槽 100 的系数。
-// 三条安全规则：① 只对 main 生效；② 动手前先读回原字节核对，不符就完全不动；③ 槽为 0/1.0 时乘法等于空转。
-// 指令编码由 Python 生成并逐条用 capstone 反汇编核对；这里只有三条位置相关的按运行时地址现算。
-// Local change: zoom. The game rewrites the view width every frame at 0x89C8C4 (the ortho path derives 2/w from it),
-// so a host-side write is overwritten (measured: 300 times in one session). The store is redirected to a stub that
-// multiplies by the factor in key-page slot 100. Safety: main module only; the original word is asserted first;
-// a factor of 1.0 or 0 makes the multiply a no-op.
-static uint32_t adrp_encode(uint32_t dd, uintptr_t pc, uintptr_t target) {
-    uint64_t imm = ((target >> 12) - (pc >> 12)) & 0x1FFFFF;
-    return 0x90000000u | (uint32_t)((imm & 3) << 29) | (uint32_t)(((imm >> 2) & 0x7FFFF) << 5) | dd;
-}
-#define DM_ZOOM_SITE 0x89C8C4u          // str s0, [x20, #0x138]
-#define DM_ZOOM_SITE_WORD 0xBD013A80u   // 原字节（核对用）
-#define DM_ZOOM_SLOT 100
-static void install_zoom_patch(module_t *m) {
-    if (strcmp(m->name, "main")) return;                                  // 剪口只在 main 里
-    if (m->size < DM_ZOOM_SITE + 4 || m->patch_off + 0x2000 > m->size) { LOG("拉近：产物布局不符，跳过"); return; }
-    uint8_t *site = m->base + DM_ZOOM_SITE;
-    uint32_t orig; memcpy(&orig, site, 4);
-    if (orig != DM_ZOOM_SITE_WORD) { LOG("拉近：站点原字节 %08X 与预期 %08X 不符，完全不动", orig, DM_ZOOM_SITE_WORD); return; }
-    uintptr_t page = ((uintptr_t)m->base + m->size + 0x3FFF) & ~(uintptr_t)0x3FFF;
-    uint32_t *stub = mmap((void *)page, 0x1000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-    if (stub == MAP_FAILED) { LOG("拉近：桩页映射失败，跳过"); return; }
-    uint32_t *c = stub;
-    *c++ = 0xF81E83F0;                                        // stur x16, [sp, #-0x18]
-    *c++ = 0xF81E03F1;                                        // stur x17, [sp, #-0x20]
-    *c++ = 0x3C9F03E2;                                        // stur q2,  [sp, #-0x10]
-    *c++ = adrp_encode(17, (uintptr_t)c, (uintptr_t)m->base + m->key_page_off);
-    *c++ = 0xF9419231;                                        // ldr  x17, [x17, #100*8]
-    uint32_t *cbz = c++;
-    *c++ = 0x1E270222;                                        // fmov s2, w17
-    *c++ = 0x1E220800;                                        // fmul s0, s0, s2
-    *c++ = 0x1E220821;                                        // fmul s1, s1, s2
-    *c++ = 0xBD013A80;                                        // str  s0, [x20, #0x138]
-    *c++ = 0xBD013E81;                                        // str  s1, [x20, #0x13c]
-    *c++ = 0xBD014289;                                        // str  s9, [x20, #0x140]
-    *c++ = 0xBD014688;                                        // str  s8, [x20, #0x144]
-    // 注意：原版那条 adrp x9 是相对 pc 的，目标在模块自己的地址空间里；宿主把映像整体映射到 m->base，
-    // 所以这里必须写成 m->base + 0x310A000（直接写常量会得到野指针，后面用到 x9 的原版代码会崩）。
-    *c++ = adrp_encode(9, (uintptr_t)c, (uintptr_t)m->base + 0x310A000);
-    *c++ = 0x91030129;                                        // add  x9, x9, #0xc0
-    *c++ = 0x3CDF03E2;                                        // ldur q2,  [sp, #-0x10]
-    *c++ = 0xF85E03F1;                                        // ldur x17, [sp, #-0x20]
-    *c++ = 0xF85E83F0;                                        // ldur x16, [sp, #-0x18]
-    *c++ = 0x14000000u | (uint32_t)(((((uintptr_t)(m->base + 0x89C8DC)) - (uintptr_t)c) >> 2) & 0x3FFFFFF);   // b 0x89C8DC
-    *cbz = 0xB4000000u | (uint32_t)(((((uintptr_t)c - (uintptr_t)cbz) >> 2) & 0x7FFFF) << 5) | 17u;            // cbz x17, 跳过乘法
-    sys_icache_invalidate(stub, (size_t)((char *)c - (char *)stub));   // Apple 的指令缓存刷新（__builtin___clear_cache 在 arm64 上没有对应符号）
-    if (mprotect(stub, 0x1000, PROT_READ | PROT_EXEC)) { LOG("拉近：桩页改只读失败，跳过"); return; }
-    // 站点改成跳桩。调用方保证此刻文本可写（嵌入式路径自己开一个窗口，文件路径本来就在写窗口里）。
-    uint32_t br = 0x14000000u | (uint32_t)(((((uintptr_t)stub) - (uintptr_t)site) >> 2) & 0x3FFFFFF);
-    memcpy(site, &br, 4);
-    sys_icache_invalidate(site, 4);
-    LOG("拉近：补丁已装载（%s 站点 0x%X → 桩 %p；系数取键页槽 %d，开关%s）",
-        m->name, DM_ZOOM_SITE, (void *)stub, DM_ZOOM_SLOT, dm_custom_get("zoom") ? "开（0.75）" : "关（1.0）");
 }
 
 static void register_gates(module_t *m, const char *dir) {
@@ -388,18 +323,6 @@ static void map_image(module_t *m, const char *dir) {
     remap_at(m, base + z0, w, zw, TRUE, VM_PROT_READ | VM_PROT_WRITE);
     remap_at(m, base + m->patch_off, x1, z1, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
     m->base = (uint8_t *)base; install_key_page(m);
-    // 拉近（本地改动）：嵌入式路径的代码页是 vm_remap(copy=FALSE) 共享的已签名页。上一版用 mprotect(RW)
-    // 临时开窗后，iOS 拒绝再把它恢复成 RX（日志：FATAL main 文本恢复 RX 失败）。改用 mach 层的 VM_PROT_COPY：
-    // 开窗时就让内核把页做成私有副本，写完后恢复 RX 走的是"私有匿名页"这条路 —— 与 map_image 路径同性质，
-    // 而那条路已被验证可行（无 Zoom 的 #31 就在那条路上跑满一分钟）。
-    // 只有 main 模块有剪口，别的模块一个字都不动。
-    if (!strcmp(m->name, "main")) {
-        if (vm_protect(mach_task_self(), base, z0, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) == KERN_SUCCESS) {
-            install_zoom_patch(m);
-            kern_return_t kr = vm_protect(mach_task_self(), base, z0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-            if (kr != KERN_SUCCESS) LOG("【红】拉近：文本恢复 RX 失败（kr=%d）—— 页面很可能已不可执行，下一版要改回不写站点", kr);
-        } else LOG("拉近：文本开写窗口失败（VM_PROT_COPY 未成功），站点完全没动");
-    }
 }
 #else
 static uint8_t *slurp(const char *path, size_t *n) {
@@ -422,7 +345,6 @@ static void map_image(module_t *m, const char *dir) {
     m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
     memcpy(m->base, raw, sz); free(raw); install_key_page(m);
-    install_zoom_patch(m);   // 拉近：此刻文本还可写，直接装
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
     if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
     uint64_t po = m->patch_off & ~0x3FFFull;
