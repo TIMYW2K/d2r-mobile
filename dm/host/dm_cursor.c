@@ -2175,7 +2175,7 @@ static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
     if (*(uint8_t *)(m->base + 0x2d5ff66)) { LOG("佣兵页：已开（按键 %d 次）", tries); on = 0; return; }
     if (tries >= 9) { LOG("【红】佣兵页：按了 %d 次键还没翻到，放弃", tries); on = 0; return; }
     int dm = bd_open(root, "UISwitcher"), cur = dm ? bd_top_tab(root) : -1;
-    if (tries) { uint64_t dt = fr - pressed; int moved = dm && cur >= 0 && cur != page; if (!((moved && dt >= 7) || dt >= 24)) return; }
+    if (tries) { uint64_t dt = fr - pressed; int moved = dm && cur >= 0 && cur != page; if (!((moved && dt >= 1) || dt >= 2)) return;   // 本地改动：原来 7 / 24 帧一按，玩家看到的是「一页一页翻过去」；每 1–2 帧按一次，四页约 0.1 秒到位 | local change: 7 / 24 frames per press made it visibly walk page by page; one press every 1-2 frames covers four pages in about 0.1 s }
     page = cur; pressed = fr; dm_ui_key_pulse(dm ? DM_BTN_R : DM_BTN_PLUS, 4); tries++;
 }
 // 个人仓库页码（个人仓库 2–5 页，dm_pages.c）：写在自己的文字控件 TouchPgPage_Text 里（布局 wide_stash.py），文字照原版共享页页码的写法：
@@ -2756,7 +2756,22 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
               // Top function pages (quest log ... options): the pages are switched by the function page panel UISwitcher itself, and it does not take the tab bar's page-switch message. It takes L / R (the two branches 0x4052a8 / 0x4052d4 of message handler main+0x404fd8),
               // both of which compute "current page ± 1" and then call main+0x405898(panel, target page, direction); here the target page is given to it directly, in one step. Current page +0x1b8, page count +0x188
               int cur = *(int32_t *)(us + 0x1b8), n = *(int32_t *)(us + 0x188), to = g_tab_k; if (to < 0) to = 0; if (n > 0 && to >= n) to = n - 1;   // 页号 = 页签的第 K 个（隐藏的佣兵页也占一页），不能用可见页签数推：没佣兵时从选项往回点物品栏会多走一页 | page number = the Kth tab (the hidden mercenary page also takes up a page); it cannot be derived from the visible tab count: without a mercenary, tapping back from options to the inventory panel would go one page too far
-              ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, d > 0);
+              // 本地改动（修 bug：点顶部功能页签时黄色高亮不跟随）：原版「点页签」这条路的动作都在页签条自己身上
+              // （0xad9b80：写 +0xdc4、放切页音效、经界面根发切页消息），而换页函数 0x405898 只负责装卸页面、
+              // 完全不碰页签条（反汇编 0x405898 里没有任何页签条相关的读写；L / R 两支也只是算完 当前页±1 就跳进它）。
+              // 所以必须**先照原版点一次页签**（高亮从这条路更新），页面要是没跟上再用 0x405898 补一刀
+              // （原作者的观察：顶部功能页不接页签条那条切页消息）。顺序反过来就会「页面换了、高亮没换」。
+              // Local change (bug fix: tapping a top function tab left the yellow highlight on the old tab): in the
+              // original game all the work of "tapping a tab" is done by the tab bar itself (0xad9b80: writes +0xdc4,
+              // plays the page sound, sends the page-change message through the UI root), while the page switch
+              // 0x405898 only loads and unloads pages and never touches the tab bar (its disassembly reads and writes
+              // nothing tab-bar related, and the L / R branches just compute current+/-1 and jump into it). So the tab
+              // must be selected first, the original way; if the page did not follow, 0x405898 is used as a fallback
+              // (the original author's observation: the top function page panel does not take the tab bar's
+              // page-change message). The old order produced "page switched, highlight not".
+              int sel_ok = 0;
+              if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8) { ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, to, 0); sel_ok = 1; }
+              if (*(int32_t *)(us + 0x1b8) != to) ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, d > 0);
               // 本地改动（修 bug：点顶部功能页签时黄色高亮不跟随）：页面是 UISwitcher 自己换的，但页签条自己记的
               // 「当前选中第几个」+0xdc4 没人更新，而高亮（以及翻页键）读的就是它 —— 所以高亮留在旧页签上。
               // 这里补一次「选中第 to 个」，用页签条自己的 0xad9b80（正是下面其它页签条走的那一支）。功能页面板
@@ -2767,13 +2782,12 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
               // tab bar's own 0xad9b80, the same call the other tab bars use below. The function page panel does not
               // take the tab bar's page-switch message (see above), so this cannot switch the page twice; the sound
               // argument is 0 so it does not overlap the page-change sound.
-              if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8) ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, to, 0);
-              LOG("界面页签：功能页第 %d → 第 %d 页（直接切，现为 %d；页签选中 %d）", cur, to, *(int32_t *)(us + 0x1b8), tw ? TAB_SEL(tw) : -1); }
+              LOG("界面页签：功能页第 %d → 第 %d 页（现为 %d；页签%s选中 %d）", cur, to, *(int32_t *)(us + 0x1b8), sel_ok ? "" : "没选到、只切了页，", sel_ok ? TAB_SEL(tw) : -1); }
           else if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) { int was = TAB_SEL(tw);
               ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, g_tab_k, 1); LOG("界面页签：「%s」第 %d → 第 %d 个（直接选中，现为 %d）", g_tab_name, was, g_tab_k, TAB_SEL(tw)); }
           else LOG("【红】界面页签：页签条「%s」已不在 / 不可见，这次不切", g_tab_name);
           dm_wref_set(&g_tab_ref, 0); atomic_store(&g_tab_have, 0); } }
-    { static uint64_t tnext; if (fr >= tnext) { if (atomic_load(&g_tab_left) > 0) { atomic_fetch_sub(&g_tab_left, 1); ui_auto_key(atomic_load(&g_tab_mask)); tnext = fr + 8; }
+    { static uint64_t tnext; if (fr >= tnext) { if (atomic_load(&g_tab_left) > 0) { atomic_fetch_sub(&g_tab_left, 1); ui_auto_key(atomic_load(&g_tab_mask)); tnext = fr + 2; }
         else { uint64_t th = atomic_exchange(&g_tab_then, 0);
             // 对话菜单：按确认键之前核一遍菜单自己记的选中行是不是点的那一行；不是就补挪（至多两轮），还不对就不按——宁可这一下没反应，也不替玩家选错项
             // Dialog menu: before pressing confirm, check whether the selected row the menu itself records is the row that was tapped; if not, move again to correct it (at most two rounds), and if still wrong do not press -- better for this tap to do nothing than to pick the wrong entry for the player

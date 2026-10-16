@@ -389,6 +389,13 @@ static void settings_lang_apply(const char *save_dir) {
     int dm_custom_lang_explicit(void); int en = dm_custom_lang_explicit(); if (en < 0) return;
     char path[1200]; snprintf(path, sizeof path, "%s/Settings/Settings.json", save_dir); static char buf[66000]; FILE *f = fopen(path, "rb"); if (!f) return;
     size_t n = fread(buf, 1, 65535, f); fclose(f); if (n == 65535) return; buf[n] = 0;
+    // 本地改动：本函数缺省不再被调用（见 hle_fs.c:430 调用处的说明）——它每次挂存档把 Language 与 VoiceLanguage
+    // 改成同一个值，而自定义页那个语言开关已按玩家要求去掉，文件里留着旧值，于是每次都覆盖玩家在「选项 → 声音」页的选择。
+    // 函数体保持原样：宿主单测 t_fs.c 正是用它验证改写规则的（改这段会让单测红）。
+    // Local change: this function is no longer called by default (see the call site comment) -- it rewrote Language and
+    // VoiceLanguage to the same value on every save mount, and the Custom page switch that drove it has been removed at
+    // the player's request, so the stale value overwrote the player's Options -> Sound choice every launch. The body is
+    // kept as it was: the host unit test t_fs.c exercises exactly this rewriting rule.
     const char *k = strstr(buf, "\"Language\""), *c = k ? strchr(k + 10, ':') : NULL; int cur = c ? atoi(c + 1) : 8;   // 没写 = 游戏缺省（宿主报简中） | Not written = game default (the host reports Simplified Chinese)
     if ((en && cur == 0) || (!en && cur != 0)) { const char *vk = strstr(buf, "\"VoiceLanguage\""), *vc = vk ? strchr(vk + 15, ':') : NULL; int vcur = vc ? atoi(vc + 1) : cur;
         if ((en && vcur == 0) || (!en && vcur != 0)) return; }   // 文字、语音都已与开关相符 | Text and voice already match the switch
@@ -414,7 +421,13 @@ HLE_FORCE("_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", "fsp-srv；存档 �
     char dd[1024]; strlcpy(dd, d, sizeof dd); size_t L = strlen(dd); while (L > 1 && dd[L - 1] == '/') dd[--L] = 0;   // 去掉结尾斜杠（.work / .new 拼在同级） | strip trailing slashes (.work / .new are appended at the same level)
     stash_seed(dd);
     low_vision_off(dd);
-    settings_seed(dd); settings_lang_apply(dd);
+settings_seed(dd);
+    // 本地改动（修 bug：声音页选「英文语音 + 中文文字」，重启又变全中文）：这段语言改写缺省停用 —— 玩家在
+    // 「选项 → 声音」页选的语言原版自己会写回设置文件，宿主每次启动再改一手就会把选择覆盖掉。要临时恢复：设 DM_LANG_SWITCH_APPLY=1。
+    // Local change (bug fix: English voice + Chinese text on the audio page reverted to all Chinese after a restart):
+    // this rewrite is off by default -- the language the player picks on the Options -> Sound page is persisted by the
+    // game itself, and rewriting it on every launch overwrote that choice. To bring it back: set DM_LANG_SWITCH_APPLY=1.
+    if (getenv("DM_LANG_SWITCH_APPLY")) settings_lang_apply(dd);
     // 掉落过滤的规则文件（原版启动时载入，dm_lootfilter.c 用构造函数登记这个钩子；只链 hle_fs.c 的单测里它是空的）。与 settings_seed 同一个开关：
     // iOS 上缺省写；Mac 宿主的对拍闸门（存档要和真机真值逐文件相同）不写
     // Rule files for the loot filter (the game loads them at startup; dm_lootfilter.c registers this hook from a constructor; it is null in unit tests that link only hle_fs.c). Same switch as settings_seed:
