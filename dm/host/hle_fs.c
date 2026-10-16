@@ -361,7 +361,7 @@ static void settings_seed(const char *save_dir) {
     for (size_t i = 0; i < sizeof kv / sizeof kv[0]; i++) if (!strstr(buf, kv[i][0])) { o += (size_t)snprintf(out + o, sizeof out - o, "\n    %s: %s,", kv[i][0], kv[i][1]); added++; }
     // 首次安装按系统语言定原版的文字语言和语音语言（dm_sys_lang()，见 dm_i18n.c；只在没有设置文件时）。已有设置文件不补这两个键（老玩家照旧）；之后由自定义页的语言开关改（settings_lang_apply）
     // On first install the original game's text and voice languages are set from the system language (dm_sys_lang(), see dm_i18n.c; only when there is no settings file). An existing settings file does not get these two keys added (existing players stay as they are); afterwards they are changed by the language switch on the Custom page (settings_lang_apply)
-    if (first) { int dm_sys_lang(void); o += (size_t)snprintf(out + o, sizeof out - o, "\n    \"Language\": %d,\n    \"VoiceLanguage\": %d,", dm_sys_lang(), dm_sys_lang()); added += 2; }
+    if (first) { o += (size_t)snprintf(out + o, sizeof out - o, "\n    \"Language\": %d,\n    \"VoiceLanguage\": %d,", 8, 0); added += 2; }   // 本地改动：首次安装缺省「文字语言 8=简中 / 语音语言 0=英文」；已有设置文件的不动（玩家可在「选项 → 声音」页自己改） | Local change: on a first install the defaults are text language 8 (Simplified Chinese) and voice language 0 (English); an existing settings file is left alone (the player can change both on the Options -> Sound page)
     if (!added) return;
     if (had) { const char *rest = brace + 1; const char *q = rest; while (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t') q++;
         if (*q == '}') { out[o - 1] = 0; o--; }   // 原文件是空对象：去掉补的最后一个逗号 | the original file is an empty object: remove the last comma that was added
