@@ -98,6 +98,8 @@ static float g_zoom_base;          // 第一次读到视场角时的原值（改
 // the host's per-frame UI pump, slightly after that frame's projection recompute: it takes effect one frame later
 // and the value is constant, so nothing jitters. The UI (HUD, panels) has its own transform and is unaffected; the
 // game's own world->screen and hit tests read the same camera and follow automatically.
+float dm_cam_zoom_ratio(void);   // 前向声明：下面的 cam_zoom_pump 日志行要用 | forward declaration: used by the log line in cam_zoom_pump below
+
 static void cam_zoom_pump(void) {
     uint8_t *c = (uint8_t *)(uintptr_t)atomic_load(&g_cam_ptr);
     if (!c) return;
