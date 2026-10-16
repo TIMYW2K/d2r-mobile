@@ -1543,17 +1543,34 @@ static void ui_item_pump(uint64_t root, int width, int height) {
     if (r == 1) merc_lock_hit(hit);
     if (hit_log_ok(hit)) { LOG("界面命中：(%d,%d) → %s%s", x, y, r == 1 ? "物品区 " : r == 10 ? "物品区（单件槽占用，不动）" : r == 8 ? "成叠格 " : r == 7 ? "货架 " : r == 2 ? "" : r == 3 ? "面板外" : r == 6 ? "" : "面板内控件", hit); }
 }
+// 本地改动：单击常驻说明框（改的是本函数下面的两处）。原版说明框是即时式的 —— 悬停着的控件每帧重新提交、
+// 画完就清；而本函数原来只在「按住 / 有待发事件」时每帧补发 MouseMove，抬手后就不再发，说明框于是一闪而过。
+// 现在把最后一次落点粘住（g_stick_px，屏幕像素），之后每帧继续补一次 MouseMove，说明框就常驻；
+// 拖动手势期间不补（那时光标跟着手指走），下一次点按自然把落点改到新位置 —— 也就是「点别处即收起」。
+// g_dg_kind 在本文件后面定义，这里先声明一次（C 的 tentative definition，合法）：拖动中它非 0。
+// Local change: tooltips stay after a single tap (the two edits are inside the function below). The original tooltip is
+// immediate-mode -- the hovered widget re-submits it every frame and it is cleared after drawing -- while this function
+// only sent a MouseMove per frame while the pointer was held or an event was pending, so after the finger lifted the
+// tooltip flashed. The last landing point is now held (g_stick_px, screen pixels) and one MouseMove is sent at it every
+// frame, which keeps the tooltip up; nothing is sent during a drag gesture (the cursor follows the finger there), and the
+// next tap naturally moves the sticky point -- i.e. tapping elsewhere dismisses it. g_dg_kind is defined later in this
+// file; it is declared here as a tentative definition (legal in C) and is non-zero while dragging.
+static _Atomic uint64_t g_stick_px;   // (x<<32)|y，非 0 表示粘住 | (x<<32)|y; non-zero means sticky
+static _Atomic int g_dg_kind;
 static void ui_ptr_pump(module_t *m, uint64_t root, int width, int height) {
     unsigned r = atomic_load(&g_up_r); int pend = r != atomic_load(&g_up_w), unhover = atomic_exchange(&g_tab_unhover, 0);
-    if (unhover) { atomic_store(&g_up_xy, atomic_load(&g_iq_xy)); atomic_store(&g_up_hold, 0); }
-    if (!atomic_load(&g_up_hold) && !pend && !unhover) return;
+    if (unhover) { atomic_store(&g_up_xy, atomic_load(&g_iq_xy)); atomic_store(&g_up_hold, 0); }   // 换页把光标挪到干净处；粘住点在下面按实际发出的点重记 | page switch moves the cursor to a clean spot; the sticky point is re-recorded below from the point actually sent
+    if (!atomic_load(&g_up_hold) && !pend && !unhover) {   // 本地改动：抬手之后到这里 —— 粘住时每帧补一次 MouseMove，说明框才常驻 | local change: after the finger lifts we land here -- while sticky, one MouseMove per frame keeps the tooltip up
+        uint64_t sv = atomic_load(&g_stick_px);
+        if (sv && !atomic_load(&g_dg_kind)) { int sx = (int)(sv >> 32), sy = (int)(sv & 0xffffffffu); ui_send_mouse(m, root, hs[0], sx, sy); }
+        return; }
     static uint64_t hs[10]; if (!hs[0]) { static const char *nm[10] = { "MouseMove", "", "", "LeftMouseButtonDown", "LeftMouseButtonUp", "RightMouseButtonDown", "RightMouseButtonUp", "MouseScroll", "KeyDown", "KeyUp" }; for (int i = 0; i < 10; i++) hs[i] = ui_hash(nm[i]); }
     uint64_t v = atomic_load(&g_up_xy); int x = (int)(((v >> 16) & 0xffff) / 65535.0 * width), y = (int)((v & 0xffff) / 65535.0 * height); if (x >= width) x = width - 1; if (y >= height) y = height - 1;
     int dm_vault_ui_blocks(int, int), vb = (dm_ui_panel_state() & DM_PS_VAULT) && dm_vault_ui_blocks(x, y);   // 编年史页上（我们的控件除外）：悬停与按键都不发，见 dm_vault_ui.c | On the chronicle page (except our own widgets): neither hover nor key presses are sent, see dm_vault_ui.c
     if (!vb) ui_send_mouse(m, root, hs[0], x, y);
     if (!pend) return;
     int k = g_up_q[r % 32].kind, a = g_up_q[r % 32].arg; atomic_store(&g_up_r, r + 1);
-    if (k == DM_UP_END) atomic_store(&g_up_hold, 0); else if (k >= DM_UP_LDOWN && k <= DM_UP_KEYUP && !vb) { ui_send_mouse_arg(m, root, hs[k], x, y, a); LOG("界面指针：事件 %d 参数 %d @(%d,%d)", k, a, x, y); }
+    if (k == DM_UP_END) atomic_store(&g_up_hold, 0); else if (k >= DM_UP_LDOWN && k <= DM_UP_KEYUP && !vb) { ui_send_mouse_arg(m, root, hs[k], x, y, a); atomic_store(&g_stick_px, ((uint64_t)(uint32_t)x << 32) | (uint32_t)y); LOG("界面指针：事件 %d 参数 %d @(%d,%d)", k, a, x, y); }   // 本地改动：记下落点（粘住用） | local change: record the landing point (for the sticky hover)
 }
 // ---------- 界面连续手势：上下拖 = 滚动、按住滑块横拖 = 值跟手 ----------
 // 读码 + 实测（Mac 宿主，选项页）：
