@@ -1324,7 +1324,16 @@ PRESENT['controller/settingspanelhd.json'] = _settings_no_legend
 # 英文版：r34 起原版切语言不再剪；「语言」分节与「文字语言」一行仍藏，等我们自己的文字进中英表（第二阶段）一起放出（切到英文看到一半中文不行）
 # Removed items: language keeps only Simplified Chinese, controller-only items, online, offline player count (only the difficulty cell in the bottom bar remains as the single entry)
 # English version: since r34 the original game's language switch is no longer cut; the 「语言」(Language) section and the 「文字语言」(Text Language) row stay hidden until our own text enters the Chinese-English table (phase two) and are released together (switching to English and seeing half Chinese is not acceptable)
-PRESENT['soundoptionspanelhd.json'] = _drop_rows('LanguageOptions', 'VoiceLanguage', 'TextLanguage', 'Controller Feedback')
+# 本地改动：保留原版的「语言」分节与「文字语言 / 语音语言」两行（作者有意藏起它们，见上面的说明）。
+# 目的是让玩家能在游戏里把「文字语言」留中文、「语音语言」设成 English，而不必手改 Settings.json。
+# v1.0.15 起宿主把语言行的「界面重建被误当成玩家点击」修掉了（dm_custom.c 的 dm_wref），所以自定义页
+# 那一行保持上游原样、不再需要去掉。若要对齐上游，把三个名字加回下面两处即可。
+# Local change: keep the original 「语言」section and the 「文字语言 / 语音语言」rows (the authors hide them on
+# purpose, see above) so the player can leave Text Language on Chinese and set Voice Language to English in
+# game, without hand-editing Settings.json. Since v1.0.15 the host no longer mistakes a panel rebuild for a
+# player tap (dm_wref in dm_custom.c), so the Custom page keeps its language row as upstream has it. To match
+# upstream again, add the three names back in both places.
+PRESENT['soundoptionspanelhd.json'] = _drop_rows('Controller Feedback')
 PRESENT['gameplayoptionspanelhd.json'] = _drop_rows('AutoPartyInvite', 'ItemHotkeyTooltipAppender', 'ChatFontSize', 'ChatBackground', 'Controller Options', 'ControllerCursorSpeed',
                                                     'ControllerWeaponSwapSeparateBindings', 'ControllerRumbleEnabled', 'ControllerSwapThumbsticks', 'ShowParty', 'ShowNames', 'ShowRoomName',
                                                     # 大字体模式（原版低视力档）：一应用游戏就换成另一份界面布局档（_profileLV）整套重建，那份档我们没做过触摸布局——
@@ -1343,7 +1352,7 @@ PRESENT['onlinegameoptionspanelhd.json'] = _drop_rows('OfflineDifficultyScaling'
 # The three options pages for controller mode (placed at the original path and loaded by controller mode; the touch copy is moved to the touch side by the generator): the original with the rows that neither mode supports removed -- language, online, chat, keyboard-and-mouse hotkey hints, offline /players setting,
 # and large font mode (applying it swaps in another set of layout profiles, and touching the screen to switch back to touch then breaks). The rows controller mode keeps beyond touch are listed below
 PAD_ROOT = {
-    'soundoptionspanelhd.json': _drop_rows('LanguageOptions', 'VoiceLanguage', 'TextLanguage', 'Controller Feedback'),
+    'soundoptionspanelhd.json': _drop_rows('Controller Feedback'),   # 同上：语言的三个名字已取出，两行保留 | same as above: the three language names are no longer dropped
     # 手柄设置里只恢复实跑证实生效的：「互换左右摇杆」（开了之后左摇杆不走路、右摇杆走路）；色盲校准（手柄能进能出）。
     # 不恢复：震动（宿主不支持震动，hle_hid.c 里是空实现）、手柄反馈与光标速度（改了值、没量出效果：面板里手柄光标是按格吸附的）、切换武器分开绑定（没验）
     # Of the controller settings only those confirmed effective in actual runs are restored: 「互换左右摇杆」(Swap Sticks) (when on, the left stick no longer walks and the right stick does); colorblind calibration (the controller can get in and out).
