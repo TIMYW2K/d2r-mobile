@@ -122,7 +122,7 @@ static void cam_zoom_pump(void) {
         static float base;
         if (!(base > 1.0f)) base = f;
         float want = base * DM_ZOOM_SCALE;
-        if (f > want + 0.01f || f < want - 0.01f) *(float *)(c + 0x12c) = want;
+        if (f > want + 0.01f || f < want - 0.01f) { *(float *)(c + 0x12c) = want; *(volatile uint8_t *)(c + 0x160) = 1; }
         const float d2r = 3.14159265358979f / 180.0f;
         float o = tanf(base * 0.5f * d2r), n = tanf(base * DM_ZOOM_SCALE * 0.5f * d2r);
         g_zoom_ratio = (o > 1e-4f && n > 1e-4f) ? o / n : 1.0f;
@@ -133,8 +133,22 @@ static void cam_zoom_pump(void) {
         static float bw, bh;
         if (!(bw > 0.0f)) { bw = w; bh = h; }
         float ww = bw * DM_ZOOM_SCALE, hh = bh * DM_ZOOM_SCALE;
-        if (w > ww + 0.001f || w < ww - 0.001f) *(float *)(c + 0x138) = ww;
-        if (h > hh + 0.001f || h < hh - 0.001f) *(float *)(c + 0x13c) = hh;
+        int ch = 0;
+        if (w > ww + 0.001f || w < ww - 0.001f) { *(float *)(c + 0x138) = ww; ch = 1; }
+        if (h > hh + 0.001f || h < hh - 0.001f) { *(float *)(c + 0x13c) = hh; ch = 1; }
+        // 本地改动（修 bug：拉近写了值但画面不变）：投影不是每帧都算的 —— [+0x160] 是「投影需要重算」标志，
+        // 0x162f9ac 开头 `ldrb w8,[x21,#0x160]; cbz w8, …` 标志是 0 就直接跳过，算完 0x162ff64 再清掉。
+        // 只改相机里的视野宽高、不立这个标志，游戏就一直用着旧投影（玩家 v8.1 日志：值写对了、画面没变）。
+        // 只在值真的变了的时候立（不是每帧立）：宿主的 ui_project_obs 门看到这个标志非 0 会先让一步，
+        // 每帧立会把「世界点→屏幕」那套一直卡住。
+        // Local change (bug fix: the zoom wrote the values but the picture did not change): the projection is NOT
+        // recomputed every frame -- [+0x160] is the "projection needs a rebuild" flag, and 0x162f9ac starts with
+        // `ldrb w8,[x21,#0x160]; cbz w8, ...`, skipping the whole rebuild when it is 0 and clearing it at 0x162ff64
+        // after rebuilding. Changing only the camera's view extents without raising that flag leaves the game using the
+        // old projection (the player's v8.1 log shows the values written and the picture unchanged). Raised only when
+        // the value really changed, not every frame: the host's ui_project_obs gate yields while this flag is non-zero,
+        // so raising it every frame would stall the world->screen machinery.
+        if (ch) *(volatile uint8_t *)(c + 0x160) = 1;
         g_zoom_ratio = 1.0f / DM_ZOOM_SCALE;
         if (!g_zoom_logged) { g_zoom_logged = 1; LOG("镜头拉近（正交）：视野 %.3f×%.3f → %.3f×%.3f，画面放大约 %.2f 倍", (double)bw, (double)bh, (double)ww, (double)hh, (double)g_zoom_ratio); }
     }

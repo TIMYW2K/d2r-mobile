@@ -1151,6 +1151,28 @@ def _settings_tabs(text):
     new = new.replace('"@GameSettingsTab"', '"@dmTabGameSettings"')
     new = new.replace('"@Controls"', '"@KeyBindingTypeCustom"').replace('SettingsPanelMessage:CheckChanges:KeyBindingMenu', 'SettingsPanelMessage:CheckChanges:VideoOptionsPanel')
     return new, n + k + 1
+# 本地改动：佣兵头像栏放大 1.32 倍（宿主 dm_cursor.c 把面板的缩放字段 +0x80 设成 1.32）。头像会变大，
+# 但血条是 HealthBarWidget：它既不认 +0x80（玩家实测头像变大后压住了血条），相对头像的偏移也不会被放大。
+# 所以在这里把血条本身也按同一倍数放大（120x18 -> 158x24）并上移（-19 -> -26），让它在放大后的头像上方留出位置。
+# Local change: the mercenary portrait bar is scaled 1.32x by the host (dm_cursor.c writes the panel's scale field
+# +0x80). The portraits grow, but the health bar is a HealthBarWidget: it does not follow +0x80 (the player reported
+# the enlarged portrait covering it) and its offset is not magnified either. So the bar itself is scaled by the same
+# factor here (120x18 -> 158x24) and moved up (-19 -> -26) to clear the enlarged portrait above it.
+def _merc_health_bar(t):
+    # 用正则找「name": "Health"」那一段里的 rect，按 1.32 倍重写；不依赖文件里的空白写死，改不到就返回 0。
+    # Find the rect inside the "name": "Health" block and rewrite it at 1.32x; not tied to the file's exact spacing,
+    # and returns 0 when nothing matched.
+    import re
+    pat = re.compile(r'("name":\s*"Health"[\s\S]{0,400}?"rect":\s*\{)([^}]*)\}')
+    def _scale(m):
+        body, out = m.group(2), []
+        for key, dflt in (('y', None), ('width', None), ('height', None)):
+            r = re.search(r'"%s":\s*(-?\d+)' % key, body)
+            if r:
+                out.append('"%s": %d' % (key, round(int(r.group(1)) * 1.32)))
+        return m.group(1) + ' ' + ', '.join(out) + ' }'   # group(1) 已经含开头的 {，不能再补 | group(1) already ends with the opening brace
+    return pat.subn(_scale, t, count=1)
+
 def _drop_rows(*rows):
     """把选项表里的整行（TableRowWidget "Row <名>"）删掉：表格按剩下的行重排，不留空行。每个名字必须恰好删到一行。 | Delete whole rows (TableRowWidget "Row <name>") from the options table: the table re-lays out the remaining rows and leaves no empty row. Each name must delete exactly one row."""
     def fn(text):
@@ -1340,6 +1362,7 @@ PRESENT['controller/settingspanelhd.json'] = _settings_no_legend
 # player tap (dm_wref in dm_custom.c), so the Custom page keeps its language row as upstream has it. To match
 # upstream again, add the three names back in both places.
 PRESENT['soundoptionspanelhd.json'] = _drop_rows('Controller Feedback')
+PRESENT['hireablespanelhd.json'] = _merc_health_bar   # 本地改动：佣兵头像栏血条随头像一起放大（布局里那行的 rect 必须与游戏文件逐字一致） | local change: the merc health bar scales with the portrait (the rect text must match the game file exactly)
 PRESENT['gameplayoptionspanelhd.json'] = _drop_rows('AutoPartyInvite', 'ItemHotkeyTooltipAppender', 'ChatFontSize', 'ChatBackground', 'Controller Options', 'ControllerCursorSpeed',
                                                     'ControllerWeaponSwapSeparateBindings', 'ControllerRumbleEnabled', 'ControllerSwapThumbsticks', 'ShowParty', 'ShowNames', 'ShowRoomName',
                                                     # 大字体模式（原版低视力档）：一应用游戏就换成另一份界面布局档（_profileLV）整套重建，那份档我们没做过触摸布局——

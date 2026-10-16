@@ -5889,7 +5889,18 @@ static void present_pipeline(MTLPixelFormat format) {
     int hdr = g_hdr_on && format == MTLPixelFormatRGBA16Float;   // 只有出图层是浮点时才用 HDR 版（截图那条走 BGRA8，不受影响） | the HDR variant is used only when the present target is float (the screenshot path is BGRA8 and unaffected)
     if (!g_blit_pso || g_blit_fmt != format || g_blit_hdr != hdr) {
         static const char *inc_msl = "#include <metal_stdlib>\nusing namespace metal;\n";
-        static const char *hdr_msl = "#define DM_HDR 1\n";
+        // 本地改动（修 bug）：上面两个系数只在 C 里定义，没传进着色器源码，MSL 里 DM_HDR_EXPOSURE / DM_HDR_ROLLOFF
+        // 是未定义标识符 → 管线建不出 → 每次都退回 SDR（玩家 v8.1 日志里的红字就是这两行）。这里把它们的值
+        // 用字符串化宏拼进着色器，值仍然只有上面一处定义，不会两处走偏。
+        // Local change (bug fix): the two factors above were defined only in C and never passed into the shader source,
+        // so DM_HDR_EXPOSURE / DM_HDR_ROLLOFF were undeclared identifiers in MSL, the pipeline failed to build and every
+        // frame fell back to SDR (exactly the two red lines in the player's v8.1 log). They are now stringified into the
+        // shader source, still defined in one place only so the two cannot drift apart.
+#define DM_STR2(x) #x
+#define DM_STR(x) DM_STR2(x)
+        static const char *hdr_msl = "#define DM_HDR 1\n"
+            "#define DM_HDR_EXPOSURE " DM_STR(DM_HDR_EXPOSURE) "\n"
+            "#define DM_HDR_ROLLOFF " DM_STR(DM_HDR_ROLLOFF) "\n";
         static const char *vs_msl =
             "struct V { float4 p [[position]]; float2 uv; };\n"
             "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n";
