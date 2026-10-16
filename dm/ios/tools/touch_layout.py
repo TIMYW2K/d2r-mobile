@@ -1173,6 +1173,38 @@ def _merc_health_bar(t):
         return m.group(1) + ' ' + ', '.join(out) + ' }'   # group(1) 已经含开头的 {，不能再补 | group(1) already ends with the opening brace
     return pat.subn(_scale, t, count=1)
 
+# 本地改动：技能树那排页内标签（召唤系 / 毒素和白骨术 / 诅咒系 …）原来每个文字框只有 300 单位宽，而且
+# truncateWithEllipsis 开着，六个中文字的名字（「毒素和白骨术」）就被截断。这里把四个标签加宽到 360 单位
+# （≈6.5 个中文字），并从 x=274 起等距摊开到 x=1402 —— 摊开是为了让相邻文字框仍然不重叠：宿主点标签是按
+# 控件矩形算的（dm_cursor.c ui_wtap），矩形一重叠就会出现"点这个选到那个"。最右边 1402+360=1762，仍让开
+# 从 x=1784 起的 TooltipTextBox。x / 宽度都按标签序号写，不依赖文件里的空白写法。
+# Local change: the skill tree's in-page tabs (Summoning / Poison and Bone / Curses ...) were 300 units wide with
+# truncateWithEllipsis on, so a six-character name was cut off. The four labels are widened to 360 units (~6.5 Chinese
+# characters) and spread evenly from x=274 to x=1402; spreading keeps adjacent boxes from overlapping, which matters
+# because the host resolves tab taps from these rects (dm_cursor.c ui_wtap) and overlapping rects would make a tap pick
+# the wrong tab. The rightmost ends at 1762, still clear of TooltipTextBox which starts at x=1784. Both x and width are
+# written by tab index, not tied to the file's spacing.
+_SKILL_TAB_X = {0: 274, 1: 650, 2: 1026, 3: 1402}
+_SKILL_TAB_W = 360
+
+
+def _skill_tree_tabs(t):
+    import re
+    n = 0
+    for k, x in _SKILL_TAB_X.items():
+        pat = re.compile(r'("name":\s*"TextTab%d"[\s\S]{0,160}?"rect":\s*\{)([^}]*)\}' % k)
+        m = pat.search(t)
+        if not m:
+            continue
+        body = m.group(2)
+        y = re.search(r'"y":\s*(-?\d+)', body)
+        h = re.search(r'"height":\s*(\d+)', body)
+        rect = '"x": %d' % x + (', "y": %s' % y.group(1) if y else '') + ', "width": %d' % _SKILL_TAB_W + (', "height": %s' % h.group(1) if h else '')
+        t = t[:m.start()] + m.group(1) + ' ' + rect + ' }' + t[m.end():]
+        n += 1
+    return t, n
+
+
 def _drop_rows(*rows):
     """把选项表里的整行（TableRowWidget "Row <名>"）删掉：表格按剩下的行重排，不留空行。每个名字必须恰好删到一行。 | Delete whole rows (TableRowWidget "Row <name>") from the options table: the table re-lays out the remaining rows and leaves no empty row. Each name must delete exactly one row."""
     def fn(text):
@@ -1362,7 +1394,8 @@ PRESENT['controller/settingspanelhd.json'] = _settings_no_legend
 # player tap (dm_wref in dm_custom.c), so the Custom page keeps its language row as upstream has it. To match
 # upstream again, add the three names back in both places.
 PRESENT['soundoptionspanelhd.json'] = _drop_rows('Controller Feedback')
-PRESENT['hireablespanelhd.json'] = _merc_health_bar   # 本地改动：佣兵头像栏血条随头像一起放大（布局里那行的 rect 必须与游戏文件逐字一致） | local change: the merc health bar scales with the portrait (the rect text must match the game file exactly)
+PRESENT['hireablespanelhd.json'] = _merc_health_bar
+PRESENT['controller/skillstreepanelhd.json'] = _skill_tree_tabs   # 本地改动：技能树标签加宽到能放下六个中文字 | local change: skill tree tabs widened to fit six Chinese characters   # 本地改动：佣兵头像栏血条随头像一起放大（布局里那行的 rect 必须与游戏文件逐字一致） | local change: the merc health bar scales with the portrait (the rect text must match the game file exactly)
 PRESENT['gameplayoptionspanelhd.json'] = _drop_rows('AutoPartyInvite', 'ItemHotkeyTooltipAppender', 'ChatFontSize', 'ChatBackground', 'Controller Options', 'ControllerCursorSpeed',
                                                     'ControllerWeaponSwapSeparateBindings', 'ControllerRumbleEnabled', 'ControllerSwapThumbsticks', 'ShowParty', 'ShowNames', 'ShowRoomName',
                                                     # 大字体模式（原版低视力档）：一应用游戏就换成另一份界面布局档（_profileLV）整套重建，那份档我们没做过触摸布局——
