@@ -2175,7 +2175,9 @@ static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
     if (*(uint8_t *)(m->base + 0x2d5ff66)) { LOG("佣兵页：已开（按键 %d 次）", tries); on = 0; return; }
     if (tries >= 9) { LOG("【红】佣兵页：按了 %d 次键还没翻到，放弃", tries); on = 0; return; }
     int dm = bd_open(root, "UISwitcher"), cur = dm ? bd_top_tab(root) : -1;
-    if (tries) { uint64_t dt = fr - pressed; int moved = dm && cur >= 0 && cur != page; if (!((moved && dt >= 1) || dt >= 2)) return;   // 本地改动：原来 7 / 24 帧一按，玩家看到的是「一页一页翻过去」；每 1–2 帧按一次，四页约 0.1 秒到位 | local change: 7 / 24 frames per press made it visibly walk page by page; one press every 1-2 frames covers four pages in about 0.1 s }
+    // 本地改动：原来 7 / 24 帧一按，玩家看到的是「一页一页翻过去」；每 1–2 帧按一次，四页约 0.1 秒到位
+    // Local change: 7 / 24 frames per press made it visibly walk page by page; one press every 1-2 frames covers four pages in about 0.1 s
+    if (tries) { uint64_t dt = fr - pressed; int moved = dm && cur >= 0 && cur != page; if (!((moved && dt >= 1) || dt >= 2)) return; }
     page = cur; pressed = fr; dm_ui_key_pulse(dm ? DM_BTN_R : DM_BTN_PLUS, 4); tries++;
 }
 // 个人仓库页码（个人仓库 2–5 页，dm_pages.c）：写在自己的文字控件 TouchPgPage_Text 里（布局 wide_stash.py），文字照原版共享页页码的写法：
