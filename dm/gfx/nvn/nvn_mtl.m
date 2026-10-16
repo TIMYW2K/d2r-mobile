@@ -5549,6 +5549,7 @@ void mtl_exec(const uint8_t *p) {
 // ---------- Present: draw the swapchain texture to the CAMetalLayer; optional screenshot ----------
 static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
 static id<MTLSamplerState> g_blit_samp;
+static int g_blit_hdr = -1;   // 本地改动：缓存里这条管线是不是 HDR 版 | Local change: whether the cached pipeline is the HDR variant
 static uint64_t g_present_n;
 uint64_t mtl_present_count(void) { return g_present_n; }   // 实际出图次数（发热归因 DM_HEAT 算出图帧率） | Actual present count (heat attribution DM_HEAT computes the present frame rate)
 void mtl_res_snapshot(mtl_res_count *out) {
@@ -5865,26 +5866,81 @@ static _Atomic uint64_t g_present_stall_ns;   // 单测用：出图线程每次�
 static CAMetalLayer *g_present_layer_resident;
 #endif
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
+// 本地改动：HDR 输出（自定义页开关 hdr，缺省关，重启游戏生效）。
+// 做法：出图层换成 16 位浮点 + EDR（扩展线性 Display P3），呈现着色器换成「sRGB→线性 + 曝光 / 高光滚降」的
+// 一版，让画面真正用上 EDR 的亮度余量。游戏交出来的仍是 SDR（Switch 扫描输出口径），所以这是显示端的映射，
+// 不是恢复原生的 HDR 中间目标。
+// 安全：着色器是运行时编译的，编译或建管线失败就退回 SDR 并把图层留在 BGRA8；层格式只在 HDR 管线建成功之后
+// 才换，所以任何一步失败都不会让画面起不来。整个功能缺省关，关着时与原版逐像素一致（管线键里带 HDR 标志）。
+// Local change: HDR output (Custom page switch 'hdr', off by default, applied at the next launch).
+// How: the present layer becomes 16-bit float + EDR (extended linear Display P3) and the present fragment shader
+// gets a variant that converts sRGB to linear and applies an exposure / highlight rolloff, so the picture really
+// uses the EDR headroom. What the game hands over is still SDR (Switch scan-out convention), so this is a
+// display-side mapping, not a recovery of a native HDR target.
+// Safety: the shader is compiled at runtime; if compilation or pipeline creation fails we fall back to SDR and
+// leave the layer at BGRA8. The layer format is only changed after the HDR pipeline has been built, so no failure
+// path can keep the picture from coming up. The whole feature is off by default and is pixel-identical to the
+// original when off (the HDR flag is part of the pipeline cache key).
+#define DM_HDR_EXPOSURE 1.35f   // 曝光：把 SDR 画面放进 EDR 余量 | exposure: lift the SDR picture into the EDR headroom
+#define DM_HDR_ROLLOFF  0.55f   // 高光滚降，避免硬截断 | highlight rolloff, avoids a hard clip
+__attribute__((weak)) int dm_custom_get(const char *key) { (void)key; return 0; }   // 图形单测不链宿主时按「关」走 | graphics unit tests that do not link the host see "off"
+static int g_hdr_on, g_hdr_tried;
+static int hdr_wanted(void) { if (g_hdr_tried) return g_hdr_on; return dm_custom_get("hdr") != 0; }
 static void present_pipeline(MTLPixelFormat format) {
-    if (!g_blit_pso || g_blit_fmt != format) {
-        static const char *src_msl =
-            "#include <metal_stdlib>\nusing namespace metal;\n"
+    int hdr = g_hdr_on && format == MTLPixelFormatRGBA16Float;   // 只有出图层是浮点时才用 HDR 版（截图那条走 BGRA8，不受影响） | the HDR variant is used only when the present target is float (the screenshot path is BGRA8 and unaffected)
+    if (!g_blit_pso || g_blit_fmt != format || g_blit_hdr != hdr) {
+        static const char *inc_msl = "#include <metal_stdlib>\nusing namespace metal;\n";
+        static const char *hdr_msl = "#define DM_HDR 1\n";
+        static const char *vs_msl =
             "struct V { float4 p [[position]]; float2 uv; };\n"
-            "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
+            "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n";
+        static const char *fs_msl =
             "struct Crop { float4 rect; float4 edge; };\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n";
-        NSError *e = nil;
-        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
-        if (!lib) MDIE("出图着色器编译失败 %s", e.localizedDescription.UTF8String);
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) {\n"
+            "    float4 col = t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw));\n"
+            "#ifdef DM_HDR\n"
+            "    float3 srgb = max(col.rgb, float3(0.0f)) * 0.947867f + float3(0.052133f);\n"
+            "    float3 lin = pow(srgb, float3(2.4f)) * float3(DM_HDR_EXPOSURE);\n"
+            "    col.rgb = lin / (float3(1.0f) + max(lin - float3(1.0f), float3(0.0f)) * float3(DM_HDR_ROLLOFF));\n"
+            "#endif\n"
+            "    return col;\n"
+            "}\n";
+        char src[4096]; NSError *e = nil; id<MTLLibrary> lib = nil; id<MTLRenderPipelineState> pso = nil;
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
         pd.colorAttachments[0].pixelFormat = format;
-        g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
-        if (!g_blit_pso) MDIE("出图管线失败 %s", e.localizedDescription.UTF8String);
-        g_blit_fmt = format;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            int use = hdr && attempt == 0;
+            snprintf(src, sizeof src, "%s%s%s%s", inc_msl, use ? hdr_msl : "", vs_msl, fs_msl);
+            e = nil; lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e];
+            pd.vertexFunction = lib ? [lib newFunctionWithName:@"vs"] : nil; pd.fragmentFunction = lib ? [lib newFunctionWithName:@"fs"] : nil;
+            pso = (pd.vertexFunction && pd.fragmentFunction) ? [g_dev newRenderPipelineStateWithDescriptor:pd error:&e] : nil;
+            if (pso) break;
+            if (!hdr) MDIE("出图管线失败 %s", e ? e.localizedDescription.UTF8String : "着色器编译失败");   // 与原来一致：SDR 建不出是致命 | same as before: the SDR pipeline failing is fatal
+            MLOG("【红】HDR：出图 HDR 管线建不出，退回 SDR（%s）", e ? e.localizedDescription.UTF8String : "着色器编译失败");
+            g_hdr_on = 0; hdr = 0;
+        }
+        g_blit_pso = pso; g_blit_fmt = format; g_blit_hdr = hdr;
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.supportArgumentBuffers = YES;
         g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
     }
+}
+// 首次出图前按开关决定 HDR：先把 HDR 管线建出来，成功了才换图层；任何失败都退回 SDR（画面照常）。
+// Decide HDR before the first present: build the HDR pipeline first and only switch the layer if it worked;
+// any failure falls back to SDR and the picture comes up as usual.
+static void hdr_setup(CAMetalLayer *layer) {
+    if (g_hdr_tried) return; g_hdr_tried = 1;
+    if (!hdr_wanted()) return;
+    g_hdr_on = 1;
+    present_pipeline(MTLPixelFormatRGBA16Float);   // 建不出时里面会把 g_hdr_on 清 0 | clears g_hdr_on inside if it cannot be built
+    if (!g_hdr_on) return;
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
+    if (!cs) { g_hdr_on = 0; MLOG("【红】HDR：扩展线性 Display P3 色彩空间建不出，退回 SDR"); return; }
+    layer.pixelFormat = MTLPixelFormatRGBA16Float;
+    layer.wantsExtendedDynamicRangeContent = YES;
+    layer.colorspace = cs;   // 层会持有它 | the layer retains it
+    CGColorSpaceRelease(cs);
+    MLOG("HDR：已开启（出图层 %.0fx%.0f 16 位浮点 + EDR 扩展线性 Display P3；曝光 %.2f、高光滚降 %.2f）",
+         (double)layer.drawableSize.width, (double)layer.drawableSize.height, (double)DM_HDR_EXPOSURE, (double)DM_HDR_ROLLOFF);
 }
 // 呈现采样的源：交换链贴图是 sRGB 格式（游戏把交换链建成 RGBA8_SRGB）时经它的非 sRGB 视图采样，屏上显示存的字节，与 Switch 扫描输出一致；
 // 直接采样会先解成线性，呈现层（BGRA8Unorm）不再编码，整幅偏暗（公开仓库 #36）。截图读的是原始字节，看不出这一处。
@@ -6054,6 +6110,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #if TARGET_OS_OSX
     if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // 窗口模式按显示器垂直同步，防撕裂 | Windowed mode follows the display's vsync to prevent tearing
 #endif
+    hdr_setup(layer);   // 本地改动：首帧按开关决定 HDR（缺省关；失败退回 SDR，画面照常） | local change: decide HDR on the first frame (off by default; falls back to SDR)
     present_pipeline(layer.pixelFormat);   // 和原路径一样，首帧编管线在取drawable之前 | Same as the original path: the first frame compiles the pipeline before taking the drawable
     if (g_grab_cb) grab_present(src, crop, layer.drawableSize);   // 整窗截图要的游戏画面（不加锁先看一眼，真取在函数里加锁） | Game picture needed by the whole-window screenshot (peek without the lock first; the real take locks inside the function)
     uint64_t dt0 = now_ns();

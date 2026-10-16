@@ -81,6 +81,7 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmCustomQ3dSmoothHint", "掉帧时自动降低 3D 画面清晰度", "Lowers 3D resolution when frames drop" },
     { "dmCustomQ3dQuality", "画质优先", "Quality first" },
     { "dmCustomQ3dQualityHint", "始终保持设定的 3D 清晰度", "Always keeps the set 3D resolution" },
+    { "dmCustomHdr", "HDR 输出（画面更亮、高光有余量，重启游戏生效）", "HDR output (brighter, highlight headroom; restart to apply)" },
     { "dmCustomLootFilter", "掉落过滤（噩梦起自动隐藏杂物）", "Loot Filter (auto, Nightmare+)" },
     { "dmCustomAutoBuff", "自动补上增益技能（站着不动时）", "Auto-recast buffs when idle" },
     { "dmCustomLang", "语言 / Language", "语言 / Language" },
