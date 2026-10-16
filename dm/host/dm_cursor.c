@@ -1560,11 +1560,11 @@ static _Atomic int g_dg_kind;
 static void ui_ptr_pump(module_t *m, uint64_t root, int width, int height) {
     unsigned r = atomic_load(&g_up_r); int pend = r != atomic_load(&g_up_w), unhover = atomic_exchange(&g_tab_unhover, 0);
     if (unhover) { atomic_store(&g_up_xy, atomic_load(&g_iq_xy)); atomic_store(&g_up_hold, 0); }   // 换页把光标挪到干净处；粘住点在下面按实际发出的点重记 | page switch moves the cursor to a clean spot; the sticky point is re-recorded below from the point actually sent
+    static uint64_t hs[10]; if (!hs[0]) { static const char *nm[10] = { "MouseMove", "", "", "LeftMouseButtonDown", "LeftMouseButtonUp", "RightMouseButtonDown", "RightMouseButtonUp", "MouseScroll", "KeyDown", "KeyUp" }; for (int i = 0; i < 10; i++) hs[i] = ui_hash(nm[i]); }   // 本地改动：提前到这里（下面的粘住分支要用 hs） | local change: hoisted here, the sticky branch below needs hs
     if (!atomic_load(&g_up_hold) && !pend && !unhover) {   // 本地改动：抬手之后到这里 —— 粘住时每帧补一次 MouseMove，说明框才常驻 | local change: after the finger lifts we land here -- while sticky, one MouseMove per frame keeps the tooltip up
         uint64_t sv = atomic_load(&g_stick_px);
         if (sv && !atomic_load(&g_dg_kind)) { int sx = (int)(sv >> 32), sy = (int)(sv & 0xffffffffu); ui_send_mouse(m, root, hs[0], sx, sy); }
         return; }
-    static uint64_t hs[10]; if (!hs[0]) { static const char *nm[10] = { "MouseMove", "", "", "LeftMouseButtonDown", "LeftMouseButtonUp", "RightMouseButtonDown", "RightMouseButtonUp", "MouseScroll", "KeyDown", "KeyUp" }; for (int i = 0; i < 10; i++) hs[i] = ui_hash(nm[i]); }
     uint64_t v = atomic_load(&g_up_xy); int x = (int)(((v >> 16) & 0xffff) / 65535.0 * width), y = (int)((v & 0xffff) / 65535.0 * height); if (x >= width) x = width - 1; if (y >= height) y = height - 1;
     int dm_vault_ui_blocks(int, int), vb = (dm_ui_panel_state() & DM_PS_VAULT) && dm_vault_ui_blocks(x, y);   // 编年史页上（我们的控件除外）：悬停与按键都不发，见 dm_vault_ui.c | On the chronicle page (except our own widgets): neither hover nor key presses are sent, see dm_vault_ui.c
     if (!vb) ui_send_mouse(m, root, hs[0], x, y);
