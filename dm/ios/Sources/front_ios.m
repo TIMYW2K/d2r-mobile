@@ -11,6 +11,7 @@ double dm_brightness_now(void) { return g_dm_brightness; }
 static volatile int g_dm_thermal = -1;
 int dm_thermal_now(void) { return g_dm_thermal; }   // 最近的温控档位（0 正常 / 1 微热 / 2 严重 / 3 危急；−1 = 未读）   // 最近一次读到的屏幕亮度（−1 = 未读） | Most recent thermal state (0 nominal / 1 fair / 2 serious / 3 critical; −1 = not read)   // Most recently read screen brightness (−1 = not read)
 #import <QuartzCore/CAMetalLayer.h>
+#import <WebKit/WebKit.h>   // 本地改动：过场动画播放层用 WKWebView（系统模块会自动链接 WebKit.framework） | local change: the cutscene layer uses WKWebView (the system module auto-links WebKit.framework)
 #import <Metal/Metal.h>
 #include <signal.h>
 #include "front.h"
@@ -108,7 +109,50 @@ static _Atomic int g_touch_navigation = 1;
 
 static _Atomic int g_nav_pub; int dm_front_navigation(void) { return atomic_load(&g_nav_pub); }   // 面板 / 读取画面 / 过场开着（非零）：dm_gamepad.m 据此只在游戏态接管 ZR | A panel / loading screen / cutscene is open (non-zero): dm_gamepad.m uses this to take over ZR only in the gameplay state
 static void pad_mode_changed(int pad) { dispatch_async(dispatch_get_main_queue(),^{ [g_touch_view padMode:pad]; }); }   // dm_gamepad.m 在主队列回调，照样切一次主线程（与上面同法） | dm_gamepad.m calls back on the main queue; still hop to the main thread once (same approach as above)
-static void restart_cover_hook(int on) { dispatch_async(dispatch_get_main_queue(),^{ [g_touch_view restartCover:on]; }); }   // 0 撤 / 1 黑屏 / 2 透明（读取画面露出来，照样吞触点）   // 宿主在游戏主线程调，切到界面主线程开关 | 0 remove / 1 black screen / 2 transparent (the loading screen shows through, touch points still swallowed)   // Called by the host on the game main thread; switches to the UI main thread to toggle
+static void restart_cover_hook(int on) { dispatch_async(dispatch_get_main_queue(),^{ [g_touch_view restartCover:on]; }); }
+// 本地改动：过场动画播放层（dm/host/hle_movie.c 的 dm_movie_show 调这里）。Switch 版过场是 VP8/WebM，
+// AVPlayer 不支持这种容器，所以用 WKWebView 盖在画面最上层播本地文件 —— 时长与游戏那边的「空播」是同一个数，
+// 天然同步。到点自己收起（多留 0.5 秒余量），点一下也能提前收起（游戏自己的跳过键照旧可用）。
+// 外壳在游戏主线程调这里，建房 / 拆房切到界面主线程（同 restart_cover_hook）。
+// Local change: cutscene playback layer (called by dm_movie_show in dm/host/hle_movie.c). The Switch cutscenes are
+// VP8/WebM, a container AVPlayer does not support, so a WKWebView is laid over the picture and plays the local file --
+// its length is the same number the game's empty playback uses, so the two are in sync by construction. It removes
+// itself when that time is up (with a 0.5 s margin); a tap dismisses it early (the game's own skip key still works).
+// The shell calls this on the game main thread; building and tearing down the layer hops to the UI main thread (same as
+// restart_cover_hook).
+static UIView *g_movie_cover; static WKWebView *g_movie_wv;
+static void movie_teardown(void) {
+    [g_movie_wv stopLoading]; [g_movie_wv removeFromSuperview]; [g_movie_cover removeFromSuperview];
+    g_movie_wv = nil; g_movie_cover = nil;
+}
+static void movie_build(NSString *p, double secs) {
+    UIView *host = g_touch_view.window ?: g_touch_view; if (!p || !host) return;
+    if (g_movie_cover) movie_teardown();
+    g_movie_cover = [[UIView alloc] initWithFrame:host.bounds]; g_movie_cover.backgroundColor = UIColor.blackColor;
+    g_movie_cover.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    WKWebViewConfiguration *cfg = [WKWebViewConfiguration new];
+    cfg.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;   // 不用玩家先点一下才能播 | autoplay without a user gesture
+    cfg.allowsInlineMediaPlayback = YES;
+    g_movie_wv = [[WKWebView alloc] initWithFrame:g_movie_cover.bounds configuration:cfg];
+    g_movie_wv.autoresizingMask = g_movie_cover.autoresizingMask; g_movie_wv.backgroundColor = UIColor.blackColor;
+    [g_movie_cover addSubview:g_movie_wv];
+    UIButton *skip = [UIButton buttonWithType:UIButtonTypeCustom];   // 点一下提前收起（透明按钮，只吃触点） | a tap dismisses it early (transparent button, only swallows the touch)
+    skip.frame = g_movie_cover.bounds; skip.autoresizingMask = g_movie_cover.autoresizingMask;
+    [skip addAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; movie_teardown(); }] forControlEvents:UIControlEventTouchUpInside];
+    [g_movie_cover addSubview:skip];
+    [host addSubview:g_movie_cover]; [host bringSubviewToFront:g_movie_cover];
+    NSURL *u = [NSURL fileURLWithPath:p];
+    NSString *html = [NSString stringWithFormat:@"<html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+        "<body style=\"margin:0;background:#000\"><video src=\"%@\" autoplay playsinline preload=\"auto\" "
+        "style=\"width:100%%;height:100%%;object-fit:contain\"></video></body></html>", u.absoluteString];
+    [g_movie_wv loadHTMLString:html baseURL:[u URLByDeletingLastPathComponent]];
+    LOG("过场动画：播放层已建（%.1f 秒后自动收起） %s", secs, p.UTF8String);
+    if (secs > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((secs + 0.5) * 1e9)), dispatch_get_main_queue(), ^{ if (g_movie_cover) { LOG("过场动画：时长到，收起播放层"); movie_teardown(); } });
+}
+void dm_movie_show(const char *host_path, int64_t dur_ns) {
+    NSString *p = host_path ? [NSString stringWithUTF8String:host_path] : nil; double secs = dur_ns / 1e9;
+    dispatch_async(dispatch_get_main_queue(), ^{ movie_build(p, secs); });
+}   // 0 撤 / 1 黑屏 / 2 透明（读取画面露出来，照样吞触点）   // 宿主在游戏主线程调，切到界面主线程开关 | 0 remove / 1 black screen / 2 transparent (the loading screen shows through, touch points still swallowed)   // Called by the host on the game main thread; switches to the UI main thread to toggle
 // 一键重开遮罩：吞掉落在它上面的所有触点（不调 super，不沿响应链交给下面的游戏视图——诊断日志里见过：遮罩是游戏视图的子视图时，
 // 落在遮罩上的点按经响应链交给了游戏视图，黑屏期间点到选角页的「开始」就自己进了局）
 // One-tap restart mask: swallows all touch points landing on it (does not call super and does not pass them down the responder chain to the game view below -- seen in diagnostic logs: when the mask was a subview of the game view,

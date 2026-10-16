@@ -32,6 +32,11 @@
 // Clock: host monotonic clock (not per frame). Unused virtual slots are all failure traps (abort and report the name when called), not stubs returning 0 that pass by luck.
 #include "hle.h"
 #include <time.h>
+#include <stdio.h>
+// 本地改动：过场动画播放层（外壳实现，dm/ios/Sources/front_ios.m）。弱引用：外壳没登记就当没有，等于原来的空播。
+// Local change: cutscene playback layer (implemented by the shell, dm/ios/Sources/front_ios.m). Weak: if the shell did
+// not register it this is a no-op, i.e. the old empty playback.
+__attribute__((weak)) void dm_movie_show(const char *host_path, int64_t dur_ns);
 
 #define MV_SKIP_NS   100000000ll   // 不带视频数据时每段「播放」的时长：0.1 秒 | duration of each "playback" when there is no video data: 0.1 s
 #define ST_OK        0
@@ -182,14 +187,38 @@ static int ext_SetDataSourceReader(void *self, void **reader, const char *path) 
     // Cutscene / background videos are out of scope for this product (cutscenes are not hooked up, the game skips them naturally): the resource pack carries no video data, here no file is opened and no duration is read,
     // always MV_SKIP_NS and then "finished playing" -- one-shot videos take the game's own finished-playing path, looping videos (character select background logoloop) idle at this period.
     // DM_MOVIE_REAL=1: no-op playback by the real duration in the container (old behavior; for timing against ground truth, needs a resource pack with video data).
-    (void)reader; int64_t d = MV_SKIP_NS;
-    static int real = -1; if (real < 0) { const char *e = getenv("DM_MOVIE_REAL"); real = e && !strcmp(e, "1"); }
-    if (real) {
-        void **vt = *(void ***)reader; rdctx c = {reader, NULL};
-        if (!(((uint32_t (*)(void *, const char *, void **))vt[2])(reader, path, &c.h) & 1)) die("movie 剪口：读取器打不开 %s", path);
-        d = mv_webm_duration_ns(rd_reader, &c);
-        ((void (*)(void *, void *))vt[4])(reader, c.h);
-        if (d <= 0) die("movie 剪口：%s 读不出 WebM 时长（Segment/Info/Duration）", path);
+    // 本地改动：过场动画。原来缺省一律「空播」—— 根本不打开文件、0.1 秒就报播完，所以过场是被直接跳过的
+    // （真实时长那条路只有诊断开关 DM_MOVIE_REAL=1 才走）。现在缺省就打开文件、读容器时长，并把视频拷到临时文件
+    // 交给外壳用 WKWebView 播（Switch 版过场是 VP8/WebM，AVPlayer 不支持这个容器，Safari 引擎支持）。
+    // 读不到 / 打不开就退回 0.1 秒空播 —— 不能 die：资源包里不带视频数据的设备上那样会直接中止游戏。
+    // 时长与游戏这边空播用的是同一个数，所以画面与游戏时序天然同步。DM_MOVIE_REAL=0 可关掉（回到旧行为）。
+    // Local change: cutscenes. By default this used to play empty -- the file was never opened and it reported finished
+    // after 0.1 s, which is why cutscenes were skipped outright (the real-duration path only ran under the diagnostic
+    // switch DM_MOVIE_REAL=1). It now opens the file and reads the container duration by default, and copies the video to
+    // a temp file for the shell to play in a WKWebView (the Switch cutscenes are VP8/WebM, a container AVPlayer does not
+    // support but the Safari engine does). If it cannot be opened or parsed it falls back to the old 0.1 s empty
+    // playback -- it must not die, because on a device whose resource pack carries no video data that would abort the
+    // game. The duration is the same number the game's empty playback uses, so picture and game timing are in sync by
+    // construction. DM_MOVIE_REAL=0 turns it off (old behavior).
+    void **vt = reader ? *(void ***)reader : NULL; int64_t d = MV_SKIP_NS;
+    static int real = -1; if (real < 0) { const char *e = getenv("DM_MOVIE_REAL"); real = e ? !strcmp(e, "1") : 1; }
+    if (real && vt) {
+        void *h = NULL;
+        if (((uint32_t (*)(void *, const char *, void **))vt[2])(reader, path, &h) & 1) {
+            rdctx c = { reader, h };
+            d = mv_webm_duration_ns(rd_reader, &c);
+            if (d > 0) {
+                const char *tmp = "/tmp/dm_movie.webm"; FILE *fo = fopen(tmp, "wb");
+                if (fo) {
+                    uint8_t buf[1 << 16]; int64_t off = 0, got;
+                    while ((got = rd_reader(&c, off, buf, sizeof buf)) > 0 && off < (64ll << 20)) { fwrite(buf, 1, (size_t)got, fo); off += got; }
+                    fclose(fo);
+                    if (off > 0) { if (dm_movie_show) { dm_movie_show(tmp, d); LOG("movie：过场动画 %s，时长 %.3f 秒（%.1f MB），已交给外壳播放", path, d / 1e9, off / 1048576.0); } else LOG("movie：过场动画 %s 已就绪于 %s，但外壳没登记播放层", path, tmp); }
+                    else { LOG("movie：【红】%s 读不出数据，退回空播", path); d = MV_SKIP_NS; }
+                } else { LOG("movie：【红】临时文件建不出 %s，退回空播", tmp); d = MV_SKIP_NS; }
+            } else { LOG("movie：【红】%s 读不出 WebM 时长（Segment/Info/Duration），退回空播", path); d = MV_SKIP_NS; }
+            ((void (*)(void *, void *))vt[4])(reader, h);
+        } else { LOG("movie：【红】读取器打不开 %s，退回空播", path); d = MV_SKIP_NS; }
     }
     mv_t *m = calloc(1, sizeof *m); m->dur_ns = d;
     pthread_mutex_lock(&g_lock); ((mv_t **)self)[1] = m; g_pending = m; pthread_mutex_unlock(&g_lock);
