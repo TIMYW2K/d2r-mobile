@@ -5885,7 +5885,6 @@ void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
 #define DM_HDR_ROLLOFF  0.55f   // 高光滚降，避免硬截断 | highlight rolloff, avoids a hard clip
 __attribute__((weak)) int dm_custom_get(const char *key) { (void)key; return 0; }   // 图形单测不链宿主时按「关」走 | graphics unit tests that do not link the host see "off"
 static int g_hdr_on, g_hdr_tried;
-static int hdr_wanted(void) { if (g_hdr_tried) return g_hdr_on; return dm_custom_get("hdr") != 0; }
 static void present_pipeline(MTLPixelFormat format) {
     int hdr = g_hdr_on && format == MTLPixelFormatRGBA16Float;   // 只有出图层是浮点时才用 HDR 版（截图那条走 BGRA8，不受影响） | the HDR variant is used only when the present target is float (the screenshot path is BGRA8 and unaffected)
     if (!g_blit_pso || g_blit_fmt != format || g_blit_hdr != hdr) {
@@ -5928,8 +5927,10 @@ static void present_pipeline(MTLPixelFormat format) {
 // Decide HDR before the first present: build the HDR pipeline first and only switch the layer if it worked;
 // any failure falls back to SDR and the picture comes up as usual.
 static void hdr_setup(CAMetalLayer *layer) {
-    if (g_hdr_tried) return; g_hdr_tried = 1;
-    if (!hdr_wanted()) return;
+    if (g_hdr_tried) return;
+    int want = dm_custom_get("hdr") != 0;   // 先读键再置标志：原来的顺序下 hdr_wanted() 看到 g_hdr_tried=1 就直接返回 g_hdr_on=0，HDR 从来没启动过（本地修补） | read the key before setting the flag: in the old order hdr_wanted() saw g_hdr_tried == 1 and returned g_hdr_on == 0, so HDR never started (local fix)
+    g_hdr_tried = 1;
+    if (!want) return;
     g_hdr_on = 1;
     present_pipeline(MTLPixelFormatRGBA16Float);   // 建不出时里面会把 g_hdr_on 清 0 | clears g_hdr_on inside if it cannot be built
     if (!g_hdr_on) return;

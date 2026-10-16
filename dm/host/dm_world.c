@@ -20,6 +20,11 @@
 #include "dm_prof.h"
 #include <TargetConditionals.h>
 
+// 本地改动：镜头拉近后画面被放大的倍数（强定义在 dm_uiscreen.c）；单测/其它落地没链它时按 1.0 走。
+// Local change: how much the camera zoom magnifies the picture (strong definition in dm_uiscreen.c); 1.0 when
+// something that does not link it (unit tests and so on) is built.
+__attribute__((weak)) float dm_cam_zoom_ratio(void) { return 1.0f; }
+
 static uint8_t *wb(void) { static uint8_t *b; if (!b) for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) b = (uint8_t *)g_mod[i].base; return b; }
 static uint64_t w_player(void) { uint8_t *b = wb(); return b ? ((uint64_t (*)(uint32_t))(b + 0x45f9d0))(*(uint32_t *)(b + 0x2d20e4c)) : 0; }
 static int w_unit_xy(uint64_t u, int *x, int *y) {   // 单位格坐标：物件 / 物品 / 出口砖是路径 +0x10 / +0x14，玩家 / 怪物是路径头的 16 位 x / y（同 0x4acf54–0x4ad038） | unit cell coordinates: for objects / items / exit tiles path +0x10 / +0x14, for players / monsters the 16-bit x / y in the path header (same as 0x4acf54–0x4ad038)
@@ -367,7 +372,7 @@ static uint64_t w_hit(uint8_t *b, float sx, float sy, float min, float *dist, in
                 // Footprint = SizeX / SizeY at +0x90 / +0x94 of the objects table record ([[unit+0x10]]) (sub-cells; waypoint 5x5, chest 1x1, read at run time), padded by 1 cell on every side (the art is one ring larger than the collision, measured from screenshots),
                 // projected isometrically into a screen diamond centered on the feet (floor tiles are diamonds; the four corners of a rectangle are empty ground): half width = n*16*k, half height = n*8*k, k = screen pixels per "classic pixel" = picture height * 0.00206 (1.85 at height 900, measured from the screen distance between two known units)
                 uint64_t dd = *(uint64_t *)(u + 0x10), rec = dd ? *(uint64_t *)dd : 0; uint32_t szx = rec ? *(uint32_t *)(rec + 0x90) : 0, szy = rec ? *(uint32_t *)(rec + 0x94) : 0;
-                if (szx >= 1 && szx <= 32 && szy >= 1 && szy <= 32) { float n = (szx + szy) / 2.0f + 2, k = min / 0.10f * 0.00206f; dhw = n * 16 * k; dhv = n * 8 * k; }
+                if (szx >= 1 && szx <= 32 && szy >= 1 && szy <= 32) { float n = (szx + szy) / 2.0f + 2, k = min / 0.10f * 0.00206f * dm_cam_zoom_ratio(); dhw = n * 16 * k; dhv = n * 8 * k; }
                 // 再并上游戏自己的选择范围（键鼠版鼠标选物件用的数据，读 main+0x464a70 / 0x2996b0）：
                 // ① 物件表的选择框：记录 +0x14c / +0x150 / +0x154 / +0x158 = Left / Top / Width / Height（经典像素，相对脚底；红门 342：-40,-80,80,80；回城门：-40,-100,80,110）；
                 // ② 表里没给选择框的（四个数全 0，如第四幕去第五幕的红门 566、小站、箱子）：游戏改用这个物件当前动作的图形范围（w_sprite_box），四周放 16。图形范围含光晕 / 影子，左右会很宽
@@ -378,7 +383,7 @@ static uint64_t w_hit(uint8_t *b, float sx, float sy, float min, float *dist, in
                 // (2) for those the table gives no selection box (all four numbers 0, e.g. the act 4 to act 5 red portal 566, waypoints, chests): the game uses the graphic extent of the object's current action instead (w_sprite_box), padded by 16 all around. The graphic extent includes glow / shadow and can be very wide left to right
                 // (566: left -136, right 60), so here left and right are clamped to within 40 classic pixels on each side of the feet and the top is capped at 110 (the selection boxes of the several portals in the table have exactly this width and height), so that tapping empty ground beside or far behind the door does not count as tapping the door; the bottom is used as is.
                 // Cause: the "head" projection of 566 is very close to the feet, the body box covers only the foot of the door, and tapping the middle of the artwork found no target
-                if (rec) { int32_t *ri = (int32_t *)rec; float k = min / 0.10f * 0.00206f; int sb[4];
+                if (rec) { int32_t *ri = (int32_t *)rec; float k = min / 0.10f * 0.00206f * dm_cam_zoom_ratio(); int sb[4];
                     if (ri[85] > 0 && ri[86] > 0 && ri[85] <= 400 && ri[86] <= 400 && abs(ri[83]) <= 400 && abs(ri[84]) <= 400) { sbw = ri[85] * k; sbh = ri[86] * k; sbx = f[0] + ri[83] * k + sbw / 2; sby = f[1] + ri[84] * k + sbh / 2; }
                     else if (w_sprite_box(b, u, sb)) { int l = sb[0] - 16, r = sb[1] + 16, tp = sb[2] - 16, bt = sb[3] + 16; if (l < -40) l = -40; if (r > 40) r = 40; if (tp < -110) tp = -110;
                         if (r > l) { sbw = (r - l) * k; sbh = (bt - tp) * k; sbx = f[0] + (l + r) / 2.0f * k; sby = f[1] + (tp + bt) / 2.0f * k; } } } }
@@ -407,7 +412,7 @@ static void w_walk_step(uint8_t *b) {
       if (mu && w_hostile(b, mu)) { if (w_now_ns() - g_gnd_stick_at >= 300000000ull) w_attack(mu, "按住"); return; } }   // 按住时光标下是敌对怪：再打一下（摇杆 / W A S D 刚动过就让给它） | while held with a hostile monster under the pointer: hit once more (yielding to the stick / W A S D if they have just moved)
     if (g_go.on && g_go.type != W_GROUND) return;   // 正走向某个目标去交互：不打断 | walking towards some target to interact: do not interrupt
     if (w_now_ns() - g_gnd_stick_at < 300000000ull) return;   // 摇杆 / W A S D 0.3 秒内动过：让给它 | the stick / W A S D moved within 0.3 s: yield to it
-    float sx = ((t >> 16) & 0xffff) / 65535.0f * W, sy = (t & 0xffff) / 65535.0f * H, k = H * 0.00206f, a = (sx - f[0]) / k / 16, c = (sy - f[1]) / k / 8;
+    float sx = ((t >> 16) & 0xffff) / 65535.0f * W, sy = (t & 0xffff) / 65535.0f * H, k = H * 0.00206f * dm_cam_zoom_ratio(), a = (sx - f[0]) / k / 16, c = (sy - f[1]) / k / 8;
     int x = px + (int)lroundf((a + c) / 2), y = py + (int)lroundf((c - a) / 2);
     if (getenv("DM_TEST_WALK_CAL")) { static int n; if (n++ < 3)   // 测试：把画面里各单位的脚底屏幕点按同一条公式反算成格，和它真实所在的格比（量换算误差） | test: back-compute the foot screen points of units on screen into tiles with the same formula and compare with the tiles they are really on (to measure the conversion error)
         for (int ty = 1; ty <= 2; ty++) for (int kk = 0; kk < 128; kk++) for (uint64_t u = *(uint64_t *)(b + 0x2d603a0 + ty * 0x400 + kk * 8); u; u = *(uint64_t *)(u + 0x158)) { float g[2]; int ux, uy;

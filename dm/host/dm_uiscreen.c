@@ -18,6 +18,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 static _Atomic int g_mode = -1;              // -1 = 还没定（第一次用时看环境变量） | -1 = not decided yet (checks the environment variable on first use)
 static _Atomic int g_rw, g_rh, g_uh;         // 真实宽高、写给游戏的界面高；g_rw == 0 = 没在改写 | Real width and height, and the UI height written to the game; g_rw == 0 = not rewriting
@@ -60,14 +61,62 @@ static int yoff(void) { int rh = atomic_load(&g_rh), uh = atomic_load(&g_uh), m 
 // The camera object is also used for rendering, and the projection matrix (4 columns from +0x80) is unconditionally recomputed every frame by 0x162f9ac, so values written into the object would not stick and should not be written anyway. So at the function entry (observation gate OBS_UI_PROJECT, only in the touch rule domain)
 // swap x0 for a copy of the camera, with each projection column of the copy getting y += (2·y0 / height) × that column's w ⇒ the resulting y is smaller by exactly y0; not one byte of the game's camera is changed. When y0 = 0 (off / top-aligned / 16:9 screen), no swap.
 static _Atomic int g_proj_on;
+// 本地改动：`ui_project_obs` 的 x0 就是相机对象（世界点→屏幕的入参），记下来供 dm_cam_zoom_ratio 读视场角。
+// 只在门被调到（局内每帧的世界字投影）时更新；没记到就退回 1.0，不影响任何行为。
+// Local change: x0 of ui_project_obs is the camera object (the argument of world->screen), remembered here so that
+// dm_cam_zoom_ratio can read the field of view. Only updated when the gate runs (world-text projection, every frame
+// in a run); if it was never recorded the ratio falls back to 1.0 and nothing changes.
+static _Atomic(uintptr_t) g_cam_ptr;
 static void ui_project_obs(const uint64_t *regs) {
-    int dy = atomic_load(&g_ingame) ? yoff() : 0; const uint8_t *c = (const uint8_t *)(uintptr_t)regs[0]; if (!dy || !c || c[0x160]) return;   // +0x160 = 投影待重算：函数自己会重算并盖掉副本里的偏移，这一次不换（只在改分辨率后的第一次调用） | +0x160 = projection pending recompute: the function will recompute it itself and overwrite the offset in the copy, so do not swap this time (only on the first call after a resolution change)
+    int dy = atomic_load(&g_ingame) ? yoff() : 0; const uint8_t *c = (const uint8_t *)(uintptr_t)regs[0]; if (c) atomic_store(&g_cam_ptr, (uintptr_t)c); if (!dy || !c || c[0x160]) return;   // +0x160 = 投影待重算：函数自己会重算并盖掉副本里的偏移，这一次不换（只在改分辨率后的第一次调用） | +0x160 = projection pending recompute: the function will recompute it itself and overwrite the offset in the copy, so do not swap this time (only on the first call after a resolution change)
     float H = *(const float *)(c + 0x144); if (!(H > 0)) return;
     static _Thread_local _Alignas(16) uint8_t cam[0x170]; memcpy(cam, c, sizeof cam); float *m = (float *)(cam + 0x80), k = 2.0f * dy / H;
     for (int j = 0; j < 4; j++) m[j * 4 + 1] += k * m[j * 4 + 3];
     ((uint64_t *)(uintptr_t)regs)[0] = (uint64_t)(uintptr_t)cam;
 }
 int dm_ui_proj_dy(void) { return atomic_load(&g_proj_on) && atomic_load(&g_ingame) ? yoff() : 0; }
+// 本地改动：镜头拉近带来的画面放大倍数（宿主 dm_world.c 的点击换算要用）。
+// 静态改写把视场角取半的系数从 0.5 改成 0.375（见 patch_nso.py 0x162fe88），于是纵向缩放从
+// 1/tan(fov/2) 变成 1/tan(fov·0.375/2)，画面放大的倍数就是两者之比 = tan(fov/2)/tan(fov·0.375/2)；
+// fov 从相机 +0x12c（度）读，所以不需要预知游戏用的是多少度。读不到相机 / 角度不合理 → 返回 1.0（等于不补偿，
+// 不会更糟）。dm_world.c 声明同名弱符号作缺省，宿主与单测都能单独链。
+// Local change: the magnification the camera zoom introduces, needed by the host's tap conversion in dm_world.c.
+// The static rewrite changes the field-of-view half-angle factor from 0.5 to 0.375 (patch_nso.py 0x162fe88), so the
+// vertical scale goes from 1/tan(fov/2) to 1/tan(fov*0.375/2) and the magnification is the ratio
+// tan(fov/2)/tan(fov*0.375/2). fov is read from the camera's +0x12c (degrees), so the game's actual field of view
+// does not have to be known in advance. No camera or an implausible angle -> 1.0 (no compensation, never worse).
+// dm_world.c declares the same name weak as its default, so the host and the unit tests can link either way.
+#define DM_ZOOM_FOV_FACTOR 0.75f   // 视场角乘这个系数 ⇒ 画面放大约 1.4 倍 | the field of view is multiplied by this: about 1.4x magnification
+static float g_zoom_base;          // 第一次读到视场角时的原值（改之前的） | the field of view as first read (before the change)
+// 本地改动：镜头拉近（宿主侧，不用改改写器）。游戏的投影重算 0x162f9ac 每帧都从 [相机+0x12c]（视场角，度）
+// 重新算一遍投影（×π → ÷180 → ×0.5 → tan → 1/tan = 纵向缩放），所以只要这个字段小一点，世界就一直按"更近"的
+// 视角画。写在宿主每帧的界面泵里，比游戏那一帧的投影重算晚一点点——晚一帧生效，值是常数，看不出抖动。
+// 界面（HUD / 面板）用自己的变换，不受影响；游戏自己的世界点→屏幕与命中测试用同一个相机，自动跟着走。
+// Local change: camera zoom, host side (no rewriter change needed). The game's projection recompute 0x162f9ac derives
+// the projection from [camera+0x12c] (field of view in degrees) every frame (*pi, /180, *0.5, tan, 1/tan = the
+// vertical scale), so as long as that field is smaller the world is drawn from a closer view. The write happens in
+// the host's per-frame UI pump, slightly after that frame's projection recompute: it takes effect one frame later
+// and the value is constant, so nothing jitters. The UI (HUD, panels) has its own transform and is unaffected; the
+// game's own world->screen and hit tests read the same camera and follow automatically.
+static void cam_zoom_pump(void) {
+    uint8_t *c = (uint8_t *)(uintptr_t)atomic_load(&g_cam_ptr);
+    if (!c) return;
+    float f = *(float *)(c + 0x12c);
+    if (!(f > 1.0f && f < 179.0f)) return;
+    if (!(g_zoom_base > 1.0f)) g_zoom_base = f;   // 第一次：记下原值 | first time: remember the original value
+    float want = g_zoom_base * DM_ZOOM_FOV_FACTOR;
+    if (f > want + 0.01f || f < want - 0.01f) *(float *)(c + 0x12c) = want;
+}
+// 本地改动：镜头拉近带来的画面放大倍数（宿主 dm_world.c 的点击换算要用）= 基准视场角与新视场角的纵向缩放之比。
+// Local change: the magnification the camera zoom introduces, needed by the host's tap conversion in dm_world.c: the
+// ratio of the vertical scales of the original and the new field of view.
+float dm_cam_zoom_ratio(void) {
+    if (!(g_zoom_base > 1.0f)) return 1.0f;
+    const float d2r = 3.14159265358979f / 180.0f;
+    float old_t = tanf(g_zoom_base * 0.5f * d2r), new_t = tanf(g_zoom_base * DM_ZOOM_FOV_FACTOR * 0.5f * d2r);
+    if (!(old_t > 1e-4f) || !(new_t > 1e-4f)) return 1.0f;
+    return old_t / new_t;
+}
 
 // 游戏的出图分辨率（主机 / 掌机档各一个参数位，见 thread.c 与 hle_oe.c）：真全屏打开时按「玩家单位在不在」给值——不在（前端各页）= 屏宽的 16:9，
 // 游戏整个按 16:9 出图，3D、界面、点击区天然一致（就是留边模式）；在 = 屏幕原生比例。状态一变推一次「性能模式变化」通知（31），游戏重读参数位、改出图尺寸。
@@ -93,6 +142,7 @@ uint64_t dm_game_res(int docked) { uint64_t r = front_game_res(docked); uint32_t
 
 void dm_uiscreen_pump(void) {
     uint8_t *b = main_base(); if (!b) return;
+    cam_zoom_pump();   // 本地改动：镜头拉近——每帧把相机视场角按 0.75 倍写回 | local change: camera zoom, write the camera's field of view back at 0.75x every frame
     { int world = ((uint64_t (*)(uint32_t))(b + 0x45f9d0))(*(uint32_t *)(b + 0x2d20e4c)) != 0;
       int first = !atomic_exchange(&g_res_live, 1);
       if ((atomic_exchange(&g_world, world) != world || (first && !world)) && mode() != DM_UISCREEN_OFF) { LOG("界面画面：%s → 游戏分辨率切到 %u x %u", world ? "玩家单位建立" : first ? "窗口已建好、在前端" : "玩家单位销毁", (unsigned)dm_game_res(1), (unsigned)(dm_game_res(1) >> 32)); dm_oe_res_changed(); } }
