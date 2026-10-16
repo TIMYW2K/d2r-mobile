@@ -2282,21 +2282,30 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     // Portrait bar HireablesPanel: each portrait is a child widget cloned from Template when the panel is built (the loop starting at main+0x3a2c50); its position is written into the child widget's rect at build time (0x3a2d98),
     // immediately followed by one call to the child widget's vtable +0x10 (0x3a2d94–0x3a2da4) so it recomputes for the new rect; there is no further layout after that. So at runtime, changing only the panel rect / child widget rect does not move the picture;
     // after changing the child widget rect, that one vtable +0x10 call must be made as the original game does. The original value is recorded; x = original value + left safe-area units
-    // 本地改动：佣兵头像栏整体放大（用户要求：原来太小）。控件的缩放字段就在 +0x80（小地图那段正是按它算屏幕矩形的），
-    // 写它 = 面板连同里面的头像、名字、血条一起放大；头像之间的间距是游戏按面板坐标系算的，也跟着同比例拉开。
-    // 因为整块被放大，往左内移的安全区平移量要除以放大倍数，否则实际平移会比预期多出那个百分比。
-    // Local change: the mercenary portrait bar is scaled up (requested: it was too small). A widget carries its scale at
-    // +0x80 (the minimap code computes its screen rect from exactly that), so writing it magnifies the panel along with
-    // the portraits, names and health bar; the icon pitch is computed by the game in the panel's coordinate space and
-    // scales with it. Because the whole panel is magnified, the inward safe-area shift for its children is divided by
-    // the factor, otherwise the real shift would overshoot by that percentage.
+    // 本地改动：佣兵头像放大（用户要求：原来太小），但**名字文字保持原样**。
+    // 控件的缩放字段是 +0x80（小地图那段正是按它算屏幕矩形的）。实测：+0x80 是**逐控件、不继承**的 ——
+    // 上一版缩放整块面板时，血条（面板里的子控件）没跟着变大，就证明了这一点。所以现在**只缩放每个头像自己**，
+    // 名字 / 计数 / 血条都是它的兄弟子控件，字号一点不动。面板本身一旦被缩放，名字就会一起被放大，所以这里还把它显式写回 1.0。
+    // 头像之间的间距是游戏建面板时就算好的（不看这个字段），所以间距不变；头像变大会略微占满原来的空档，这符合放大目的。
+    // 血条由布局那边单独放大并上移（touch_layout.py 的 _merc_health_bar）。
+    // Local change: the mercenary portraits are enlarged (requested: they were too small) while the name text keeps its
+    // original size. A widget carries its scale at +0x80 (the minimap code computes its screen rect from exactly that).
+    // Measured: +0x80 is per-widget, not inherited -- when the previous version scaled the whole panel, the health bar
+    // (a child of the panel) did not grow, which proves it. So only each portrait itself is scaled now; the name,
+    // counter and health bar are sibling children and their font sizes are untouched. A scaled panel enlarged the name
+    // too, so the panel is explicitly written back to 1.0 here. The icon pitch was computed by the game when the panel
+    // was built (it does not read this field), so it stays; a bigger icon fills more of the original gap, which is the
+    // point. The health bar is enlarged and moved up separately in the layout (touch_layout.py's _merc_health_bar).
 #define DM_MERC_SCALE 1.32f
     { uint64_t p = ui_panel(root, "HireablesPanel");
-      if (p && *(float *)(p + 0x80) != DM_MERC_SCALE) { *(float *)(p + 0x80) = DM_MERC_SCALE;
-          static float lg; if (lg != DM_MERC_SCALE) { lg = DM_MERC_SCALE; LOG("佣兵头像栏：整体放大到 %.2f 倍（控件 +0x80）", (double)DM_MERC_SCALE); } }
+      if (p && *(float *)(p + 0x80) != 1.0f) *(float *)(p + 0x80) = 1.0f;
       int ul = atomic_load(&g_safe_l), ulc = (int)((float)ul / DM_MERC_SCALE);
       uint64_t ch = p ? *(uint64_t *)(p + 0x58) : 0, n = p ? *(uint64_t *)(p + 0x60) : 0;
-      for (uint64_t k = 0; ch && k < n && k < 40; k++) { uint64_t c = *(uint64_t *)(ch + 8 * k); if (!c) continue; int32_t x0 = *(int32_t *)(c + 0x70);
+      static float lg;
+      for (uint64_t k = 0; ch && k < n && k < 40; k++) { uint64_t c = *(uint64_t *)(ch + 8 * k); if (!c) continue;
+          if (*(float *)(c + 0x80) != DM_MERC_SCALE) { *(float *)(c + 0x80) = DM_MERC_SCALE;
+              if (lg != DM_MERC_SCALE) { lg = DM_MERC_SCALE; LOG("佣兵头像：放大到 %.2f 倍（只缩放头像，名字字号不动）", (double)DM_MERC_SCALE); } }
+          int32_t x0 = *(int32_t *)(c + 0x70);
           mv_offset(MV_SAFE, c, 0, ulc, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); mv_offset(MV_SAFE, h, 0, -u, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
