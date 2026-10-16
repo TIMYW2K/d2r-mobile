@@ -71,15 +71,17 @@ static void ui_project_obs(const uint64_t *regs) {
 int dm_ui_proj_dy(void) { return atomic_load(&g_proj_on) && atomic_load(&g_ingame) ? yoff() : 0; }
 // Static zoom is applied at the game's per-frame orthographic extent stores in patch_nso.py (main+0x89c8c4).
 // Each guest thread's KZOOM TSD slot points at this live host value, so the option can change without modifying
-// executable pages. The static patch scales both extents by 0.75 when enabled and skips the multiply when disabled.
-#define DM_ZOOM_SCALE 0.75f
-static _Atomic uint32_t g_zoom_factor_bits = 0x3f400000u;
+// executable pages. The static patch scales both extents by 0.80 when enabled (1.25x magnification) and skips
+// the multiply when disabled.
+#define DM_ZOOM_SCALE 0.80f
+#define DM_ZOOM_SCALE_BITS 0x3f4ccccdu
+static _Atomic uint32_t g_zoom_factor_bits = DM_ZOOM_SCALE_BITS;
 int dm_custom_get(const char *key);   // dm_custom.c | from dm_custom.c
 
 static void zoom_factor_update(void) {
-    uint32_t bits = dm_custom_get("zoom") ? 0x3f400000u : 0u;  // zero tells the static patch to preserve the original extents
+    uint32_t bits = dm_custom_get("zoom") ? DM_ZOOM_SCALE_BITS : 0u;  // zero tells the static patch to preserve the original extents
     uint32_t old = atomic_exchange(&g_zoom_factor_bits, bits);
-    if (old != bits) LOG("镜头缩放：%s（比例 %.2f）", bits == 0x3f400000u ? "开启" : "关闭", bits == 0x3f400000u ? (double)DM_ZOOM_SCALE : 1.0);
+    if (old != bits) LOG("镜头缩放：%s（比例 %.2f）", bits == DM_ZOOM_SCALE_BITS ? "开启" : "关闭", bits == DM_ZOOM_SCALE_BITS ? (double)DM_ZOOM_SCALE : 1.0);
 }
 
 void *dm_cam_zoom_factor_slot(void) { zoom_factor_update(); return (void *)&g_zoom_factor_bits; }
