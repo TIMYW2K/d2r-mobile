@@ -162,7 +162,7 @@ with tempfile.TemporaryDirectory() as t:
     # Existing stock not yet split: the two font size profiles (read only once at boot)
     SHARED_TODO=('chroniclebaselistpanelhd.json','chroniclepanelhd.json','controller/_profileconsolehd.json','controller/_profilehandheldhd.json','dropdownlistcontentshd.json')
     PADROOT=touch_layout.build_pad_root(romfs,tpad); PADROOT_KEYS={k[len(LAY):] for k in PADROOT}   # 三份选项页：原路径放手柄那份，触屏那份挪到触屏这边 | The three options pages: the controller copy goes at the original path, the touch copy moves to the touch side
-    UNSHARE=('confirmationmodalhd.json','dismissablemodalhd.json','helpbuttonpanelhd.json','npcdialogpanelhd.json','youdiedmodalhd.json')   # 只该给触屏的：挪到触屏这边（见 emit） | Touch-only ones: moved to the touch side (see emit)
+    UNSHARE=('confirmationmodalhd.json','dismissablemodalhd.json','helpbuttonpanelhd.json','npcdialogpanelhd.json','youdiedmodalhd.json','hireablespanelhd.json')   # 只该给触屏的：挪到触屏这边（见 emit）。本地改动：末项 hireablespanelhd.json 是佣兵头像栏血条放大（touch_layout.py 的 _merc_health_bar）——按设计登记在这里，而不是往 SHARED_TODO 里加（那会连手柄模式一起改） | Touch-only ones: moved to the touch side (see emit). Local change: the last entry hireablespanelhd.json is the mercenary health bar scaling (touch_layout.py's _merc_health_bar) -- registered here as designed instead of adding it to SHARED_TODO, which would also change controller mode
     PADLAY={k:v for k,v in PR.items() if touch_path(k)}   # 手柄版只取布局（数据表、图与触屏版同一份） | The controller version takes only layouts (data tables and images are the same copy as the touch version)
     # 手柄专用清单：手柄模式下不是原版字节的布局就这几份，一份不许多、一份不许少（改上面某一行时把相邻一行整行替掉过，商人页的刷新钮就从包里掉了）
     # Controller-only list: these are the only layouts that are not original bytes in controller mode, not one more and not one fewer (once, when a line above was edited, the adjacent line was replaced whole, and the vendor page's refresh button dropped out of the package)
@@ -198,7 +198,11 @@ with tempfile.TemporaryDirectory() as t:
         with open(os.path.join(t,tag+'repl.tsv'),'w') as f:
             for k,v in repl.items(): f.write(f'{"" if k in MAN else "+"}{k}\t{os.path.join(t,v)}\n')   # 新增路径前加「+」（casc_overlay.py） | New paths are prefixed with "+" (casc_overlay.py)
         subprocess.run([sys.executable,os.path.join(HERE,'..','..','tools','casc_overlay.py'),romfs,os.path.join(t,tag+'ov'),os.path.join(t,tag+'repl.tsv')]+(['--prebuilt',prebuilt] if prebuilt else []),check=True,stdout=subprocess.DEVNULL)
-        src=os.path.join(t,tag+'ov','data'); new=[n for n in os.listdir(src) if n.endswith('.data') and not os.path.islink(os.path.join(src,n))]
+        # The one archive casc_overlay.py actually wrote is the .data file whose name is not one
+        # of the originals. Identifying it by name rather than by "not a symlink" keeps this
+        # working where Windows refuses symlinks and casc_overlay.py falls back to a hard link.
+        orig = set(os.listdir(os.path.join(romfs, 'data')))
+        src=os.path.join(t,tag+'ov','data'); new=[n for n in os.listdir(src) if n.endswith('.data') and n not in orig]
         assert len(new)==1, new
         shutil.rmtree(dst,ignore_errors=True); os.makedirs(os.path.join(dst,'data'))
         for n in ('.build.config',new[0]): shutil.copyfile(os.path.join(src,n),os.path.join(dst,'data',n))
