@@ -32,10 +32,6 @@ void guest_thread_init(void) {
         if (g_keyaspect) { memcpy(&bits, &a, 4); pthread_setspecific(g_keyaspect, (void *)(uintptr_t)bits); }
         if (g_keyaspectui) { memcpy(&bits, &ui, 4); pthread_setspecific(g_keyaspectui, (void *)(uintptr_t)bits); }
     }
-    // 本地改动：拉近 —— 把缩放系数（float 位型）写进 KZOOM 参数位。关掉时 dm_cam_zoom_ratio() 返回 1.0，乘 1 = 原样。
-    // Local change: zoom -- publish the factor as a float bit pattern in the KZOOM parameter slot; 1.0 when off.
-    if (g_keyzoom) { extern float dm_cam_zoom_ratio(void); float z = dm_cam_zoom_ratio(); uint32_t zb; memcpy(&zb, &z, 4);
-        pthread_setspecific(g_keyzoom, (void *)(uintptr_t)zb); }
     pthread_setspecific(g_key18, 0);
     // 这两块随线程退出释放。客体会改写 TLS / 线程本地区这两把键的槽（它自己设线程指针），所以不能按键里的当前值去 free：
     // 申请到的原始指针另记在本文件自己的键 g_keyown 上，由它的析构放（键析构在 pthread_exit 时调用，同信号备用栈 crash.c altstack_free；

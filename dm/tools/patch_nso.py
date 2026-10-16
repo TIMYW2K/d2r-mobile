@@ -49,15 +49,6 @@ PATCH_OFF = (len(IMG) + 0xFFFF) & ~0xFFFF
 # ---- Registered cuts: {NSO build ID: [(offset, original bytes, new bytes, reason)]} ----
 # Networking cuts (excluded scope: Battle.net / online play): taken from a community offline fix (LFS Mod Offline Fix for v2228224, which differs from the official 94012 main in only these 7 words).
 # Measured: the system service layer (nifm offline / DNS black hole / account service) cannot get around it: the game itself sends Battle.net requests directly and allows offline play according to the "last online" time.
-# 本地改动：拉近用的七条机器码（capstone 自查过） | local change: the seven encodings used by the zoom cut
-W_ZOOM138 = 0xBD013A80
-W_ZOOM13C = 0xBD013E81
-W_ZOOM140 = 0xBD014289
-W_ZOOM144 = 0xBD014688
-W_ZOOM_FMOV = 0x1E270202
-W_ZOOM_MUL0 = 0x1E220800
-W_ZOOM_MUL1 = 0x1E220821
-
 CUTS = {'db0507f36b84200ac05f75d76ed5026f': [
     # （放进所有产物共用的基础改写）：游戏显存分配器预算 260 MB → 512 MB
     # (Placed in the base rewrite shared by all build outputs): game video memory allocator budget 260 MB → 512 MB
@@ -251,8 +242,8 @@ for off, ob, nb, why, scope in cuts:
     IMG[off:off + len(nb)] = nb
 # 键页下标固定；键页内容由装载器写入“实际键号 × 8”。
 # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
-KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504, 'KZOOM': 503}   # KRES*：分辨率参数位；KASPECT：画面宽高比上限（见 PARAMS） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap (see PARAMS)
-KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI', 'KZOOM'))}
+KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504}   # KRES*：分辨率参数位；KASPECT：画面宽高比上限（见 PARAMS） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap (see PARAMS)
+KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI'))}
 
 md = Cs(CS_ARCH_ARM64, CS_MODE_ARM); md.detail = True
 patch = bytearray(); fix = []; gates = []; stats = {}
@@ -607,30 +598,6 @@ for a in sorted(kinds):
     elif k == 'svc': st = site_gate(ins, 'svc', arg); stat(k)
     elif k in ('cntpct', 'cntvct'): st = site_gate(ins, k, arg); stat(k)
     put_branch(a, st)
-
-# ---- 拉近（本地改动）：把每帧重算"视野尺寸"的那两条 store 改成"乘上宿主写的缩放系数" ----
-# 游戏在 0x0089C8C4 / 0x0089C8D0 每帧写 [相机+0x138/0x13c]（正交投影按 2/w、2/h 用它算视野），
-# 所以宿主直接改这两个字段会被当场覆盖（实测：每帧被改回去 300 次）。这里把第一次写换成跳桩，
-# 桩里乘上参数位 KZOOM 的值（宿主按 float 位型放进线程槽，0.75f = 0x3F400000 即拉近 1.33 倍），
-# 再把原来四条 store 与 adrp/add 全部补上，最后跳回 0x0089C8DC。
-# ---- Zoom (local change): turn the per-frame write of the view extents into "multiply by the host's factor" ----
-ZOOM_138, ZOOM_RET = 0x89C8C4, 0x89C8DC
-if RULE_RUN:
-    assert struct.unpack_from('<I', IMG, ZOOM_138)[0] == W_ZOOM138, 'zoom cut: 原字节不符'
-    assert ZOOM_138 < TEXT_END and ZOOM_138 not in kinds and not any(seg[0].address <= ZOOM_138 < seg[-1].address + 4 for seg in windows)
-    zstart = here()
-    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'KZOOM'); emit(LDRX(16, 16))   # x16 = 宿主写的缩放系数（float 位型）
-    emit(W_ZOOM_FMOV)          # fmov s2, w16
-    emit(W_ZOOM_MUL0)          # fmul s0, s0, s2
-    emit(W_ZOOM_MUL1)          # fmul s1, s1, s2
-    emit(W_ZOOM138)            # str s0, [x20, #0x138]
-    emit(W_ZOOM13C)            # str s1, [x20, #0x13c]
-    emit(W_ZOOM140)            # str s9, [x20, #0x140]
-    emit(W_ZOOM144)            # str s8, [x20, #0x144]
-    emit(ADRP(9, here(), 0x310A000)); emit(ADDI(9, 9, 0xC0))                     # 补上被跳过的 adrp/add x9
-    emit(B(here(), ZOOM_RET))                                                    # 跳回 0x0089C8DC
-    put_branch(ZOOM_138, zstart)
-    stat('zoom')
 
 # 私有视觉分支；非OBS，0x85只读查询。只有本实验构建显式opt-in；原Qty/children和Update不变。
 # Private visual branch; not OBS, 0x85 is a read-only query. Only this experimental build explicitly opts in; the original Qty/children and Update are unchanged.
