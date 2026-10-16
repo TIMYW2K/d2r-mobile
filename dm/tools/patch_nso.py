@@ -49,6 +49,16 @@ PATCH_OFF = (len(IMG) + 0xFFFF) & ~0xFFFF
 # ---- Registered cuts: {NSO build ID: [(offset, original bytes, new bytes, reason)]} ----
 # Networking cuts (excluded scope: Battle.net / online play): taken from a community offline fix (LFS Mod Offline Fix for v2228224, which differs from the official 94012 main in only these 7 words).
 # Measured: the system service layer (nifm offline / DNS black hole / account service) cannot get around it: the game itself sends Battle.net requests directly and allows offline play according to the "last online" time.
+# 本地改动：拉近用的机器码与键页空闲槽号（capstone 自查过）
+W_ZOOM138 = 0xBD013A80
+W_ZOOM13C = 0xBD013E81
+W_ZOOM140 = 0xBD014289
+W_ZOOM144 = 0xBD014688
+W_ZOOM_FMOV = 0x1E270222
+W_ZOOM_MUL0 = 0x1E220800
+W_ZOOM_MUL1 = 0x1E220821
+ZOOM_SLOT = 100
+
 CUTS = {'db0507f36b84200ac05f75d76ed5026f': [
     # （放进所有产物共用的基础改写）：游戏显存分配器预算 260 MB → 512 MB
     # (Placed in the base rewrite shared by all build outputs): game video memory allocator budget 260 MB → 512 MB
@@ -598,6 +608,34 @@ for a in sorted(kinds):
     elif k == 'svc': st = site_gate(ins, 'svc', arg); stat(k)
     elif k in ('cntpct', 'cntvct'): st = site_gate(ins, k, arg); stat(k)
     put_branch(a, st)
+
+# ---- 拉近（本地改动）----
+# 游戏在 0x0089C8C4 / 0x0089C8D0 每帧写 [相机+0x138/0x13c]（正交投影按 2/w、2/h 用它算视野），宿主直接改会被当场覆盖。
+# 这里把第一条写换成跳桩：从键页第 ZOOM_SLOT 项取缩放系数（宿主写 float 位型；0 = 关闭）。
+# 三条硬规矩：① 借用的寄存器先存后还（x16/x17 与 q2）；② 槽里是 0 就跳过乘法，原样走（默认安全）；
+# ③ 原来四条 store 与 adrp/add 全部补齐后跳回 0x0089C8DC。
+# ---- Zoom (local change). The per-frame write of the view extents is redirected to a stub that multiplies by a
+# factor taken from spare key-page slot ZOOM_SLOT (0 = off). Borrowed registers are saved and restored; a zero slot
+# skips the multiply entirely, so a build with no host value behaves exactly like the original.
+ZOOM_138, ZOOM_RET = 0x89C8C4, 0x89C8DC
+if RULE_RUN:
+    assert struct.unpack_from('<I', IMG, ZOOM_138)[0] == W_ZOOM138, 'zoom cut: 原字节不符'
+    assert ZOOM_138 < TEXT_END and ZOOM_138 not in kinds and not any(seg[0].address <= ZOOM_138 < seg[-1].address + 4 for seg in windows)
+    zstart = here()
+    emit(STUR(16, 31, -24)); emit(STUR(17, 31, -32)); emit(0x3C9F03E2)     # 先存：x16 / x17 / q2
+    emit(ADRP(17, here(), KEY_PAGE_OFF)); emit(LDRX(17, 17, ZOOM_SLOT))            # x17 = 键页第 ZOOM_SLOT 项
+    zskip = here()
+    emit(0xB4000000 | 17)                                                          # cbz x17, skip（偏移稍后回填）
+    emit(W_ZOOM_FMOV)                                                              # fmov s2, w17
+    emit(W_ZOOM_MUL0); emit(W_ZOOM_MUL1)                                           # fmul s0/s1, s0/s1, s2
+    zbody_end = here()
+    struct.pack_into('<I', patch, zskip - PATCH_OFF, 0xB4000000 | (((zbody_end - zskip) // 4 & 0x7FFFF) << 5) | 17)
+    emit(W_ZOOM138); emit(W_ZOOM13C); emit(W_ZOOM140); emit(W_ZOOM144)             # 原来四条 store
+    emit(ADRP(9, here(), 0x310A000)); emit(ADDI(9, 9, 0xC0))                       # 原来被跳过的 adrp/add x9
+    emit(0x3CDF03E2); emit(LDUR(17, 31, -32)); emit(LDUR(16, 31, -24))      # 后还
+    emit(B(here(), ZOOM_RET))                                                      # 跳回原流程
+    put_branch(ZOOM_138, zstart)
+    stat('zoom')
 
 # 私有视觉分支；非OBS，0x85只读查询。只有本实验构建显式opt-in；原Qty/children和Update不变。
 # Private visual branch; not OBS, 0x85 is a read-only query. Only this experimental build explicitly opts in; the original Qty/children and Update are unchanged.
