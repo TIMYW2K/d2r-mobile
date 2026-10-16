@@ -2210,11 +2210,21 @@ static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
     // The player's own tab taps (the 22.1 log) show page number = 1-based tab position: with six tabs the mercenary page is
     // the 5th = page count - 1 (the last is Options). The tab bar's own selection (0xad9b80) plus one page switch
     // (0x405898) gets there in one step, without depending on key presses.
-    if (!tries) { uint64_t us = ui_find(root, "UISwitcher", 0), tb = ui_find(root, "UISwitcherTabs", 0);
+    // 本地改动（修 bug）：原来直接切页之后**又无条件按了一下 R**（下面那行），于是刚切到佣兵页就被翻走，
+    // 接着还一路按到 24 次 —— 玩家看到的就是「单击佣兵头像进不去佣兵页，只能从装备栏跳过去」。
+    // 现在：直接切页成功就**结束**；只有找不到页签条、切不动时，才退回按 R 翻页。
+    // Local change (bug fix): the direct switch was followed by an unconditional R press, which flipped the page
+    // straight back off the mercenary page and then kept pressing up to 24 times. Now a successful direct switch
+    // finishes the job; the key walk is only used when the tab bar cannot be found at all.
+    if (!tries) {
+        uint64_t us = ui_find(root, "UISwitcher", 0), tb = ui_find(root, "UISwitcherTabs", 0);
         if (us && *(uint8_t *)(us + 0x50)) { int n = *(int32_t *)(us + 0x188), to = n >= 3 ? n - 1 : 5, cur0 = *(int32_t *)(us + 0x1b8);
             if (tb && *(uint64_t *)tb == (uint64_t)m->base + 0x20ba3a8) ((void (*)(uint64_t, int, int))(m->base + 0xad9b80))(tb, to, 0);
             if (*(int32_t *)(us + 0x1b8) != to) ((void (*)(uint64_t, int, int))(m->base + 0x405898))(us, to, 1);
-            LOG("佣兵页：直接切到第 %d 页（共 %d 页，原在 %d）", to, n, cur0); } }
+            LOG("佣兵页：直接切到第 %d 页（共 %d 页，原在 %d）—— 不再按键", to, n, cur0);
+            on = 0; return; }                                            // 切页已交给游戏，收工
+        LOG("【红】佣兵页：找不到页签条，退回按 R 翻页");
+    }
     page = cur; pressed = fr; dm_ui_key_pulse(dm ? DM_BTN_R : DM_BTN_PLUS, 4); tries++;
 }
 // 个人仓库页码（个人仓库 2–5 页，dm_pages.c）：写在自己的文字控件 TouchPgPage_Text 里（布局 wide_stash.py），文字照原版共享页页码的写法：
