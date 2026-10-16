@@ -394,9 +394,9 @@ static void map_image(module_t *m, const char *dir) {
     // 而那条路已被验证可行（无 Zoom 的 #31 就在那条路上跑满一分钟）。
     // 只有 main 模块有剪口，别的模块一个字都不动。
     if (!strcmp(m->name, "main")) {
-        if (mach_vm_protect(mach_task_self(), base, z0, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) == KERN_SUCCESS) {
+        if (vm_protect(mach_task_self(), base, z0, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) == KERN_SUCCESS) {
             install_zoom_patch(m);
-            kern_return_t kr = mach_vm_protect(mach_task_self(), base, z0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+            kern_return_t kr = vm_protect(mach_task_self(), base, z0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
             if (kr != KERN_SUCCESS) LOG("【红】拉近：文本恢复 RX 失败（kr=%d）—— 页面很可能已不可执行，下一版要改回不写站点", kr);
         } else LOG("拉近：文本开写窗口失败（VM_PROT_COPY 未成功），站点完全没动");
     }
