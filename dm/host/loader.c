@@ -6,6 +6,7 @@
 #include <TargetConditionals.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <libkern/OSCacheControl.h>   // sys_icache_invalidate（拉近补丁写完要刷指令缓存）
 #include <sys/stat.h>
 #include <unistd.h>
 #include <mach-o/getsect.h>
@@ -240,12 +241,12 @@ static void install_zoom_patch(module_t *m) {
     *c++ = 0xF85E83F0;                                        // ldur x16, [sp, #-0x18]
     *c++ = 0x14000000u | (uint32_t)(((((uintptr_t)(m->base + 0x89C8DC)) - (uintptr_t)c) >> 2) & 0x3FFFFFF);   // b 0x89C8DC
     *cbz = 0xB4000000u | (uint32_t)(((((uintptr_t)c - (uintptr_t)cbz) >> 2) & 0x7FFFF) << 5) | 17u;            // cbz x17, 跳过乘法
-    __builtin___clear_cache((char *)stub, (char *)c);
+    sys_icache_invalidate(stub, (size_t)((char *)c - (char *)stub));   // Apple 的指令缓存刷新（__builtin___clear_cache 在 arm64 上没有对应符号）
     if (mprotect(stub, 0x1000, PROT_READ | PROT_EXEC)) { LOG("拉近：桩页改只读失败，跳过"); return; }
     // 站点改成跳桩。调用方保证此刻文本可写（嵌入式路径自己开一个窗口，文件路径本来就在写窗口里）。
     uint32_t br = 0x14000000u | (uint32_t)(((((uintptr_t)stub) - (uintptr_t)site) >> 2) & 0x3FFFFFF);
     memcpy(site, &br, 4);
-    __builtin___clear_cache((char *)site, (char *)site + 4);
+    sys_icache_invalidate(site, 4);
     LOG("拉近：补丁已装载（%s 站点 0x%X → 桩 %p；系数取键页槽 %d，开关%s）",
         m->name, DM_ZOOM_SITE, (void *)stub, DM_ZOOM_SLOT, dm_custom_get("zoom") ? "开（0.75）" : "关（1.0）");
 }
