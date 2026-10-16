@@ -103,7 +103,8 @@ static void cam_zoom_pump(void) {
     if (!c) return;
     float f = *(float *)(c + 0x12c);
     if (!(f > 1.0f && f < 179.0f)) return;
-    if (!(g_zoom_base > 1.0f)) g_zoom_base = f;   // 第一次：记下原值 | first time: remember the original value
+    if (!(g_zoom_base > 1.0f)) { g_zoom_base = f;   // 第一次：记下原值 | first time: remember the original value
+        LOG("镜头拉近：相机视场角 %.1f°（原值）→ 每帧写回 %.1f°，画面放大约 %.2f 倍", (double)f, (double)(f * DM_ZOOM_FOV_FACTOR), (double)dm_cam_zoom_ratio()); }
     float want = g_zoom_base * DM_ZOOM_FOV_FACTOR;
     if (f > want + 0.01f || f < want - 0.01f) *(float *)(c + 0x12c) = want;
 }
