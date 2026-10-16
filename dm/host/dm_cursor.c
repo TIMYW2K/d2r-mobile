@@ -2280,10 +2280,22 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     // Portrait bar HireablesPanel: each portrait is a child widget cloned from Template when the panel is built (the loop starting at main+0x3a2c50); its position is written into the child widget's rect at build time (0x3a2d98),
     // immediately followed by one call to the child widget's vtable +0x10 (0x3a2d94–0x3a2da4) so it recomputes for the new rect; there is no further layout after that. So at runtime, changing only the panel rect / child widget rect does not move the picture;
     // after changing the child widget rect, that one vtable +0x10 call must be made as the original game does. The original value is recorded; x = original value + left safe-area units
-    { uint64_t p = ui_panel(root, "HireablesPanel"); int ul = atomic_load(&g_safe_l);
+    // 本地改动：佣兵头像栏整体放大（用户要求：原来太小）。控件的缩放字段就在 +0x80（小地图那段正是按它算屏幕矩形的），
+    // 写它 = 面板连同里面的头像、名字、血条一起放大；头像之间的间距是游戏按面板坐标系算的，也跟着同比例拉开。
+    // 因为整块被放大，往左内移的安全区平移量要除以放大倍数，否则实际平移会比预期多出那个百分比。
+    // Local change: the mercenary portrait bar is scaled up (requested: it was too small). A widget carries its scale at
+    // +0x80 (the minimap code computes its screen rect from exactly that), so writing it magnifies the panel along with
+    // the portraits, names and health bar; the icon pitch is computed by the game in the panel's coordinate space and
+    // scales with it. Because the whole panel is magnified, the inward safe-area shift for its children is divided by
+    // the factor, otherwise the real shift would overshoot by that percentage.
+#define DM_MERC_SCALE 1.32f
+    { uint64_t p = ui_panel(root, "HireablesPanel");
+      if (p && *(float *)(p + 0x80) != DM_MERC_SCALE) { *(float *)(p + 0x80) = DM_MERC_SCALE;
+          static float lg; if (lg != DM_MERC_SCALE) { lg = DM_MERC_SCALE; LOG("佣兵头像栏：整体放大到 %.2f 倍（控件 +0x80）", (double)DM_MERC_SCALE); } }
+      int ul = atomic_load(&g_safe_l), ulc = (int)((float)ul / DM_MERC_SCALE);
       uint64_t ch = p ? *(uint64_t *)(p + 0x58) : 0, n = p ? *(uint64_t *)(p + 0x60) : 0;
       for (uint64_t k = 0; ch && k < n && k < 40; k++) { uint64_t c = *(uint64_t *)(ch + 8 * k); if (!c) continue; int32_t x0 = *(int32_t *)(c + 0x70);
-          mv_offset(MV_SAFE, c, 0, ul, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg; if (lg++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
+          mv_offset(MV_SAFE, c, 0, ulc, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); mv_offset(MV_SAFE, h, 0, -u, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
 
@@ -2744,7 +2756,19 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
               // Top function pages (quest log ... options): the pages are switched by the function page panel UISwitcher itself, and it does not take the tab bar's page-switch message. It takes L / R (the two branches 0x4052a8 / 0x4052d4 of message handler main+0x404fd8),
               // both of which compute "current page ± 1" and then call main+0x405898(panel, target page, direction); here the target page is given to it directly, in one step. Current page +0x1b8, page count +0x188
               int cur = *(int32_t *)(us + 0x1b8), n = *(int32_t *)(us + 0x188), to = g_tab_k; if (to < 0) to = 0; if (n > 0 && to >= n) to = n - 1;   // 页号 = 页签的第 K 个（隐藏的佣兵页也占一页），不能用可见页签数推：没佣兵时从选项往回点物品栏会多走一页 | page number = the Kth tab (the hidden mercenary page also takes up a page); it cannot be derived from the visible tab count: without a mercenary, tapping back from options to the inventory panel would go one page too far
-              ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, d > 0); LOG("界面页签：功能页第 %d → 第 %d 页（直接切，现为 %d）", cur, to, *(int32_t *)(us + 0x1b8)); }
+              ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, d > 0);
+              // 本地改动（修 bug：点顶部功能页签时黄色高亮不跟随）：页面是 UISwitcher 自己换的，但页签条自己记的
+              // 「当前选中第几个」+0xdc4 没人更新，而高亮（以及翻页键）读的就是它 —— 所以高亮留在旧页签上。
+              // 这里补一次「选中第 to 个」，用页签条自己的 0xad9b80（正是下面其它页签条走的那一支）。功能页面板
+              // 不接页签条的切页消息（见上面的注释），所以不会因此多切一页；声音传 0，免得与换页音重叠。
+              // Local change (bug fix: tapping a top function tab left the yellow highlight on the old tab): the page
+              // is switched by UISwitcher itself, but nothing updates the tab bar's own "which one is current"
+              // (+0xdc4), and that is what the highlight (and the page keys) read. Select the target tab here with the
+              // tab bar's own 0xad9b80, the same call the other tab bars use below. The function page panel does not
+              // take the tab bar's page-switch message (see above), so this cannot switch the page twice; the sound
+              // argument is 0 so it does not overlap the page-change sound.
+              if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8) ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, to, 0);
+              LOG("界面页签：功能页第 %d → 第 %d 页（直接切，现为 %d；页签选中 %d）", cur, to, *(int32_t *)(us + 0x1b8), tw ? TAB_SEL(tw) : -1); }
           else if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) { int was = TAB_SEL(tw);
               ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, g_tab_k, 1); LOG("界面页签：「%s」第 %d → 第 %d 个（直接选中，现为 %d）", g_tab_name, was, g_tab_k, TAB_SEL(tw)); }
           else LOG("【红】界面页签：页签条「%s」已不在 / 不可见，这次不切", g_tab_name);
