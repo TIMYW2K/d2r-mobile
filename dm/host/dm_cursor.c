@@ -1660,6 +1660,35 @@ int dm_ui_bind_slot(void) { if (!atomic_load(&g_bd_state)) return 0; uint64_t k 
 // 开技能树那一步要松开的键：第二组技能在游戏态一直按着 ZL（手势层合成的修饰键），按着它时 + 不开功能页
 // Keys to release at the open-skill-tree step: the second skill set keeps ZL held in the game state (a modifier synthesized by the gesture layer), and while it is held + does not open the function page
 uint64_t dm_ui_auto_release(void) { int s = atomic_load(&g_bd_state); return s == 1 || s == 5 || s == 4 ? DM_BTN_ZL : 0; }   // 4 = 绑完关功能页：第二组时玩家那边 ZL 一直按着，带着 ZL 的返回键游戏不认，要等 30 帧后的重按才关（真机 0.58 秒） | 4 = close the function page after binding: with the second set ZL is held on the player's side, the game does not accept the back key with ZL held, and it only closes on the re-press 30 frames later (0.58 s on a real device)
+// 本地改动：技能树那排页内标签（召唤系 / 毒素和白骨术 / 诅咒系 …）的文字框在布局里只有 300 单位宽，而且
+// truncateWithEllipsis 开着，六个中文字的名字（「毒素和白骨术」）就被截断。
+// 布局那两条路都走不通：INGAME 那张表只能"插入新控件"（同名已存在会直接报错），PRESENT 文本改写又过不了出包时
+// 的一致性检查（手柄模式布局清单 PAD_PAGES 一份不许多、一份不许少，直接让编译失败）。所以改成运行时改矩形 ——
+// 这四个文字框本文件本来就要找（点标签看矩形、当前页改字色），只多写两个字段。
+// 摊开（274 / 650 / 1026 / 1402，宽 360 ≈ 6.5 个中文字）是为了彼此不重叠：点标签按控件矩形判，重叠就会点错。
+// 文字框的截断是绘制时按矩形宽算的，改宽度本身就会让文字重新排开，不需要再补重排调用。
+// Local change: the skill tree's in-page tab labels (Summoning / Poison and Bone / Curses ...) are 300 units wide in
+// the layout with truncateWithEllipsis on, so a six-character name is cut off.
+// Both layout routes are unavailable: the INGAME table can only insert new widgets (it errors on an existing name),
+// and a PRESENT text rewrite fails the packaging consistency check (the controller-mode layout list PAD_PAGES must
+// match exactly, one more or one fewer aborts the build). So the rects are changed at run time instead -- this file
+// already looks these four widgets up (tab taps use their rects, the current page's text color is set there), so only
+// two fields are written.
+// Spreading them (274 / 650 / 1026 / 1402, width 360, about 6.5 Chinese characters) keeps them from overlapping: taps
+// are resolved from these rects and overlapping rects would select the wrong tab. A text box truncates at draw time
+// from its width, so writing the width re-flows the text by itself and no extra re-layout call is needed.
+static void ui_skilltabs_pump(uint64_t root) {
+    static const int32_t XS[4] = { 274, 650, 1026, 1402 }, W = 360;
+    uint64_t sp = ui_find(root, "SkillsTreePanel", 0); if (!sp || !*(uint8_t *)(sp + 0x50)) return;
+    char nm[16];
+    for (int k = 0; k < 4; k++) {
+        snprintf(nm, sizeof nm, "TextTab%d", k); uint64_t t = ui_find(sp, nm, 0); if (!t) continue;
+        int32_t *r = (int32_t *)(t + 0x70);
+        if (r[0] == XS[k] && r[2] == W) continue;
+        r[0] = XS[k]; r[2] = W;
+        LOG("技能树标签：TextTab%d 矩形改为 x=%d 宽=%d（原来六个中文字会被截断）", k, (int)XS[k], (int)W);
+    }
+}
 static int bd_open(uint64_t root, const char *name) { uint64_t w = ui_find(root, name, 0); return w && *(uint8_t *)(w + 0x50); }
 // 进技能树时停在上次看的分类页；新角色只有一两个技能，开在空页玩家会以为没东西可选。
 // 进来时切到「第一个有已学技能的分类页」，都没有就去最后一页（综合技能：普通攻击等，人人都有）。
@@ -2810,7 +2839,7 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
                 else fix = 0; }
             if (th) { ui_auto_key(th); tnext = fr + 8; } } } }
     { module_t *pm = main_module(); uint64_t proot = 0; if (pm) { memcpy(&proot, pm->base + 0x2f05458, 8); int32_t pw = *(int32_t *)(pm->base + 0x211da38), phh = *(int32_t *)(pm->base + 0x211da3c);
-        static uint64_t pf = UINT64_MAX; if (proot && pw > 0 && phh > 0 && pf != fr) { pf = fr; { static int dd; const char *dn; if (!dd && (dn = getenv("DM_UI_DUMP")) && atomic_load(&g_taps_base) && fr >= atomic_load(&g_taps_base) + (getenv("DM_UI_DUMP_AT") ? atoi(getenv("DM_UI_DUMP_AT")) : 45)) { dd = 1; ui_dump(proot, 0, dn, 0, pm); } } int tm = ui_touch_mode(); if (tm) ui_wtap_pump(pm, proot, pw, phh); if (tm) ui_long_pump(); ui_target_pump(pm, fr); if (tm) ui_use_pump(); if (tm) ui_buy_pump(pw, phh); ui_item_pump(proot, pw, phh); ui_ptr_pump(pm, proot, pw, phh); if (tm) ui_drag_pump(pm, proot, pw, phh); UI_MOUSE_ITEM_PUMPS(pm, proot, pw, phh); { int lu = atomic_load(&g_load_up); dm_uiscreen_set_ingame(ui_panel(proot, "HUDPanel") && !(lu < 0 ? ui_find(proot, "LoadScreenPanel", 0) != 0 : lu)); } ui_safe_pump(pm, proot, fr); ui_lift_pump(proot, fr); ui_note_dock_pump(proot); ui_trove_tabs_pump(pm, proot, fr); ui_minimap_pump(pm, proot, pw, phh, fr); ui_map_pump(pm); ui_map_geom_pump(pm, proot); ui_boss_pct_pump(pm, proot); ui_npcdlg_pump(proot); ui_map_center(pm, proot, *(volatile int32_t *)(pm->base + 0x2d5c748)); if (tm) ui_bind_pump(proot, fr); if (tm) swaptab_pump(proot); if (tm) ui_mercpg_pump(pm, proot, fr); ui_widestash_pump(proot); mv_audit_pump(proot, fr); ui_pages_pump(pm, proot); } } }
+        static uint64_t pf = UINT64_MAX; if (proot && pw > 0 && phh > 0 && pf != fr) { pf = fr; { static int dd; const char *dn; if (!dd && (dn = getenv("DM_UI_DUMP")) && atomic_load(&g_taps_base) && fr >= atomic_load(&g_taps_base) + (getenv("DM_UI_DUMP_AT") ? atoi(getenv("DM_UI_DUMP_AT")) : 45)) { dd = 1; ui_dump(proot, 0, dn, 0, pm); } } int tm = ui_touch_mode(); if (tm) ui_wtap_pump(pm, proot, pw, phh); if (tm) ui_long_pump(); ui_target_pump(pm, fr); if (tm) ui_use_pump(); if (tm) ui_buy_pump(pw, phh); ui_item_pump(proot, pw, phh); ui_ptr_pump(pm, proot, pw, phh); if (tm) ui_drag_pump(pm, proot, pw, phh); UI_MOUSE_ITEM_PUMPS(pm, proot, pw, phh); { int lu = atomic_load(&g_load_up); dm_uiscreen_set_ingame(ui_panel(proot, "HUDPanel") && !(lu < 0 ? ui_find(proot, "LoadScreenPanel", 0) != 0 : lu)); } ui_safe_pump(pm, proot, fr); ui_lift_pump(proot, fr); ui_note_dock_pump(proot); ui_trove_tabs_pump(pm, proot, fr); ui_minimap_pump(pm, proot, pw, phh, fr); ui_map_pump(pm); ui_map_geom_pump(pm, proot); ui_boss_pct_pump(pm, proot); ui_npcdlg_pump(proot); ui_map_center(pm, proot, *(volatile int32_t *)(pm->base + 0x2d5c748)); if (tm) ui_bind_pump(proot, fr); if (tm) swaptab_pump(proot); if (tm) ui_mercpg_pump(pm, proot, fr); ui_skilltabs_pump(proot);   // 本地改动：技能树标签加宽（见上） | local change: widen the skill tree tab labels (see above) ui_widestash_pump(proot); mv_audit_pump(proot, fr); ui_pages_pump(pm, proot); } } }
     if (atomic_load(&g_fe_name_open) && atomic_load(&g_ut_phase) == 2) {   // 起名页：点输入框（底板 / 文本框）= 重新弹系统键盘，不发鼠标点击 | naming page: tapping the input box (backplate / text box) = pop up the system keyboard again, no mouse click is sent
         module_t *nm = main_module(); uint64_t nroot = 0; if (nm) memcpy(&nroot, nm->base + 0x2f05458, 8); uint64_t pn = nroot ? ui_find(nroot, "CharacterCreateNamePanel", 0) : 0;
         if (pn && nm) { int32_t w = *(int32_t *)(nm->base + 0x211da38), h = *(int32_t *)(nm->base + 0x211da3c); uint64_t v = atomic_load(&g_ut_xy);
