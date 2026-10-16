@@ -2190,7 +2190,13 @@ static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
     if (atomic_exchange(&g_mercpg, 0) && !on) { on = 1; tries = 0; page = -1; pressed = 0; }
     if (!on) return;
     if (*(uint8_t *)(m->base + 0x2d5ff66)) { LOG("佣兵页：已开（按键 %d 次）", tries); on = 0; return; }
-    if (tries >= 9) { LOG("【红】佣兵页：按了 %d 次键还没翻到，放弃", tries); on = 0; return; }
+    // 本地改动：原来 9 次就放弃 —— 连按 R 时按键可能被游戏丢掉，9 次只走了三页，人停在上一页（技能树），
+    // 玩家看到的就是「双击佣兵头像跳到了技能树」。改成 24 次，并在放弃时把停在哪页记下来。
+    // Local change: it used to give up after 9 presses -- some presses get dropped by the game, so 9 presses could be
+    // only three pages and the player was left one page short (the skill tree), which reads as "double-tapping the
+    // mercenary portrait jumps to the skill tree". Now 24 presses, and the page it stopped on is logged.
+    if (tries >= 24) { int dm2 = bd_open(root, "UISwitcher"), cur2 = dm2 ? bd_top_tab(root) : -1;
+        LOG("【红】佣兵页：按了 %d 次键还没翻到，放弃（现停在页 %d）", tries, cur2); on = 0; return; }
     int dm = bd_open(root, "UISwitcher"), cur = dm ? bd_top_tab(root) : -1;
     // 本地改动：原来 7 / 24 帧一按，玩家看到的是「一页一页翻过去」；每 1–2 帧按一次，四页约 0.1 秒到位
     // Local change: 7 / 24 frames per press made it visibly walk page by page; one press every 1-2 frames covers four pages in about 0.1 s
@@ -2327,33 +2333,30 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); mv_offset(MV_SAFE, h, 0, -u, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
 
-    // 本地改动：技能树那排页内标签（召唤系 / 毒素和白骨术 / 诅咒系 …）的文字框在布局里只有 300 单位宽，而且
-    // truncateWithEllipsis 开着，六个中文字的名字（「毒素和白骨术」）就被截断。布局那两条路都走不通：
-    // INGAME 那张表只能插入新控件（同名已存在会直接报错），PRESENT 文本改写过不了出包时那张精确匹配的手柄布局清单
-    // （多一份少一份都直接让编译失败）。所以运行时改矩形 —— 这四个文字框本文件本来就在用（点标签看矩形、当前页改字色）。
-    // 摊开（274 / 650 / 1026 / 1402，宽 360 ≈ 6.5 个中文字）是为了彼此不重叠：点标签按控件矩形判，重叠就会点错；
-    // 最右端 1762 仍让开 x=1784 起的说明框。文字框的截断是绘制时按矩形宽算的，写宽度本身就会让文字重排。
-    // 这段放在 ui_safe_pump 里（它本来就每几帧跑一次、手上就有 root）：不新增顶层函数 —— 上次新增函数插在
-    // bd_open 那一行之前，把那个一行写完的函数的收尾括号吃掉了，整个文件少三个右括号，编译报「include 落在函数里」。
-    // Local change: the skill tree's in-page tab labels (Summoning / Poison and Bone / Curses ...) are 300 units wide in
-    // the layout with truncateWithEllipsis on, so a six-character name is cut off. Neither layout route works: the INGAME
-    // table can only insert widgets (it errors on an existing name), and a PRESENT text rewrite fails packaging's exact
-    // controller-layout list (one more or one fewer aborts the build). So the rects are changed at run time -- these four
-    // widgets are already used by this file (tab taps read their rects, the current page's text color is set there).
-    // Spreading them (274 / 650 / 1026 / 1402, width 360, about 6.5 Chinese characters) keeps them from overlapping: taps
-    // are resolved from these rects and overlapping rects would select the wrong tab; the rightmost ends at 1762, still
-    // clear of the tooltip box at x=1784. A text box truncates at draw time from its width, so writing the width re-flows
-    // the text. This lives in ui_safe_pump (which already runs every few frames and already has root) so that no new
-    // top-level function is added: the last attempt added one just before bd_open, ate the closing brace of that one-line
-    // function, left the file three braces short, and the build reported the mid-file include as being inside a function.
-    { static const int32_t xs[4] = { 274, 650, 1026, 1402 }; static const int32_t tw = 360;
-      uint64_t sk = ui_find(root, "SkillsTreePanel", 0);
-      if (sk && *(uint8_t *)(sk + 0x50)) { char nm[16];
+    // 本地改动：技能树那排页内标签里「毒素和白骨术」六个字在 300 单位宽的文字框里放不下（布局开着
+    // truncateWithEllipsis，会被截断）。上一版把四个文字框加宽摊开 —— 但**底框（TabK 与它里面的 Background）是
+    // 另一套控件、没跟着动**，于是文字跑出框外，玩家看到的就是「名字和框错位」。按玩家给的方案改成缩短那一个名字：
+    // 只把含「毒素」的那个文字框写成「毒素&白骨」，其它页签（含别的职业的）一个字不动。
+    // 写文字的写法同 dm_update.c：0x136e5c(控件+0x88, 字节, 字节数) 赋值、0xadc434(控件) 刷新。
+    // Local change: the skill tree tab label 「毒素和白骨术」 (six characters) does not fit the 300-unit text box (the
+    // layout has truncateWithEllipsis on, so it is cut off). The previous version widened and respread the four text boxes,
+    // but the frame (TabK and its Background) is a separate widget set that did not move, so the text ran outside the frame
+    // -- the misalignment the player saw. Following the player's suggestion, only that one name is shortened: the text box
+    // containing 「毒素」 becomes 「毒素&白骨」 and no other tab (including other classes') is touched.
+    // Text is written the same way as dm_update.c: 0x136e5c(widget+0x88, bytes, count) then 0xadc434(widget).
+    { uint64_t sk = ui_find(root, "SkillsTreePanel", 0);
+      if (sk && *(uint8_t *)(sk + 0x50)) { static const char need[] = "\xe6\xaf\x92\xe7\xb4\xa0";
+        char nm[16];
         for (int k = 0; k < 4; k++) { snprintf(nm, sizeof nm, "TextTab%d", k); uint64_t t = ui_find(sk, nm, 0); if (!t) continue;
-            int32_t *r = (int32_t *)(t + 0x70);
-            if (r[0] == xs[k] && r[2] == tw) continue;
-            r[0] = xs[k]; r[2] = tw;
-            LOG("技能树标签：TextTab%d 矩形改为 x=%d 宽=%d（原来六个中文字会被截断）", k, (int)xs[k], (int)tw); } } }
+            const char *s0 = *(const char **)(t + 0x88); size_t n = *(uint64_t *)(t + 0x90);
+            if (!s0 || n < 6 || n > 64) continue;
+            int hit = 0; for (size_t i = 0; i + 6 <= n && !hit; i++) hit = !memcmp(s0 + i, need, 6);
+            if (!hit) continue;
+            const char *rep = "毒素&白骨"; size_t rn = strlen(rep);
+            if (n == rn && !memcmp(s0, rep, rn)) continue;
+            ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(t + 0x88, rep, rn);
+            ((void (*)(uint64_t))(m->base + 0xadc434))(t);
+            LOG("技能树标签：「毒素和白骨术」放不下，已改成「%s」", rep); } } }
 
 }
 // 小地图任务终点（dm_world.c dm_map_goals）用的地图几何：地图开没开、全屏还是微缩、每格像素。每格像素照游戏自己的算法（同 ui_map_center：0x413280–0x413298），

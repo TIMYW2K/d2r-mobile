@@ -148,7 +148,8 @@ static void cam_zoom_pump(void) {
         // old projection (the player's v8.1 log shows the values written and the picture unchanged). Raised only when
         // the value really changed, not every frame: the host's ui_project_obs gate yields while this flag is non-zero,
         // so raising it every frame would stall the world->screen machinery.
-        if (ch) *(volatile uint8_t *)(c + 0x160) = 1;
+        static int rew, lg3;   // 本地改动：诊断 —— 每帧都被改回去，说明这个对象不是投影真正读的那台相机
+        if (ch) { if (++rew == 300 && !lg3) { lg3 = 1; LOG("镜头拉近：视野值被游戏改回去过 %d 次 —— 这个对象不是投影真正读的那个相机（或每帧被重算），改它没用", rew); } *(volatile uint8_t *)(c + 0x160) = 1; }
         g_zoom_ratio = 1.0f / DM_ZOOM_SCALE;
         if (!g_zoom_logged) { g_zoom_logged = 1; LOG("镜头拉近（正交）：视野 %.3f×%.3f → %.3f×%.3f，画面放大约 %.2f 倍", (double)bw, (double)bh, (double)ww, (double)hh, (double)g_zoom_ratio); }
     }
