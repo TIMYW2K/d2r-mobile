@@ -47,8 +47,53 @@ static NSData *scrub_home(NSData *d) {
     while (i + hn <= n) { if (b[i] == (uint8_t)h[0] && !memcmp(b + i, h, hn)) { [o appendBytes:b + from length:i - from]; [o appendBytes:"~" length:1]; i += hn; from = i; } else i++; }
     [o appendBytes:b + from length:n - from]; return o;
 }
+// ---- 本地改动：最小 ZIP 写入器（存储法 / method 0）----
+// iOS 上没有 zip 命令（Mac 那份用的是 /usr/bin/ditto），所以这里自己写：不压缩，只要 CRC32 与三段头部，
+// 出错余地最小。这份代码先在 Windows 上用 mingw 编译、用 Python 的 zipfile 校验过（CRC 全部正确、二进制逐字节一致）。
+// Local change: a minimal stored-method ZIP writer. iOS has no zip command (the Mac build shells out to
+// /usr/bin/ditto), so this writes one: no compression, only CRC32 and the three header kinds, the smallest possible
+// surface for mistakes. It was compiled with mingw on Windows and validated with Python's zipfile first (every CRC
+// correct, binary content byte-identical).
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+static uint32_t zs_crc_tab[256];
+static uint32_t zs_crc32(const void *p, size_t n) {
+    if (!zs_crc_tab[1]) for (uint32_t i = 0; i < 256; i++) { uint32_t c = i; for (int k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1); zs_crc_tab[i] = c; }
+    const uint8_t *b = (const uint8_t *)p; uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; i++) c = zs_crc_tab[(c ^ b[i]) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+#define ZS_MAXENT 500
+typedef struct { FILE *f; int n; struct { char name[600]; uint32_t crc, size, off; } e[ZS_MAXENT]; } zs_t;
+static void zs_w16(FILE *f, unsigned v) { fputc(v & 0xFF, f); fputc((v >> 8) & 0xFF, f); }
+static void zs_w32(FILE *f, uint32_t v) { zs_w16(f, v & 0xFFFF); zs_w16(f, (v >> 16) & 0xFFFF); }
+static int zs_open(zs_t *z, const char *path) { memset(z, 0, sizeof *z); z->f = fopen(path, "wb"); return z->f != NULL; }
+static int zs_add(zs_t *z, const char *name, const void *data, size_t n) {
+    if (!z->f || z->n >= ZS_MAXENT || strlen(name) >= sizeof z->e[0].name) return 0;
+    snprintf(z->e[z->n].name, sizeof z->e[0].name, "%s", name);
+    z->e[z->n].crc = zs_crc32(data, n); z->e[z->n].size = (uint32_t)n; z->e[z->n].off = (uint32_t)ftell(z->f);
+    zs_w32(z->f, 0x04034b50u); zs_w16(z->f, 20); zs_w16(z->f, 0); zs_w16(z->f, 0);   // method 0 = 存储 | stored
+    zs_w16(z->f, 0); zs_w16(z->f, 0x5A21);                                          // 时间/日期固定 2025-01-01，合法即可 | fixed valid DOS date
+    zs_w32(z->f, z->e[z->n].crc); zs_w32(z->f, z->e[z->n].size); zs_w32(z->f, z->e[z->n].size);
+    zs_w16(z->f, (unsigned)strlen(name)); zs_w16(z->f, 0); fwrite(name, 1, strlen(name), z->f);
+    fwrite(data, 1, n, z->f); z->n++; return 1;
+}
+static int zs_close(zs_t *z) {
+    if (!z->f) return 0;
+    uint32_t cd = (uint32_t)ftell(z->f);
+    for (int i = 0; i < z->n; i++) {
+        zs_w32(z->f, 0x02014b50u); zs_w16(z->f, 20); zs_w16(z->f, 20); zs_w16(z->f, 0); zs_w16(z->f, 0);
+        zs_w16(z->f, 0); zs_w16(z->f, 0x5A21); zs_w32(z->f, z->e[i].crc); zs_w32(z->f, z->e[i].size); zs_w32(z->f, z->e[i].size);
+        zs_w16(z->f, (unsigned)strlen(z->e[i].name)); zs_w16(z->f, 0); zs_w16(z->f, 0); zs_w16(z->f, 0); zs_w16(z->f, 0);
+        zs_w32(z->f, 0); zs_w32(z->f, z->e[i].off); fwrite(z->e[i].name, 1, strlen(z->e[i].name), z->f); }
+    uint32_t cdsize = (uint32_t)ftell(z->f) - cd;
+    zs_w32(z->f, 0x06054b50u); zs_w16(z->f, 0); zs_w16(z->f, 0); zs_w16(z->f, (unsigned)z->n); zs_w16(z->f, (unsigned)z->n);
+    zs_w32(z->f, cdsize); zs_w32(z->f, cd); zs_w16(z->f, 0);
+    int ok = fclose(z->f) == 0; z->f = NULL; return ok;
+}
 static NSDate *g_t0;   // 本次启动时刻（dm_sharelog_boot） | Time of this launch (dm_sharelog_boot)
-static NSURL *build_file(void) {
+static NSArray<NSURL *> *build_file(void) {   // 本地改动：返回「日志 + 存档 zip」两个文件（原来只有一个 txt） | local change: returns both the log and the save zip (one txt before)
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
     NSData *(^rd)(NSString *) = ^NSData *(NSString *n) { return [NSData dataWithContentsOfFile:[doc stringByAppendingPathComponent:n] options:NSDataReadingMappedIfSafe error:nil]; };   // 映射着读：日志没有字节封顶，整读进内存再拼、再洗各拷一遍，峰值是日志的四倍 | read through a mapping: the log has no byte cap, and reading it whole into memory, then joining and scrubbing with one copy each, peaks at four times the log size
@@ -79,7 +124,32 @@ static NSURL *build_file(void) {
     plog("诊断日志：已打包 %s（%lu 字节：本局 %lu、上一局 %s）", p.lastPathComponent.UTF8String, (unsigned long)fin.length, (unsigned long)cur.length,
          prev ? [NSString stringWithFormat:@"%lu", (unsigned long)prev.length].UTF8String : "没有");
     if (getenv("DM_TEST_SHARELOG_CLOSE")) [fin writeToFile:[doc stringByAppendingPathComponent:@"sharelog_test.txt"] atomically:YES];
-    return [NSURL fileURLWithPath:p];
+    // 本地改动：存档导出。把「诊断日志 + 整份存档（Documents/save 整棵树）」打成一个 zip，和上面那份 txt 一起给玩家。
+    // 存档目录就是 iCloud 同步的那一份；每个文件按 save/<相对路径> 放进 zip，解开就是一个能直接拖回 App 的 save 文件夹。
+    // zip 用存储法（不压缩）。任何一步失败都只是少给一个文件，原来那份 txt 不受影响。
+    // Local change: save export. One zip holding the diagnostics file and the whole save tree (Documents/save, the same
+    // directory iCloud syncs) is offered next to the txt above. Every file goes in as save/<relative path>, so unpacking
+    // yields a save folder that can be dragged straight back into the app. Stored (uncompressed). Any failure only costs
+    // that one extra file; the txt above is unaffected.
+    NSString *zp = [[p stringByDeletingPathExtension] stringByAppendingPathExtension:@"zip"];
+    zs_t z; int zn = 0; long long zb = 0;
+    if (zs_open(&z, zp.fileSystemRepresentation)) {
+        if (zs_add(&z, p.lastPathComponent.UTF8String, fin.bytes, fin.length)) zn++;
+        NSString *sv = [doc stringByAppendingPathComponent:@"save"]; BOOL isd = NO;
+        if ([fm fileExistsAtPath:sv isDirectory:&isd] && isd)
+            for (NSString *rel in [fm subpathsAtPath:sv]) {
+                if (zn >= ZS_MAXENT - 1) break;
+                NSString *full = [sv stringByAppendingPathComponent:rel]; BOOL d2 = NO;
+                if (![fm fileExistsAtPath:full isDirectory:&d2] || d2) continue;
+                NSData *fd = [NSData dataWithContentsOfFile:full options:NSDataReadingMappedIfSafe error:nil];
+                if (!fd) continue;
+                NSString *nm = [@"save" stringByAppendingPathComponent:rel];
+                if (zs_add(&z, nm.UTF8String, fd.bytes, fd.length)) { zn++; zb += (long long)fd.length; } }
+        if (zs_close(&z)) plog("诊断日志：存档一起打包 %s（%d 个条目：日志 + 存档 %.1f MB）", zp.lastPathComponent.UTF8String, zn, zb / 1048576.0);
+        else plog("诊断日志：【红】存档 zip 收尾失败 %s", zp.UTF8String);
+    } else plog("诊断日志：【红】存档 zip 建不出 %s", zp.UTF8String);
+    if (getenv("DM_TEST_SHARELOG_CLOSE") && zn) [fm copyItemAtPath:zp toPath:[doc stringByAppendingPathComponent:@"sharelog_test.zip"] error:nil];
+    return zn ? @[[NSURL fileURLWithPath:p], [NSURL fileURLWithPath:zp]] : @[[NSURL fileURLWithPath:p]];
 }
 static UIViewController *top_vc(void) {   // 同 front_ios.m 系统输入框找宿主的顺序：主窗口 → 前台活跃场景的窗口 → 任一窗口，再顺着已弹出的往上找 | Same order as front_ios.m's system input box uses to find its host: main window → a window of the foreground active scene → any window, then walk up through what is already presented
     UIViewController *vc = nil, *alt = nil, *any = nil;
@@ -96,11 +166,11 @@ static _Atomic int g_busy;   // 打包 / 分享面板开着时再点不叠第二
 static void on_click(void) {   // 宿主在游戏主线程调：玩家点了「分享诊断日志」 | Called by the host on the game main thread: the player tapped 「分享诊断日志」(Share Diagnostics)
     if (atomic_exchange(&g_busy, 1)) { plog("诊断日志：分享面板还开着，这次点击不再弹"); return; }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSURL *u = build_file();
+        NSArray<NSURL *> *u = build_file();
         dispatch_async(dispatch_get_main_queue(), ^{
             UIViewController *vc = u ? top_vc() : nil;
             if (!vc) { if (u) plog("诊断日志：【红】没找到可弹分享面板的界面"); atomic_store(&g_busy, 0); return; }
-            UIActivityViewController *a = [[UIActivityViewController alloc] initWithActivityItems:@[u] applicationActivities:nil];
+            UIActivityViewController *a = [[UIActivityViewController alloc] initWithActivityItems:u applicationActivities:nil];
             a.completionWithItemsHandler = ^(UIActivityType t, BOOL done, NSArray *items, NSError *e) { (void)items;
                 plog("诊断日志：分享面板收起（%s%s%s）", done ? "已发到 " : "没发", done ? (t ?: @"未知").UTF8String : "", e ? [NSString stringWithFormat:@"，错误 %@", e.localizedDescription].UTF8String : "");
                 atomic_store(&g_busy, 0); };
