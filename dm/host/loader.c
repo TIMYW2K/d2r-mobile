@@ -231,7 +231,9 @@ static void install_zoom_patch(module_t *m) {
     *c++ = 0xBD013E81;                                        // str  s1, [x20, #0x13c]
     *c++ = 0xBD014289;                                        // str  s9, [x20, #0x140]
     *c++ = 0xBD014688;                                        // str  s8, [x20, #0x144]
-    *c++ = adrp_encode(9, (uintptr_t)c, 0x310A000);           // adrp x9, 0x310A000（补上被跳过的）
+    // 注意：原版那条 adrp x9 是相对 pc 的，目标在模块自己的地址空间里；宿主把映像整体映射到 m->base，
+    // 所以这里必须写成 m->base + 0x310A000（直接写常量会得到野指针，后面用到 x9 的原版代码会崩）。
+    *c++ = adrp_encode(9, (uintptr_t)c, (uintptr_t)m->base + 0x310A000);
     *c++ = 0x91030129;                                        // add  x9, x9, #0xc0
     *c++ = 0x3CDF03E2;                                        // ldur q2,  [sp, #-0x10]
     *c++ = 0xF85E03F1;                                        // ldur x17, [sp, #-0x20]
