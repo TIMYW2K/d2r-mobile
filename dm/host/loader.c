@@ -388,11 +388,18 @@ static void map_image(module_t *m, const char *dir) {
     remap_at(m, base + z0, w, zw, TRUE, VM_PROT_READ | VM_PROT_WRITE);
     remap_at(m, base + m->patch_off, x1, z1, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
     m->base = (uint8_t *)base; install_key_page(m);
-    // 拉近：文本此刻是 RX，按 Apple 的 W^X 规矩不能直接写；临时开写窗口，写完立刻恢复。
-    if (mprotect((void *)base, z0, PROT_READ | PROT_WRITE) == 0) {
-        install_zoom_patch(m);
-        if (mprotect((void *)base, z0, PROT_READ | PROT_EXEC)) die("%s 文本恢复 RX 失败", m->name);
-    } else LOG("拉近：文本开写窗口失败，跳过");
+    // 拉近（本地改动）：嵌入式路径的代码页是 vm_remap(copy=FALSE) 共享的已签名页。上一版用 mprotect(RW)
+    // 临时开窗后，iOS 拒绝再把它恢复成 RX（日志：FATAL main 文本恢复 RX 失败）。改用 mach 层的 VM_PROT_COPY：
+    // 开窗时就让内核把页做成私有副本，写完后恢复 RX 走的是"私有匿名页"这条路 —— 与 map_image 路径同性质，
+    // 而那条路已被验证可行（无 Zoom 的 #31 就在那条路上跑满一分钟）。
+    // 只有 main 模块有剪口，别的模块一个字都不动。
+    if (!strcmp(m->name, "main")) {
+        if (mach_vm_protect(mach_task_self(), base, z0, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) == KERN_SUCCESS) {
+            install_zoom_patch(m);
+            kern_return_t kr = mach_vm_protect(mach_task_self(), base, z0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+            if (kr != KERN_SUCCESS) LOG("【红】拉近：文本恢复 RX 失败（kr=%d）—— 页面很可能已不可执行，下一版要改回不写站点", kr);
+        } else LOG("拉近：文本开写窗口失败（VM_PROT_COPY 未成功），站点完全没动");
+    }
 }
 #else
 static uint8_t *slurp(const char *path, size_t *n) {
