@@ -22,6 +22,10 @@ double dm_pace_hz(double screen_hz, double floor_hz) { return screen_hz > 0 ? sc
 pthread_key_t g_keyres[2];                                   // 分辨率参数位（loader.c）的桩：没建键，取走 31 时不写线程槽 | stub for the resolution parameter slot (loader.c): no key created, so taking 31 does not write the thread slot
 uint64_t dm_game_res(int docked) { (void)docked; return 0; }  // 出图分辨率（dm_uiscreen.c）的桩 | stub for the render resolution (dm_uiscreen.c)
 void dm_uiscreen_res_reread(void) {}
+float dm_cam_zoom_factor(void) { return 1.0f; }
+float dm_cam_zoom_ratio(void) { return 1.0f; }
+void dm_cam_zoom_set(float f) { (void)f; }
+void *dm_cam_zoom_factor_slot(void) { return NULL; }
 void dm_ui_gen_bump(int why) { (void)why; }   // 界面代号（dm_cursor.c）：单测不管 | UI generation (dm_cursor.c): not relevant to unit tests
 static int checks, fails;
 #define CHECK(c, s) do { checks++; int ok = !!(c); fails += !ok; printf("%s %s\n", ok ? "✓" : "✗", s); } while (0)

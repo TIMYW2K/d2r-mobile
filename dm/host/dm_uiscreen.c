@@ -69,24 +69,40 @@ static void ui_project_obs(const uint64_t *regs) {
     ((uint64_t *)(uintptr_t)regs)[0] = (uint64_t)(uintptr_t)cam;
 }
 int dm_ui_proj_dy(void) { return atomic_load(&g_proj_on) && atomic_load(&g_ingame) ? yoff() : 0; }
-// Static zoom is applied at the game's per-frame orthographic extent stores in patch_nso.py (main+0x89c8c4).
-// Each guest thread's KZOOM TSD slot points at this live host value, so the option can change without modifying
-// executable pages. The static patch scales both extents by 0.80 when enabled (1.25x magnification) and skips
-// the multiply when disabled.
-#define DM_ZOOM_SCALE 0.80f
-#define DM_ZOOM_SCALE_BITS 0x3f4ccccdu
-static _Atomic uint32_t g_zoom_factor_bits = DM_ZOOM_SCALE_BITS;
-int dm_custom_get(const char *key);   // dm_custom.c | from dm_custom.c
+// The signed static patch in patch_nso.py multiplies the game's per-frame orthographic extents by this live value.
+// 1.0 is the original, farther view; pinching inward reduces the extent to 0.80 (1.25x magnification).
+#define DM_ZOOM_MIN_EXTENT 0.80f
+#define DM_ZOOM_DEFAULT_EXTENT 1.0f
+static _Atomic uint32_t g_zoom_factor_bits = 0x3f800000u; // float 1.0: preserve the original camera view
+void dm_3d_scale_reset_level(void);
+int dm_custom_get(const char *key);
 
-static void zoom_factor_update(void) {
-    uint32_t bits = dm_custom_get("zoom") ? DM_ZOOM_SCALE_BITS : 0u;  // zero tells the static patch to preserve the original extents
-    uint32_t old = atomic_exchange(&g_zoom_factor_bits, bits);
-    if (old != bits) LOG("镜头缩放：%s（比例 %.2f）", bits == DM_ZOOM_SCALE_BITS ? "开启" : "关闭", bits == DM_ZOOM_SCALE_BITS ? (double)DM_ZOOM_SCALE : 1.0);
+void dm_cam_zoom_set(float extent_scale) {
+    if (!(extent_scale >= DM_ZOOM_MIN_EXTENT)) extent_scale = DM_ZOOM_MIN_EXTENT;
+    if (extent_scale > DM_ZOOM_DEFAULT_EXTENT) extent_scale = DM_ZOOM_DEFAULT_EXTENT;
+    union { float f; uint32_t u; } bits = { .f = extent_scale };
+    uint32_t old = atomic_exchange(&g_zoom_factor_bits, bits.u);
+    if (old != bits.u) {
+        union { uint32_t u; float f; } ob = { .u = old };
+        dm_3d_scale_reset_level();
+        if (fabsf(ob.f - extent_scale) >= 0.05f || extent_scale == DM_ZOOM_MIN_EXTENT || extent_scale == DM_ZOOM_DEFAULT_EXTENT) {
+            LOG("镜头缩放：视野比例 %.2f → %.2f（画面放大 %.2fx）", (double)ob.f, (double)extent_scale, (double)(1.0f / extent_scale));
+        }
+    }
 }
-
-void *dm_cam_zoom_factor_slot(void) { zoom_factor_update(); return (void *)&g_zoom_factor_bits; }
-static void cam_zoom_pump(void) { zoom_factor_update(); }
-float dm_cam_zoom_ratio(void) { return dm_custom_get("zoom") ? 1.0f / DM_ZOOM_SCALE : 1.0f; }
+float dm_cam_zoom_factor(void) {
+    static int init_done;
+    if (!init_done) {
+        init_done = 1;
+        float init_extent = dm_custom_get("zoom") ? DM_ZOOM_MIN_EXTENT : DM_ZOOM_DEFAULT_EXTENT;
+        union { float f; uint32_t u; } b = { .f = init_extent };
+        atomic_store(&g_zoom_factor_bits, b.u);
+    }
+    union { float f; uint32_t u; } bits = { .u = atomic_load(&g_zoom_factor_bits) };
+    return bits.f >= DM_ZOOM_MIN_EXTENT && bits.f <= DM_ZOOM_DEFAULT_EXTENT ? bits.f : DM_ZOOM_DEFAULT_EXTENT;
+}
+void *dm_cam_zoom_factor_slot(void) { return (void *)&g_zoom_factor_bits; }
+float dm_cam_zoom_ratio(void) { return 1.0f / dm_cam_zoom_factor(); }
 // 游戏的出图分辨率（主机 / 掌机档各一个参数位，见 thread.c 与 hle_oe.c）：真全屏打开时按「玩家单位在不在」给值——不在（前端各页）= 屏宽的 16:9，
 // 游戏整个按 16:9 出图，3D、界面、点击区天然一致（就是留边模式）；在 = 屏幕原生比例。状态一变推一次「性能模式变化」通知（31），游戏重读参数位、改出图尺寸。
 // 玩家单位的建立 / 销毁都落在读取画面期间；读取画面期间界面矩形是居中的 16:9（dm_uiscreen_ingame 为 0），所以读取画面肉眼位置不变。
@@ -111,7 +127,6 @@ uint64_t dm_game_res(int docked) { uint64_t r = front_game_res(docked); uint32_t
 
 void dm_uiscreen_pump(void) {
     uint8_t *b = main_base(); if (!b) return;
-    cam_zoom_pump();   // publish the current factor for the signed static main-text zoom patch
     { int world = ((uint64_t (*)(uint32_t))(b + 0x45f9d0))(*(uint32_t *)(b + 0x2d20e4c)) != 0;
       int first = !atomic_exchange(&g_res_live, 1);
       if ((atomic_exchange(&g_world, world) != world || (first && !world)) && mode() != DM_UISCREEN_OFF) { LOG("界面画面：%s → 游戏分辨率切到 %u x %u", world ? "玩家单位建立" : first ? "窗口已建好、在前端" : "玩家单位销毁", (unsigned)dm_game_res(1), (unsigned)(dm_game_res(1) >> 32)); dm_oe_res_changed(); } }

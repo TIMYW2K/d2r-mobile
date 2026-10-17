@@ -134,10 +134,10 @@ HLE_FORCE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", "前后台
 // 界面层与 Final Result 仍按输出尺寸（+0xee88 / +0xee8c）建，末端由游戏自己的放大着色器 ps_upsample_p 放回输出尺寸。
 // 启动流程不调 0x8582f0，所以要主动调一次；调用点必须是游戏主线程取系统通知处——游戏自己处理模式切换的同一上下文
 // （在出图 HLE 里调会自锁：渲染锁已被出图路径持有）。
-// 缺省：iOS 0.80（与 0.80 的镜头视野比例同步，维持相同场景像素密度），Mac 宿主 1.0（画面闸门对 Switch 真值比）；DM_3D_SCALE=0.5–1.0 覆盖。
+// 缺省：iOS 0.80（控制 3D GPU 负载与发热），Mac 宿主 1.0；DM_3D_SCALE=0.5–1.0 覆盖。
 // 视觉尺子真值阶段（DM_NVN_RULER=1 的 A / B）强制 1.0，切到被测模式后才生效。
 // 动态比例（系统降频看的是占用率，温控档位只是粗信号 → 按实际掉帧调）：控制器吃出图线程报来的实际上屏间隔
-// （与 perf.txt 同源）；iOS 档位按镜头比例同步从配置值 0.80 下调，下限 0.64。规则见 scale3d_ctl_step。
+// （与 perf.txt 同源）；iOS 动态档位按 0.80 基准下调，默认下限 0.64。规则见 scale3d_ctl_step。
 // 开关：DM_3D_SCALE_DYN=0 关；DM_THERMAL_NOFALLBACK=1（功耗 / 帧时间测量）也关——测量时比例必须钉住。
 // DM_3D_SCALE_DYN_INJECT=帧起-帧止（按 dm_nvn_frame_count 计）：诊断，这段帧里把喂给控制器的间隔一律当两个周期（掉帧），段外当一个周期
 // （Mac 上没有上屏时刻，用它验降级 / 回升的整条链）。只在局内生效（不在局内不判），满 10 秒（5 窗）降第一档。
@@ -148,16 +148,16 @@ HLE_FORCE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", "前后台
 // while the UI layer and Final Result are still built at the output size (+0xee88 / +0xee8c), and at the end the game's own upscale shader ps_upsample_p scales back to the output size.
 // The startup flow does not call 0x8582f0, so it must be called once proactively; the call site must be where the game main thread fetches system notifications, the same context in which the game itself handles mode switches
 // (calling it inside the present HLE self-deadlocks: the render lock is already held by the present path).
-// Default: iOS 0.80 (matches the 0.80 camera extent scale to preserve scene pixel density), Mac host 1.0 (the picture gate compares against Switch ground truth); DM_3D_SCALE=0.5–1.0 overrides.
+// Default: iOS 0.80 (limits 3D GPU load and heat), Mac host 1.0; DM_3D_SCALE=0.5–1.0 overrides.
 // During the visual ruler ground-truth phase (A / B of DM_NVN_RULER=1) it is forced to 1.0 and takes effect only after switching to the mode under test.
 // Dynamic scale (system throttling looks at utilization and the thermal level is only a coarse signal → adjust by actual dropped frames): the controller consumes the actual present intervals reported by the present thread
-// (same source as perf.txt); iOS levels track the camera scale down from 0.80, with a 0.64 floor. Rules: see scale3d_ctl_step.
+// (same source as perf.txt); iOS dynamic levels step down from 0.80, with a default 0.64 floor. Rules: see scale3d_ctl_step.
 // Switches: DM_3D_SCALE_DYN=0 disables it; DM_THERMAL_NOFALLBACK=1 (power / frame-time measurement) also disables it, since the scale must be pinned during measurement.
 // DM_3D_SCALE_DYN_INJECT=start frame-end frame (counted by dm_nvn_frame_count): diagnostics; within that frame range every interval fed to the controller is treated as two periods (dropped), outside it as one period
 // (the Mac has no present timestamps, so this verifies the whole downgrade / recovery chain). Active only in-game (no judging outside a game); the first level drops after a full 10 s (5 windows).
 #include <TargetConditionals.h>
-// 3D 比例的档位表：iOS 的镜头范围从 0.75 改到 0.80 后，动态档与下限同比例提高，保持同一档的场景采样密度；Mac 对照档不变。
-// 3D scale tiers: after iOS camera extent changes from 0.75 to 0.80, dynamic tiers and floor are scaled proportionally to preserve scene sampling density at each tier; Mac comparison tiers stay unchanged.
+// 3D 比例的档位表：iOS 基准为 0.80，动态档与默认下限按同一比例调整以控制负载；Mac 对照档不变。
+// 3D scale tiers: the iOS baseline is 0.80; dynamic tiers and the default floor scale with it to control load; Mac comparison tiers stay unchanged.
 #if TARGET_OS_IPHONE
 static const float g_s3_levels[] = {0.7467f, 0.6933f, 0.6400f, 0.5867f, 0.5333f};
 #define S3_FLOOR_DEF 0.6400f
@@ -237,14 +237,28 @@ void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_per
     atomic_store(&g_scale3d_level, lv);
 }
 void dm_3d_scale_hot(int hot) { (void)hot; }   // 过热不再直接降档（改按实际掉帧）；保留符号给前端 | overheating no longer lowers the level directly (now by actual dropped frames); the symbol is kept for the front end
+void dm_3d_scale_reset_level(void) { atomic_store(&g_scale3d_level, 0); }
 static _Atomic float g_scale3d_cur = 1.0f;
 float dm_3d_scale_cur(void) { return atomic_load(&g_scale3d_cur); }
 static void scale3d_tick(void) {
-    static float want_cfg = -1, cur = 1.0f; static module_t *main;
-    if (want_cfg < 0) {
-        const char *e = getenv("DM_3D_SCALE"); want_cfg = TARGET_OS_IPHONE ? 0.80f : 1.0f;
-        if (e) { char *end; float v = strtof(e, &end); if (end == e || *end || !(v >= 0.5f && v <= 1.0f)) die("DM_3D_SCALE 非法：%s（要求 0.5–1.0）", e); want_cfg = v; }
+    static float cur = 1.0f; static module_t *main;
+    if (!main) {
         for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) main = &g_mod[i];
+    }
+    const char *e = getenv("DM_3D_SCALE");
+    float want_cfg;
+    if (e) {
+        char *end; float v = strtof(e, &end);
+        if (end == e || *end || !(v >= 0.5f && v <= 1.0f)) die("DM_3D_SCALE 非法：%s（要求 0.5–1.0）", e);
+        want_cfg = v;
+    } else {
+#if TARGET_OS_IPHONE
+        // 本地改动：没有拉近镜头时（原始视野 1.0），3D 分辨率为原生分辨率 0.80 减少手机发烫；
+        // 放大镜头时（拉近视野 0.80），3D 分辨率提升到 0.95 保证特写清晰。
+        want_cfg = (dm_cam_zoom_factor() < 0.95f) ? 0.95f : 0.80f;
+#else
+        want_cfg = 1.0f;
+#endif
     }
     int lv = atomic_load(&g_scale3d_level);   // 动态档：0 = 配置值，k = g_s3_levels[k − 1]（都不高于配置值） | Dynamic level: 0 = configured value, k = g_s3_levels[k − 1] (none higher than the configured value)
     float dyn = lv <= 0 ? want_cfg : g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1]; if (dyn > want_cfg) dyn = want_cfg;
@@ -256,8 +270,8 @@ static void scale3d_tick(void) {
     float *scale = (float *)(renderer + 0x66a4); dm_guest_write_prepare(scale, sizeof *scale); *scale = want;
     ((void (*)(uint32_t, uint32_t))(main->base + 0x8582f0))(ow, oh);
     cur = want; atomic_store(&g_scale3d_cur, want);
-    LOG("3D 渲染比例 %.2f：3D 目标 %ux%u，输出 %ux%u（帧 %llu）", want, *(uint32_t *)(renderer + 0xee78), *(uint32_t *)(renderer + 0xee7c),
-        *(uint32_t *)(renderer + 0xee88), *(uint32_t *)(renderer + 0xee8c), (unsigned long long)dm_nvn_frame_count());
+    LOG("3D 渲染比例 %.2f：3D 目标 %ux%u，输出 %ux%u（帧 %llu，镜头视野 %.2f）", want, *(uint32_t *)(renderer + 0xee78), *(uint32_t *)(renderer + 0xee7c),
+        *(uint32_t *)(renderer + 0xee88), *(uint32_t *)(renderer + 0xee8c), (unsigned long long)dm_nvn_frame_count(), (double)dm_cam_zoom_factor());
 }
 HLE_FORCE("_ZN2nn2oe25TryPopNotificationMessageEPj", "系统通知队列；前端状态变化入队", unsigned, h_oe_TryPopMsg, uint32_t *msg) {
     scale3d_tick();

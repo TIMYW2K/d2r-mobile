@@ -29,6 +29,7 @@ void dm_gamepad_start(void (*on_mode)(int pad)); void dm_gamepad_touched(void); 
 #include "../../host/dm_uiscreen.h"
 #include "../../host/dm_actions.h"
 #include "../../host/dm_i18n.h"
+#include "../../host/dm_custom.h"
 static NSString *SWT(const char *k) { return @(dm_ui(k)); }   // 我们自己的界面文字（中英表 dm/i18n/ui_text.tsv，语言跟原版设置走） | our own UI text (Chinese-English string table dm/i18n/ui_text.tsv, language follows the original game's setting)
 static _Atomic int g_touch_frontend=1;   // 不在局内（启动即是）：scene.game 为假 | Not in a run (true right at launch): scene.game is false
 static void hud_stack_watch(void);   // 底部 UI v4 面板栈看门（定义见 touch_ui_message 前） | Bottom UI v4 panel stack watch (defined before touch_ui_message)
@@ -64,7 +65,7 @@ static BOOL touch_control_log_enabled(void) {
 // x / y = normalized coordinates on the output picture [0, 1) (origin at top left) -- the host converts according to the coordinate system of the game's current profile (docked 1952x900 / handheld 1568x720;
 // overheating switches profiles, so pixels are not fixed in the front end; the host converts using the game's 1280x720 panel coordinates). dm_touch / dm_touch_set are declared in front.h and implemented in hle_touch.c.
 
-@interface DmMetalView : UIView
+@interface DmMetalView : UIView <UIGestureRecognizerDelegate>
 - (void)cancelControls;
 - (void)tickTouchControls:(double)now;
 - (void)navigationMode:(int)navigation;   // 0 游戏态 1 导航态 2 导航态且死亡弹窗开着（不给手柄圆钮） | 0 game mode, 1 navigation mode, 2 navigation mode with the death popup open (no round controller buttons)
@@ -172,6 +173,9 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
     UIView *_info;   // 信息层：秘境任务条、小地图任务终点。不是触屏控件，手柄模式也要显示（只在前端页面藏），所以不挂在 _overlay 上 | info layer: the Rift objective bar and the minimap quest goal. These are not touch controls and must show in controller mode too (hidden only on front-end pages), so they are not attached to _overlay
     NSHashTable<UITouch *> *_swallow;   // 手柄模式下落下的手指：只用来切回触屏模式，整根（按下 / 移动 / 抬起）不交给手势层和界面点击 | Fingers that landed in controller mode: used only to switch back to touch mode; the whole touch (down / move / up) is not passed to the gesture layer or UI clicks
     BOOL _padMode, _feMode;   // 手柄模式 / 前端页面：两者任一成立就藏触屏控件层 | Controller mode / front-end page: the touch controls layer is hidden if either holds
+    UIPinchGestureRecognizer *_pinch;
+    BOOL _pinching;
+    CGFloat _pinchStartExtent;
     UIView *_rsCover;   // 一键重开期间的黑屏（宿主 dm_cursor.c 经 g_dm_restart_cover_hook 开关）：盖在窗口最上层（整屏，含真全屏的留边），不露主菜单，吞掉这段时间的触点 | Black screen during one-tap restart (toggled by the host's dm_cursor.c via g_dm_restart_cover_hook): covers the top of the window (whole screen, including the true-fullscreen margins), does not reveal the main menu, and swallows touch points during this period
     int _navigation;
     CALayer *_mgLabel[12], *_mgMark[12];   // 小地图任务终点：每个终点一个名牌 / 符号层 + 一个灰十字层（mapGoalSync） | Minimap quest goals: one nameplate / symbol layer + one grey cross layer per goal (mapGoalSync)
@@ -192,6 +196,10 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
     _rsCover=[[DmSwallowView alloc] initWithFrame:self.bounds]; _rsCover.backgroundColor=UIColor.blackColor; _rsCover.hidden=YES; _rsCover.userInteractionEnabled=YES;   // 开的时候挂到窗口上（restartCover） | Attached to the window when turned on (restartCover)
     { extern void (*g_dm_restart_cover_hook)(int); g_dm_restart_cover_hook=restart_cover_hook; }
     _navigation=0; [self navigationMode:atomic_load(&g_touch_navigation)];
+    _pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
+    _pinch.delegate = self;
+    _pinch.cancelsTouchesInView = NO;
+    [self addGestureRecognizer:_pinch];
     return self;
 }
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
@@ -219,9 +227,10 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
 - (void)hudBlocked:(int)n { _overlay.hudBlocked=n>0; _overlay.dialogOnly=n<0; dm_tc_set_joy_block(&_controls,n<0); [_overlay setNeedsDisplay]; }   // 只开着讲话文字框 / 对话菜单：点底座那一下不起摇杆（只关它，人不走） | only the speech text box / dialogue menu is open: a tap on the base starts no stick (it only closes it, the character does not move)
 // 前端页面（主菜单 / 选角 / 建角 / 读取画面，即不在局内）：不显示摇杆与技能圆钮，触点直接当原生点击交给游戏界面（dm_ui_touch → 鼠标消息，dm_cursor.c）
 // Front-end pages (main menu / character select / character creation / loading screen, i.e. not in a run): no stick or round skill buttons shown; touch points are given straight to the game UI as native clicks (dm_ui_touch → mouse messages, dm_cursor.c)
-- (void)padMode:(BOOL)pad { _padMode=pad; _overlay.hidden=_feMode || pad; _info.hidden=_feMode; if(pad) { _tipUntil=-2; dm_tc_cancel_all(&_controls); [self pushFrom:"padmode" phase:"none"]; } }   // 手柄模式藏触屏控件层（dm_gamepad.m 回调） | Controller mode hides the touch controls layer (dm_gamepad.m callback)
-- (void)frontendMode:(BOOL)fe { _feMode=fe; _overlay.hidden=fe || _padMode; _info.hidden=fe; if(fe) { _pendEnd=nil; _finalAsked=NO; for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:"frontend" phase:"none"]; } }
+- (void)padMode:(BOOL)pad { _padMode=pad; _overlay.hidden=_feMode || pad; _info.hidden=_feMode; if(pad) { _pinching=NO; _tipUntil=-2; dm_tc_cancel_all(&_controls); [self pushFrom:"padmode" phase:"none"]; } }   // 手柄模式藏触屏控件层（dm_gamepad.m 回调） | Controller mode hides the touch controls layer (dm_gamepad.m callback)
+- (void)frontendMode:(BOOL)fe { _feMode=fe; _overlay.hidden=fe || _padMode; _info.hidden=fe; if(fe) { _pinching=NO; _pendEnd=nil; _finalAsked=NO; for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:"frontend" phase:"none"]; } }
 - (void)navigationMode:(int)n {
+    if (n) _pinching=NO;
     if (_navigation==n) return;
     dm_tc_set_navigation_mode(&_controls,n); _navigation=n; atomic_store(&g_nav_pub,n);   // 内部按非零归一 | Internally normalized to non-zero
     static int pad=-1; if(pad<0) { const char *e=getenv("DM_TOUCH_NAV_PAD"); pad=e && e[0]=='1'; }   // 面板态的五个虚拟手柄圆钮：缺省不给（点按 / 双击 / 拖放 / 点页签 / 面板外点按已全部替代，圆钮还压着背包格右半边）；DM_TOUCH_NAV_PAD=1 调试时叫回来 | The five round virtual controller buttons of panel mode: not shown by default (tap / double tap / drag and drop / tab tap / tap outside the panel have replaced them all, and the round buttons also sat over the right half of the inventory cells); DM_TOUCH_NAV_PAD=1 brings them back for debugging
@@ -231,6 +240,45 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
     if(!n && !getenv("DM_TOUCH_SCRIPT_START")) touch_script_start();
     if(!n) [self itemLabelsOn];
     if(n && dm_ui_map_is_full()) { dm_ui_map_full(0); LOG("前端：开了面板，全屏地图先收回小地图"); }   // 全屏地图的面板盖满整屏，会挡在别的面板前面；全屏地图只属于游戏态 | The fullscreen map's panel covers the whole screen and would block other panels; the fullscreen map belongs to game mode only
+}
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer == _pinch) {
+        if (_feMode || _navigation) return NO;
+        if (_controls.aim_slot != DM_TC_NONE) return NO;
+        if (_padMode || g_movie_cover || !_rsCover.hidden) return NO;
+    }
+    return YES;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return YES;
+}
+- (void)handlePinch:(UIPinchGestureRecognizer *)pinch {
+    if (_feMode || _navigation) {
+        _pinching = NO;
+        return;
+    }
+    if (pinch.state == UIGestureRecognizerStateBegan) {
+        _pinchStartExtent = (CGFloat)dm_cam_zoom_factor();
+        _pinching = YES;
+        [self cancelControlsFrom:"pinch_began"];
+    } else if (pinch.state == UIGestureRecognizerStateChanged) {
+        CGFloat s = pinch.scale;
+        if (s > 0.001) {
+            CGFloat cur = _pinchStartExtent / s;
+            if (cur < 0.80) cur = 0.80;
+            if (cur > 1.0) cur = 1.0;
+            dm_cam_zoom_set((float)cur);
+        }
+    } else if (pinch.state == UIGestureRecognizerStateEnded ||
+               pinch.state == UIGestureRecognizerStateCancelled ||
+               pinch.state == UIGestureRecognizerStateFailed) {
+        _pinching = NO;
+        float cur = dm_cam_zoom_factor();
+        float finalExtent = (cur < 0.90f) ? 0.80f : 1.0f;
+        dm_cam_zoom_set(finalExtent);
+        dm_custom_set_live("zoom", finalExtent < 0.95f ? 1 : 0);
+        LOG("前端：双指缩放结束 → 锁定视野 %.2f（画面放大 %.2fx，zoom=%d）", (double)finalExtent, (double)(1.0f / finalExtent), finalExtent < 0.95f ? 1 : 0);
+    }
 }
 // 掉落物名字默认常显：设置缺省已是「显示物品 = 开关式」（hle_fs.c settings_seed），开关式下进程启动后初始是关，
 // 点一次「显示物品」键（手柄 L）即一直显示，退出重进下一局仍保持。所以每个进程只点一次：首次进到局内常态（无面板、无读取画面）1.5 秒后，
@@ -303,6 +351,7 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
     [_overlay setNeedsDisplay];
 }
 - (void)cancelControlsFrom:(const char *)source {
+    if (strcmp(source, "pinch_began") != 0) _pinching = NO;
     _pendEnd=nil; _finalAsked=NO;
     for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:source phase:"none"];
     if(_uiDragOn) { _uiDragOn=NO; dm_ui_drag_end(); }
@@ -536,6 +585,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     (void)e;
+    if (_pinching) return;
     [self sweepEndedSlots];
     // 手柄模式下碰屏幕 = 回触屏模式（dm_gamepad.m），这一下只做这一件事：此刻屏上是手柄版界面，触屏控件还没显示出来（布局重载要几十帧），
     // 照常往下走的话，落点正好在看不见的回城钮 / 技能钮位置就会直接回城、放技能，面板态还会对手柄版面板发点击。
@@ -570,6 +620,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     (void)e;
+    if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) [r removeObject:t]; if(!r.count) return; ts=r; }
     if(atomic_load(&g_touch_frontend)) { [self uiTouch:ts phase:1]; return; }
     UITouch *uf=_uiFinger;
@@ -612,6 +663,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     }
 }
 - (void)finishTouches:(NSSet<UITouch *> *)ts phase:(const char *)phase {
+    if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) { [r removeObject:t]; [_swallow removeObject:t]; } if(!r.count) return; ts=r; }   // 手柄模式下落下的那根：抬起也不交 | The touch that landed in controller mode: its lift is not passed on either
     // 界面手指那一根交给 uiTouch，其余照常结束、清槽（真机 SIGSEGV：原先 _uiFinger 在就整批交走 return，局内手指的槽留下已释放的触摸）
     // Hand the UI finger to uiTouch and end the rest as usual, clearing their slots (real-device SIGSEGV: previously, if _uiFinger was present the whole batch was handed over and return, leaving released touches in the slots of in-run fingers)
@@ -1122,7 +1174,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 // 焦点（场景生命周期）：sceneWillResignActive → 2；sceneDidEnterBackground → 3 + 音频暂停 + GPU 挂起；sceneWillEnterForeground → GPU 恢复 + 音频恢复 + 2；sceneDidBecomeActive → 1。
 //   iOS 27 真机实测：无场景清单的旧式 App 启动后 applicationState 恒为 1（前台未激活），收不到激活 / 失活，故改走 UIScene。
 //   游戏收到焦点 3 只发 0x2c 事件、不自停渲染⇒ 进后台由宿主挡 GPU：dm_gfx_suspend(1) 等在途命令完成才返回（后台提交 GPU 会被系统杀）。
-// 过热：thermalState 变化只记日志。3D 渲染比例的降 / 升由实际掉帧驱动（hle_oe.c 动态比例，0.75 → 0.72 → 0.70；界面始终原生）。
+// 过热：thermalState 变化只记日志。3D 渲染比例默认 0.80，必要时由实际掉帧控制器继续下调；界面始终原生。
 // 之前是切掌机模式：那会连界面一起降，且运行中切模式的路径有宽度掩码缺陷（main+0xe10e48，r27 修）。
 //   DM_THERMAL_NOFALLBACK=1：过热不切掌机（只供原生功耗测量，读数不混入别的分辨率）。
 // 音频会话：Playback（开着静音开关也出声，只听音量键——手游的行业惯例；和原先的 SoloAmbient 一样会停掉其它 App 的音乐）。
@@ -1132,7 +1184,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 // Focus (scene lifecycle): sceneWillResignActive → 2; sceneDidEnterBackground → 3 + audio pause + GPU suspend; sceneWillEnterForeground → GPU resume + audio resume + 2; sceneDidBecomeActive → 1.
 //   Measured on a real device with iOS 27: for a legacy App without a scene manifest, applicationState stays 1 (foreground inactive) after launch and activation / deactivation never arrive, hence the switch to UIScene.
 //   On focus 3 the game only sends event 0x2c and does not stop rendering by itself ⇒ on entering background the host blocks the GPU: dm_gfx_suspend(1) returns only after in-flight commands complete (submitting GPU work in background gets killed by the system).
-// Overheating: thermalState changes are only logged. Lowering / raising the 3D render scale is driven by actual dropped frames (hle_oe.c dynamic scale, 0.75 → 0.72 → 0.70; the UI is always native).
+// Overheating: thermalState changes are only logged. The 3D render scale defaults to 0.80 and the dropped-frame controller can lower it further; the UI is always native.
 // Previously it switched to handheld mode: that lowered the UI too, and the path that switches mode while running had a width mask bug (main+0xe10e48, fixed in r27).
 //   DM_THERMAL_NOFALLBACK=1: do not switch to handheld on overheating (only for native power measurement, so readings are not mixed with other resolutions).
 // Audio session: Playback (sound plays even with the mute switch on and only the volume keys are obeyed -- the industry convention for mobile games; like the earlier SoloAmbient it stops other Apps' music).

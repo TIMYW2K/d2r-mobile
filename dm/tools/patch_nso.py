@@ -611,7 +611,7 @@ for a in sorted(kinds):
 # The orthographic camera writes its view extents every frame at main+0x89c8c4 / +0x89c8d0, so changing the host-side
 # camera object is immediately overwritten. Branch before the width store, scale both live extents, replay the
 # original stores and address calculation, then return at +0x89c8dc. KZOOM lives in extension page slot 100; that TSD
-# slot holds a pointer to the host's live atomic factor (0.80 on, zero/off skips both multiplies), leaving the eight
+# slot holds a pointer to the host's live atomic factor (1.0 default; 0.80 is the closest zoom), leaving the eight
 # indexed keys unchanged.
 ZOOM_138, ZOOM_RET = 0x89c8c4, 0x89c8dc
 if RULE_RUN and NAME == 'main':
