@@ -253,9 +253,11 @@ static void scale3d_tick(void) {
         want_cfg = v;
     } else {
 #if TARGET_OS_IPHONE
-        // 本地改动：没有拉近镜头时（原始视野 1.0），3D 分辨率为原生分辨率 0.80 减少手机发烫；
-        // 放大镜头时（拉近视野 0.80），3D 分辨率提升到 0.95 保证特写清晰。
-        want_cfg = (dm_cam_zoom_factor() < 0.95f) ? 0.95f : 0.80f;
+        // 本地改动：没有拉近镜头时（原始视野 1.0），3D 分辨率为原生分辨率 0.80，减少手机发烫；
+        // 放大镜头时（拉近视野 0.80，画面放大 1.25x），3D 分辨率提到原生 1.00 —— 放大后仍完全清晰。
+        // Local change: 0.80 native when not zoomed in (less heat); a full 1.00 when zoomed in, so the
+        // 1.25x magnified close-up stays perfectly sharp.
+        want_cfg = (dm_cam_zoom_factor() < 0.95f) ? 1.00f : 0.80f;
 #else
         want_cfg = 1.0f;
 #endif
