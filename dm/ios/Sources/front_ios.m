@@ -253,8 +253,8 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
         if (!dm_custom_get("zoom")) return NO;                       // 选项：是否允许双指缩放
         if (!dm_uiscreen_ingame()) return NO;                        // 局外（前端各页、读取画面）不响应
         if (dm_ui_panel_state() != 0) return NO;                     // 有任何栏目/面板开着就不响应
-        CGPoint pt = [gestureRecognizer locationInView:self.view];
-        CGRect bd = self.view.bounds;
+        CGPoint pt = [gestureRecognizer locationInView:self];
+        CGRect bd = self.bounds;
         if (bd.size.width <= 0 || bd.size.height <= 0) return NO;
         CGFloat x0 = bd.origin.x + bd.size.width / 3.0, x1 = bd.origin.x + bd.size.width * 2.0 / 3.0;
         CGFloat y0 = bd.origin.y + bd.size.height / 3.0, y1 = bd.origin.y + bd.size.height * 2.0 / 3.0;
