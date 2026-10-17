@@ -92,19 +92,18 @@ void dm_cam_zoom_set(float extent_scale) {
 }
 float dm_cam_zoom_factor(void) {
     // 本地改动（修 bug）：以前只在进程第一次读 zoom 选项，之后再也不读 —— 于是「取消勾选」只是把选项改成关，
-    // 捏合手势留下的 0.80 仍每帧生效，画面回不到远景。现在每次都跟着选项走：
-    //   选项关  → 强制 1.00（原始远景，捏合比例作废）
-    //   选项开且当前还是 1.00（玩家手动勾上、还没捏合）→ 用最小比例 0.80
-    // Local change (bug fix): the zoom option used to be read only once per process, so unchecking it left the
-    // pinch factor at 0.80 for ever. Now it is followed every call.
+    // 捏合手势留下的比例仍每帧生效，画面回不到远景。
+    // 现在：选项关 → 强制 1.00（原始远景，捏合比例作废）；选项开 → 用捏合设定的值，若还没有有效值就用最小比例 0.80。
+    // Local change (bug fix): the zoom option used to be read only once per process, so unchecking it left the pinch
+    // factor in effect for ever. Now: option off forces the original view; option on keeps whatever the pinch set.
     if (!dm_custom_get("zoom")) {
         atomic_store(&g_zoom_factor_bits, 0x3f800000u);   // 1.0f
         return DM_ZOOM_DEFAULT_EXTENT;
     }
-    { union { float f; uint32_t u; } b = { .f = DM_ZOOM_MIN_EXTENT }; atomic_store(&g_zoom_factor_bits, b.u); }
-    return DM_ZOOM_MIN_EXTENT;
     union { float f; uint32_t u; } bits = { .u = atomic_load(&g_zoom_factor_bits) };
-    return bits.f >= DM_ZOOM_MIN_EXTENT && bits.f <= DM_ZOOM_DEFAULT_EXTENT ? bits.f : DM_ZOOM_DEFAULT_EXTENT;
+    float f = bits.f;
+    if (!(f >= DM_ZOOM_MIN_EXTENT && f <= DM_ZOOM_DEFAULT_EXTENT)) f = DM_ZOOM_MIN_EXTENT;
+    return f;
 }
 void *dm_cam_zoom_factor_slot(void) { return (void *)&g_zoom_factor_bits; }
 float dm_cam_zoom_ratio(void) { return 1.0f / dm_cam_zoom_factor(); }
