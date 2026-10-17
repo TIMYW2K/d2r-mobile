@@ -246,6 +246,19 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
         if (_feMode || _navigation) return NO;
         if (_controls.aim_slot != DM_TC_NONE) return NO;
         if (_padMode || g_movie_cover || !_rsCover.hidden) return NO;
+        // 本地改动：双指缩放只在「游戏世界」里生效，而且只认屏幕中间 1/3 的区域 ——
+        // 否则拖人物走位、放技能时的双指操作会和它打架；打开任何栏目/面板时也不该触发。
+        // Local change: pinch only works in the game world and only inside the middle third of the screen, so it
+        // cannot fight movement or skill casting, and opening any panel must not trigger it.
+        if (!dm_custom_get("zoom")) return NO;                       // 选项：是否允许双指缩放
+        if (!dm_uiscreen_ingame()) return NO;                        // 局外（前端各页、读取画面）不响应
+        if (dm_ui_panel_state() != 0) return NO;                     // 有任何栏目/面板开着就不响应
+        CGPoint pt = [gestureRecognizer locationInView:self.view];
+        CGRect bd = self.view.bounds;
+        if (bd.size.width <= 0 || bd.size.height <= 0) return NO;
+        CGFloat x0 = bd.origin.x + bd.size.width / 3.0, x1 = bd.origin.x + bd.size.width * 2.0 / 3.0;
+        CGFloat y0 = bd.origin.y + bd.size.height / 3.0, y1 = bd.origin.y + bd.size.height * 2.0 / 3.0;
+        if (pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1) return NO;   // 只有中间 1/3
     }
     return YES;
 }
@@ -481,7 +494,9 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
     if(im) _mgImg[name]=im; return im;
 }
 - (void)mapGoalSync {
-    static int old=-1; if(old<0) { int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // 旧译名开关重启生效，启动读一次（名牌字跟游戏显示的一致） | The old translation names switch takes effect on restart; read once at launch (nameplate text matches what the game shows)
+    static int old=-1; if(old<0) { int dm_uiscreen_ingame(void);
+int dm_ui_panel_state(void);
+int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // 旧译名开关重启生效，启动读一次（名牌字跟游戏显示的一致） | The old translation names switch takes effect on restart; read once at launch (nameplate text matches what the game shows)
     dm_map_goal_view v; float cell=0; int mode=dm_ui_map_geom(&cell), n=dm_map_goals(&v); int rw=0,rh=0; dm_screen_real(&rw,&rh);
     CGRect wr=world_rect(self); float mm[4]; BOOL haveMini=dm_ui_minimap_rect(mm);
     BOOL show=mode && n>0 && !_navigation && !_info.hidden && rw>0 && cell>0 && (mode==2 || haveMini);
