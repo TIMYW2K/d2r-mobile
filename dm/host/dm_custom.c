@@ -21,6 +21,7 @@
 #include <string.h>
 
 static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "eco_fps", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS）。本地改动：touch_swap_above 接在上游位置（下标 15，K_TOUCH_SWAP），hdr、zoom 追加末尾；zoom = 是否允许双指缩放
+#define NK (int)(sizeof k_keys / sizeof *k_keys)   // 行数（解冲突时漏掉过，这里补回）
 static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1 };   // 缺省值：省电模式（30 帧）关、3D 画质流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0，其余开；zoom=1（允许双指缩放）
 // q3d（3D 画质）：0 = 流畅优先（掉帧就自动降 3D 比例）、1 = 画质优先（不自动降）。生效 = 调 hle_oe.c 的 dm_3d_quality_mode_set，读盘与点「应用」时当场调，下一帧控制器就按新档走。
 // 页上是上下两项单选（同语言行）：TouchCustom_q3d 是「画质优先」那格（勾上 = 1），TouchCustom_q3d_smooth 是它的反面
