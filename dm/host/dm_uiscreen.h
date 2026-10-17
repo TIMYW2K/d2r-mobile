@@ -14,7 +14,8 @@ void dm_uiscreen_set_ingame(int on);          // 只许界面每帧那一处（d
 void dm_uiscreen_set_panel(int on);           // 局内开着大面板（功能页 / 箱子 / 商人 / 魔盒…，= 触摸前端的面板模式）：界面矩形移到正中；关掉回落前端选的摆法。触摸前端在界面消息回调里调 | A large panel open in a run (function pages / stash / vendor / cube..., = the touch front end's panel mode): the UI rectangle moves to the center; when closed it drops back to the placement the front end chose. Called by the touch front end in the UI message callback
 int dm_uiscreen_panel(void);                 // 上面那个状态：局内开着大面板 = 1 | The state above: a large panel open in a run = 1
 void *dm_cam_zoom_factor_slot(void);          // KZOOM TSD entry points at the live host scale used by the static main-text patch
-void dm_cam_zoom_set(float extent_scale);      // 0.80–1.0: pinched camera extent; 1.0 is the original view
+void dm_cam_zoom_set(float extent_scale);
+void dm_cam_zoom_reset(void);                                     // 复位到最远视野（1.00） | Reset to the widest view      // 0.80–1.0: pinched camera extent; 1.0 is the original view
 float dm_cam_zoom_factor(void);                // Current camera extent multiplier
 float dm_cam_zoom_ratio(void);                 // Current magnification, used to keep world-touch hit regions aligned
 void dm_3d_scale_reset_level(void);            // 镜头缩放等状态变化时重置动态降档 | Reset dynamic throttle level on zoom change

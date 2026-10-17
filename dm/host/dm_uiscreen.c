@@ -91,20 +91,18 @@ void dm_cam_zoom_set(float extent_scale) {
     }
 }
 float dm_cam_zoom_factor(void) {
-    // 本地改动（修 bug）：以前只在进程第一次读 zoom 选项，之后再也不读 —— 于是「取消勾选」只是把选项改成关，
-    // 捏合手势留下的比例仍每帧生效，画面回不到远景。
-    // 现在：选项关 → 强制 1.00（原始远景，捏合比例作废）；选项开 → 用捏合设定的值，若还没有有效值就用最小比例 0.80。
-    // Local change (bug fix): the zoom option used to be read only once per process, so unchecking it left the pinch
-    // factor in effect for ever. Now: option off forces the original view; option on keeps whatever the pinch set.
-    if (!dm_custom_get("zoom")) {
-        atomic_store(&g_zoom_factor_bits, 0x3f800000u);   // 1.0f
-        return DM_ZOOM_DEFAULT_EXTENT;
-    }
+    // 本地改动：视野比例是一个独立的连续量（1.00 = 最远/初始，0.80 = 最近），只由双指缩放改变。
+    // 选项 zoom 只是「是否允许双指缩放」的开关，不再强行改这个值 —— 上一版就是在这里和手势打架，
+    // 捏合刚把视野设成 0.80，下一帧又被强制写回 1.00，表现就是「只能放大一下、缩放不回去」。
+    // Local change: the view extent is an independent continuous value (1.00 = widest/initial, 0.80 = closest),
+    // changed only by the pinch gesture. The zoom option merely allows or blocks the gesture and no longer forces
+    // the value (that is what fought the gesture in the previous build).
     union { float f; uint32_t u; } bits = { .u = atomic_load(&g_zoom_factor_bits) };
     float f = bits.f;
-    if (!(f >= DM_ZOOM_MIN_EXTENT && f <= DM_ZOOM_DEFAULT_EXTENT)) f = DM_ZOOM_MIN_EXTENT;
+    if (!(f >= DM_ZOOM_MIN_EXTENT && f <= DM_ZOOM_DEFAULT_EXTENT)) f = DM_ZOOM_DEFAULT_EXTENT;
     return f;
 }
+void dm_cam_zoom_reset(void) { dm_cam_zoom_set(DM_ZOOM_DEFAULT_EXTENT); }
 void *dm_cam_zoom_factor_slot(void) { return (void *)&g_zoom_factor_bits; }
 float dm_cam_zoom_ratio(void) { return 1.0f / dm_cam_zoom_factor(); }
 // 游戏的出图分辨率（主机 / 掌机档各一个参数位，见 thread.c 与 hle_oe.c）：真全屏打开时按「玩家单位在不在」给值——不在（前端各页）= 屏宽的 16:9，

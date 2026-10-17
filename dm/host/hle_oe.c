@@ -257,7 +257,12 @@ static void scale3d_tick(void) {
         // 放大镜头时（拉近视野 0.80，画面放大 1.25x），3D 分辨率提到原生 1.00 —— 放大后仍完全清晰。
         // Local change: 0.80 native when not zoomed in (less heat); a full 1.00 when zoomed in, so the
         // 1.25x magnified close-up stays perfectly sharp.
-        want_cfg = (dm_cam_zoom_factor() < 0.95f) ? 1.00f : 0.80f;
+        // 本地改动：3D 渲染比例跟随视野**连续**变化 —— 最远(1.00) 用原生 0.80 省电降温，
+        // 最近(0.80) 用原生 1.00 保证特写清晰；中间线性过渡。
+        // Local change: the 3D render scale follows the view extent continuously -- 0.80 native at the widest
+        // view (less heat) up to 1.00 native at the closest view (sharp close-up), linear in between.
+        { float z = dm_cam_zoom_factor(); if (z > 1.0f) z = 1.0f; if (z < 0.80f) z = 0.80f;
+          want_cfg = 0.80f + (1.0f - z); }
 #else
         want_cfg = 1.0f;
 #endif
