@@ -1803,7 +1803,7 @@ static void freeze_tick(uint64_t G) {   // 拍入口：定这一拍冻不冻，�
 }
 int dm_diff_den_apply(uint64_t G, int lv, int players);
 static void tick_gate_product(const uint64_t *regs) { g_lastG = regs[0]; players_apply(); hud_tick(regs[0]); freeze_tick(regs[0]);   // 产品缺省的拍入口：只落地难度档、发布 HUD 数字 | The product default tick entry: only applies the difficulty level and publishes the HUD numbers
-    { extern int dm_diff_den_apply(uint64_t, int, int); dm_diff_den_apply(regs[0], g_hud.area, g_hud.players); }   // 难度=怪物数量 | difficulty = monster count
+    { extern int dm_diff_den_apply(uint64_t, int, int); dm_diff_den_apply(regs[0], g_hud.area, g_hud.players); } }   // 难度=怪物数量 | difficulty = monster count
 static void tick_gate(const uint64_t *regs) {         // 拍入口：先注入本拍命令包，再取状态哈希 | Tick entry: first inject this tick's command packets, then take the state hash
     {   // 拍入口只在一条客体线程上跑：state_dump / ticks_hash 的 static 缓冲靠这一点不竞争。换线程即中止，别让输出悄悄写乱 | The tick entry runs on only one guest thread: the static buffers of state_dump / ticks_hash rely on this to be race-free. Abort if the thread changes, do not let the output silently get garbled
         static _Atomic uintptr_t owner; uintptr_t me = (uintptr_t)pthread_self(), exp = 0;
