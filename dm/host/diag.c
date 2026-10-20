@@ -366,6 +366,13 @@ static void monres_on_setinfo(const uint64_t *regs, uint64_t payload) {
 // unit_align reads it: 0 = hostile, 2 = player side). The text palette only has green/yellow/gold/orange/red, so 5 bands.
 // 友方判定：与 dm_rift.c 的 unit_align 同一条路（单位 +0x88 状态表 +0x1c 位 31；节点 0x69 的属性 0xac，
 // 由游戏自己的 main+0x5bc810 读取）。0 = 敌对，2 = 玩家这一方。
+// 佣兵职业号兜底：阵营属性读不出来时，按已知佣兵职业号认（Polearm/Amazon/… 五类），避免佣兵名字一直白。
+// Hireling class fallback: when the alignment stat cannot be read, accept the known hireling class ids.
+static int is_hire_class(uint64_t unit) {
+    uint32_t cls = 0; vm_size_t g = 0;
+    if (vm_read_overwrite(mach_task_self(), unit + 4, 4, (vm_address_t)&cls, &g) || g != 4) return 0;
+    return cls == 271 || cls == 338 || cls == 359 || cls == 560 || cls == 561;
+}
 static int unit_friendly_hp(module_t *mm, uint64_t unit) {
     uint64_t sl = 0; vm_size_t got = 0;
     if (vm_read_overwrite(mach_task_self(), unit + 0x88, 8, (vm_address_t)&sl, &got) || !sl) return 0;
@@ -393,7 +400,7 @@ static void monhp_tint(const uint64_t *regs, uint64_t payload) {
     uint64_t unit = regs[19], name = 0; uint32_t type = 0; vm_size_t got = 0;
     if (!mm || !unit) return;
     if (vm_read_overwrite(mach_task_self(), unit, 4, (vm_address_t)&type, &got) || type != 1) return;   // 只认怪物类单位
-    if (!unit_friendly_hp(mm, unit)) return;                              // 只给友方（佣兵/召唤物）着色 | friendly only
+    if (!unit_friendly_hp(mm, unit) && !is_hire_class(unit)) return;   // 阵营读不到时按佣兵职业号兜底 | hireling class fallback
     int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(mm->base + 0x5b9290);
     if (vm_read_overwrite(mach_task_self(), payload, 8, (vm_address_t)&name, &got) || !name) return;
     int hp = get(unit, 6, 0) >> 8, mx = get(unit, 7, 0) >> 8;
