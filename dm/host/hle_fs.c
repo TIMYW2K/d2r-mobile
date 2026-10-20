@@ -561,8 +561,31 @@ ssize_t dm_data_pread(int fd, void *buf, size_t n, off_t off) {   // 语义同 p
     }
     return (ssize_t)done;
 }
+// 本地改动：中文字体替换 —— 游戏打开任何一款 CJK 界面字体时，改成打开 App 自带的子集字体（汇文明朝体）。
+// 只换字形，路径/布局/其它字体都不动；每次替换记一行日志，用来确认游戏实际用的是哪一款字体。
+// Local change: when the game opens any CJK UI font, serve the bundled Huiwen Mincho subset instead. Only
+// glyphs change -- paths, layout and every other font are untouched. Each redirect logs the font name the
+// game asked for, which is how we learn which font it actually uses.
+static const char *font_subset_override(const char *path) {
+    const char *sub = getenv("DM_FONT_SUBSET");
+    if (!sub || !*sub) return NULL;
+    const char *base = strrchr(path, '/'); base = base ? base + 1 : path;
+    static const char *const names[] = {
+        "arfangxinshuh7c95b5_eb_t.ttf", "blizzardglobaltcunicode.ttf", "blizzardglobal-v5_81.ttf",
+        "tbgdb_0pp.ttf", "ik4ll3.ttf" };
+    for (unsigned i = 0; i < sizeof names / sizeof *names; i++) {
+        const char *a = base, *b = names[i];
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) { a++; b++; }
+        if (!*a && !*b) { LOG("中文字体：游戏请求 %s → 换成子集字体", base); return sub; }
+    }
+    return NULL;
+}
 HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
     HP(path);
+    {   // 本地改动：字体替换（见 font_subset_override）| Local change: font redirect, see font_subset_override
+        const char *font_sub = font_subset_override(path);
+        if (font_sub) strlcpy(hp, font_sub, sizeof hp);
+    }
     if (mode & (MODE_WRITE | MODE_APPEND)) RW();
     int fd = open(hp, (mode & (MODE_WRITE | MODE_APPEND)) ? ((mode & MODE_READ) ? O_RDWR : O_WRONLY) : O_RDONLY);
     if (fd < 0) return err_res("open", hp);

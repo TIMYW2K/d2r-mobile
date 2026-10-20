@@ -680,6 +680,9 @@ static void boot_prepare(void) {
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
     setenv("DM_NVN_SHMAP", [res stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
     setenv("DM_MSL_DIR", [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 0);
+    // 本地改动：中文字体子集（宿主 OpenFile 里替换 CJK 界面字体用；只放一份，不影响覆盖层变体）
+    // Local change: the Chinese font subset used by the host's OpenFile redirect (one copy, variant independent)
+    setenv("DM_FONT_SUBSET", [res stringByAppendingPathComponent:@"romfs_overlay/font/huiwen-subset.ttf"].fileSystemRepresentation, 0);
     // 工作目录设成 Documents：环境变量里的相对路径（DM_TICKS / DM_C2S_REPLAY / DM_C2S_LOG / DM_NVN_SHOT 的名字部分等）都落在这里（容器路径启动前不可知）
     // Set the working directory to Documents: relative paths in environment variables (DM_TICKS / DM_C2S_REPLAY / DM_C2S_LOG / the name part of DM_NVN_SHOT, etc.) all land here (the container path is not known before launch)
     if (chdir(doc.fileSystemRepresentation)) plog("boot: 🔴 chdir Documents 失败 %s", strerror(errno));
