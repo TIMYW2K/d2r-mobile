@@ -217,6 +217,25 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     CGFloat k = l->joy_radius / 60;
     if (k <= 0) return;
     CGContextRef c = UIGraphicsGetCurrentContext();
+
+    // ===== 本地改动（临时诊断）：红框标出双指缩放的命中区域 = 屏幕中央 40%–60%（横纵各 20%）=====
+    // 比例与 front_ios.m 的 gestureRecognizerShouldBegin 一致，改一边要同步改另一边。外框 = 命中边界，内框 = 建议落指区。
+    // Local change (temporary diagnostic): red box marking the pinch-zoom hit area = centre 40%-60% on both axes
+    // (20% of width/height). Same fractions as gestureRecognizerShouldBegin in front_ios.m; keep them in sync.
+    {
+        CGRect bd = self.bounds;
+        CGFloat zx0 = bd.origin.x + bd.size.width * 0.40, zx1 = bd.origin.x + bd.size.width * 0.60;
+        CGFloat zy0 = bd.origin.y + bd.size.height * 0.40, zy1 = bd.origin.y + bd.size.height * 0.60;
+        CGRect zr = CGRectMake(zx0, zy0, zx1 - zx0, zy1 - zy0);
+        CGContextSaveGState(c);
+        CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:1 green:0.15 blue:0.15 alpha:0.95].CGColor);
+        CGContextSetLineWidth(c, 3);
+        CGContextStrokeRect(c, zr);
+        CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:1 green:0.15 blue:0.15 alpha:0.5].CGColor);
+        CGContextSetLineWidth(c, 2);
+        CGContextStrokeRect(c, CGRectInset(zr, 8, 8));
+        CGContextRestoreGState(c);
+    }
     uint64_t hostNow=now_ns(); dm_tg_snapshot native=self.nativeMapping;
     // 圆钮上可能写出来的字一律走中英表（dm/i18n/ui_text.tsv），跟游戏语言：技能钮画图标 / 键位图、不写字；腰带 / 十字由底栏画（下面整个跳过），这几格不会写字
     // Any text that could be written on round buttons always goes through the bilingual table (dm/i18n/ui_text.tsv) and follows the game language: skill buttons draw icons / key glyphs and no text; the belt / cross are drawn by the bottom bar (skipped entirely below), so these cells never get text
