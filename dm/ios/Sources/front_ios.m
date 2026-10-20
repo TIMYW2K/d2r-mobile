@@ -1,4 +1,3 @@
-UIFont *dm_game_font_ui(CGFloat size);   // DmTouchOverlay.m：游戏字体（汇文明朝体子集） | game font from the overlay
 #include <math.h>
 // iOS 前端（front.h 的 iOS 实现）。App 在主线程建好 Metal 视图（front_ios_view），再在大栈线程上调 dm_main；
 // front_run在该线程跑客体；真实触点保留dm_touch_set通路，独立控制器输出完整手柄状态。
@@ -7,6 +6,7 @@ UIFont *dm_game_font_ui(CGFloat size);   // DmTouchOverlay.m：游戏字体（�
 // front_run runs the guest on that thread; real touch points keep the dm_touch_set path, and the independent controller outputs the full controller state.
 // The former any-A placeholder on the right half of the screen has been removed; only widget hits generate button presses.
 #import <UIKit/UIKit.h>
+UIFont *dm_game_font_ui(CGFloat size);   // DmTouchOverlay.m：游戏字体（汇文明朝体子集） | game font from the overlay
 static double g_dm_brightness = -1;
 double dm_brightness_now(void) { return g_dm_brightness; }
 static volatile int g_dm_thermal = -1;
