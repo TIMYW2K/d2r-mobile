@@ -259,15 +259,21 @@ with tempfile.TemporaryDirectory() as t:
                     b[so:so+32]=b'\x00'*32                       # 清掉物品码 | clear the item code
                     struct.pack_into('<H',b,off+712+2*k,0)       # 概率也清 0 | probability 0 as well
                     n+=1
-        return bytes(b),n
+        return bytes(b),n,N,ROW
+    _tcstats=[]
     for _rel,_fn in (('data/global/excel/TreasureClassEx.bin','tc_treasureclassex.bin'),
                      ('data/global/excel/base/TreasureClassEx.bin','tc_base_treasureclassex.bin')):
-        try: _raw,_n=_tc_noscroll(_rel)
+        try: _raw,_n,_N,_ROW=_tc_noscroll(_rel)
         except Exception as _e: raise SystemExit('掉落表：取不到原版 %s（%s）；覆盖层没生成，不能按旧包出包' % (_rel,_e))
         open(os.path.join(t,_fn),'wb').write(_raw)
         REPL[_rel.lower()]=_fn
-        print('掉落表：%s 清零 %d 个 tsc/isc 槽（%d 字节）' % (_rel,_n,len(_raw)))
+        _tcstats.append((_rel,_N,_n,len(_raw)))
+        print('掉落表：%s 清零 %d 个 tsc/isc 槽（%d 行，行宽 %d，%d 字节）' % (_rel,_n,_N,_ROW,len(_raw)))
     n0,z0=emit(REPL,out,'')
+    # 出包核对标记：本包确实从原版 RomFS 现算了卷轴表（两张表的行数与清零槽数），只做记录、宿主不读。
+    # Mark of what was shipped: this package indeed derived the scroll tables from the original RomFS (row counts and zeroed
+    # slot counts of the two tables); it is a record only and the host does not read it.
+    open(os.path.join(out,'tc_noscroll'),'w').write(''.join('%s rows=%d slots_tsc_isc_zeroed=%d bytes=%d\n' % s for s in _tcstats))
     # 本地改动：把中文字体子集放进覆盖层目录（App 只带这一份；宿主 hle_fs.c 在 OpenFile 里替换 CJK 字体）
     # Local change: put the Chinese font subset into the overlay directory (single copy in the app; the host
     # hle_fs.c redirects CJK font opens to it).
