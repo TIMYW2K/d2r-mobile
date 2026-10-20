@@ -650,8 +650,8 @@ static int tab_walk(uint64_t w, uint64_t xy, int dep, uint64_t vt_tab, int *delt
             if (!cn || strncmp(cn, "Image", 5) || cn[5] < '0' || cn[5] > '9' || nt >= 32) continue; int x = *(int32_t *)(c + 0x70), kk = atoi(cn + 5); tabs[nt].x = x; tabs[nt++].k = kk;
             if (kk == sel) { act = 1; ax = x; }
             uint64_t cvt = *(uint64_t *)c, fn = *(uint64_t *)(cvt + 0x48); if (((int (*)(uint64_t, uint64_t))fn)(c, xy) & 1) { hit = 1; hx = x; hk = kk; } }
-        if (hit > 0) { static int lg; if (lg++ < 200) LOG("界面页签：页签条「%s」可见 %d 个，当前选中第 %d 个%s，点中第 %d 个", nm ? (const char *)nm : "?", nt, sel, act > 0 ? "" : "（不在可见页签里，不切）", hk); }
-        if (hit > 0 && act > 0) { int d = 0; for (int i = 0; i < nt; i++) { if (tabs[i].x > ax && tabs[i].x <= hx) d++; if (tabs[i].x < ax && tabs[i].x >= hx) d--; }
+        if (hit > 0) { static int lg; if (lg++ < 200) LOG("界面页签：页签条「%s」可见 %d 个，当前记录第 %d 个%s，点中目标第 %d 个", nm ? (const char *)nm : "?", nt, sel, act > 0 ? "" : "（当前项无效，按目标页签同步）", hk); }
+        if (hit > 0) { int d = 0; if (act > 0) for (int i = 0; i < nt; i++) { if (tabs[i].x > ax && tabs[i].x <= hx) d++; if (tabs[i].x < ax && tabs[i].x >= hx) d--; }
             *delta = d; *top = nm && !strcmp((const char *)nm, "UISwitcherTabs"); g_tab_k = hk; strlcpy(g_tab_name, nm ? (const char *)nm : "", sizeof g_tab_name); dm_wref_set(&g_tab_ref, w); atomic_store(&g_tab_have, 1); return 1; }
         return 0;
     }
@@ -1158,7 +1158,7 @@ void dm_ui_tab_go(void) {   // 前端在「点按落在页签上」（最近一�
     int d = atomic_load(&g_tab_delta), top = atomic_load(&g_tab_top);
     if (top == 4) { atomic_store(&g_set_back_at, dm_guest_frame() + 2); LOG("界面对话菜单：商人页结果提示 → 按返回键收掉"); return; }
     if (top == 3) { atomic_store(&g_tab_then, DM_BTN_A); atomic_store(&g_tab_mask, d > 0 ? DM_BTN_DOWN : DM_BTN_UP); atomic_store(&g_tab_left, d > 0 ? d : -d); LOG("界面对话菜单：方向键 %+d 行后按 A", d); return; }
-    if (!d) return;
+    if (!d && !atomic_load(&g_tab_have)) return;
     // 切页前把游戏的光标挪到这次点的页签上（发一次 MouseMove）：光标原先停在上一页最后碰过的地方（比如拖放的落点），新页的控件正好出现在那里就会弹它的悬停说明——
     // 物品栏里拖完东西再点「佣兵」页签，佣兵页的技能图标说明框盖住半个面板（固定回归 f 局截图）。页签上没有悬停说明，停在那里最干净
     // 只置一个原子标志、由指针泵（游戏主线程）去发：这里有两个调用方（前端点页签、绑定技能框里切页在游戏主线程），不能往单写者的 g_up_q 里排
@@ -1166,7 +1166,7 @@ void dm_ui_tab_go(void) {   // 前端在「点按落在页签上」（最近一�
     // after dragging something in the inventory and then tapping the 「佣兵」(Mercenary) tab, the tooltip of a skill icon on the mercenary page covers half the panel (screenshot from fixed regression run f). Tabs have no hover tooltip, so resting there is cleanest
     // Only one atomic flag is set and the pointer pump (game main thread) does the sending: there are two callers here (the front end tapping a tab, and page switching inside the skill binding box on the game main thread), so it must not be queued into the single-writer g_up_q
     atomic_store(&g_tab_unhover, 1);
-    if (atomic_load(&g_tab_have)) { atomic_store(&g_tab_left, 0); atomic_store(&g_tab_direct, 1); LOG("界面页签：切 %+d 页 → 直接选中第 %d 个（%s）", d, g_tab_k, g_tab_name); return; }
+    if (atomic_load(&g_tab_have)) { atomic_store(&g_tab_left, 0); atomic_store(&g_tab_direct, 1); LOG("界面页签：目标第 %d 个（%s），页差 %+d → 同步选中", g_tab_k, g_tab_name, d); return; }
     atomic_store(&g_tab_mask, d > 0 ? (top ? DM_BTN_R : DM_BTN_ZR) : (top ? DM_BTN_L : DM_BTN_ZL)); atomic_store(&g_tab_left, d > 0 ? d : -d);
     LOG("界面页签：切 %+d 页（%s）", d, top ? "L / R" : "ZL / ZR");
 }
@@ -2867,41 +2867,7 @@ static uint64_t dm_txt_widget(uint64_t w, int dep) {
         uint64_t r = dm_txt_widget(c, dep + 1); if (r) return r; }
     return 0;
 }
-static void dm_set_text_code(uint64_t w, const char *code) {
-    if (!w) return;
-    uint64_t tp = *(uint64_t *)(w + 0x88), tl = *(uint64_t *)(w + 0x90);
-    if (!tp || tl < 1 || tl > 0x3f0) return;
-    uint8_t *b = (uint8_t *)tp;
-    if (b[0] == 0xee && tl >= 4) { size_t l = tl - 4; memmove(b, b + 4, l); tl = l; }
-    if (tl + 4 >= 0x3f0) return;
-    memmove(b + 4, b, tl + 1); memcpy(b, code, 4); *(uint64_t *)(w + 0x90) = tl + 4;
-}
-static const char *dm_hp_code(int pct) {
-    if (pct < 0) return "\xee\x81\xbe" "0";     // 没数据：白色 | no data: white
-    if (pct >= 75) return "\xee\x81\xbe" "2";   // 绿
-    if (pct >= 50) return "\xee\x81\xbe" "9";   // 黄
-    if (pct >= 25) return "\xee\x81\xbe" "8";   // 橙
-    return "\xee\x81\xbe" "1";                  // 红
-}
-static void dm_ui_text_tint(void) {
-    static int init;
-    static const char *GOLD = "\xee\x81\xbe" "4";
-    module_t *m = main_module(); if (!m) return;
-    uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
-    uint64_t hud = ui_panel(root, "HUDPanel");
-    if (hud) { uint64_t ch = *(uint64_t *)(hud + 0x58), n = *(uint64_t *)(hud + 0x60);
-        for (uint64_t i = 0; i < n && ch && n < 128; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (!c) continue;
-            const char *nm = (const char *)*(uint64_t *)(c + 8);
-            if (nm && (!strcmp(nm, "HealthBall") || !strcmp(nm, "ManaBall"))) dm_set_text_code(dm_txt_widget(c, 1), GOLD); } }
-    uint64_t hire = ui_panel(root, "HireablesPanel");
-    if (hire) { uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
-        for (uint64_t i = 0; i < n && ch && n < 64; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (!c || !*(uint8_t *)(c + 0x50)) continue;
-            uint64_t t = dm_txt_widget(c, 1); if (!t) continue;
-            int dm_friendly_hp_pct(void); dm_set_text_code(t, dm_hp_code(dm_friendly_hp_pct())); } }
-    (void)init;
-}
-
-// 本地改动：生命/法力球数字金色 + 左上角佣兵/傀儡名字按血量四档色。
+// 本地改动：采集左上角佣兵名字，让 iOS 覆盖层按真实佣兵血量绘制；球数字由 v4 字形素材负责。
 // 做法：把游戏自己那份文字的「矩形 + 内容」读出来，然后把游戏文字清空（避免重复显示），只在覆盖层重画一份。
 // Local change: capture the game's own HUD text (rect + string), clear it, and redraw it in the overlay.
 static void dm_widget_rect(uint64_t w, int32_t vw, int32_t vh, float out[4]) {
@@ -2922,20 +2888,11 @@ static void dm_widget_rect(uint64_t w, int32_t vw, int32_t vh, float out[4]) {
     { int lo = sy, hi = vh - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hit(w, (uint32_t)sx | ((uint64_t)(uint32_t)m << 32)) & 1) lo = m; else hi = m - 1; } y1 = lo; }
     out[0] = (float)x0 / vw; out[1] = (float)y0 / vh; out[2] = (float)x1 / vw; out[3] = (float)y1 / vh;
 }
-static uint64_t dm_child_named(uint64_t w, const char *nm) {
-    if (!w) return 0;
-    uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60);
-    if (!ch || n > 256) return 0;
-    for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (!c) continue;
-        const char *cn = (const char *)*(uint64_t *)(c + 8);
-        if (cn && !strcmp(cn, nm)) return c; }
-    return 0;
-}
 typedef struct { float r[4]; char txt[64]; int len, has, rect_ok; } hud_slot;
 static hud_slot g_hs[3];   // 0=生命 1=法力 2=佣兵名字 | 0=life 1=mana 2=hireling
 static _Atomic int g_hud_ready;      // 采集完成 | captured
 static _Atomic int g_hud_stat[4];    // 生命当前/上限/法力当前/上限（备用）| life/max/mana/max
-static _Atomic int g_hud_mhp;        // 友方血量百分比 | friendly HP %
+static _Atomic int g_hud_mhp = -1;   // 当前佣兵血量百分比；-1 时名字保持白色 | current mercenary HP %; -1 keeps the name white
 // 文字缓冲的合理性检查：不能有控制字符（中文 UTF-8 高位字节允许），长度上限由调用方给
 // sanity check: no control bytes (UTF-8 continuation bytes are fine), the caller caps the length
 static int hud_text_ok(uint64_t tp, uint64_t tl) {
@@ -2966,8 +2923,8 @@ static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
     int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
-    uint64_t hud = ui_panel(root, "HUDPanel"), hire = ui_panel(root, "HireablesPanel");
-    // 生命/法力球的数字由布局里的 fontColor 直接改金色，这里不再采集/清空，避免和游戏抢同一段文字
+    uint64_t hire = ui_panel(root, "HireablesPanel");
+    // 球数字由 UIKit 的 vital 字形绘制；这里只采集佣兵栏名字，避免对屏外 ValueDisplay 做无效着色。
     g_hs[0].has = 0; g_hs[0].len = 0;
     g_hs[1].has = 0; g_hs[1].len = 0;
     uint64_t ic = 0;
@@ -2975,11 +2932,10 @@ static void dm_ui_hud_pump(void) {
         for (uint64_t i = 0; i < n && ch && n < 256 && !ic; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (c && *(uint8_t *)(c + 0x50)) ic = c; } }
     hud_capture(&g_hs[2], ic, vw, vh);
     int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(m->base + 0x5b9290);
-    uint64_t dm_player_unit(void); int dm_friendly_hp_pct(void); uint64_t pl = dm_player_unit();
+    uint64_t dm_player_unit(void); uint64_t pl = dm_player_unit();
     if (pl) { atomic_store(&g_hud_stat[0], get(pl, 6, 0) >> 8); atomic_store(&g_hud_stat[1], get(pl, 7, 0) >> 8);
               atomic_store(&g_hud_stat[2], get(pl, 8, 0) >> 8); atomic_store(&g_hud_stat[3], get(pl, 9, 0) >> 8); }
-    { int dm_merc_hp_pct(void); int dm_friendly_hp_pct(void); int mp = dm_merc_hp_pct();
-      if (mp < 0) mp = dm_friendly_hp_pct(); atomic_store(&g_hud_mhp, mp); }
+    { int dm_merc_hp_pct(void); atomic_store(&g_hud_mhp, dm_merc_hp_pct()); }
     atomic_store(&g_hud_ready, (g_hs[0].has | (g_hs[1].has << 1) | (g_hs[2].has << 2)));
 }
 int dm_hud_overlay(float rects[12], char txt[3][64], int lens[3], int *flags, int *stat4, int *mhp) {
@@ -2990,13 +2946,16 @@ int dm_hud_overlay(float rects[12], char txt[3][64], int lens[3], int *flags, in
     *mhp = atomic_load(&g_hud_mhp);
     return 1;
 }
+int dm_hud_merc_hp_color_band(void) {
+    int hp = atomic_load(&g_hud_mhp);
+    return hp >= 75 ? 3 : hp >= 50 ? 2 : hp >= 25 ? 1 : hp >= 0 ? 0 : -1;
+}
 
 
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
     dm_ui_hud_pump();   // 每帧采集 HUD 文字（清掉游戏原文字、只留覆盖层）| capture HUD text every frame
-    { static unsigned tnt; if ((tnt++ % 15) == 0) dm_ui_text_tint(); }
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame
     ui_watch_pump();
@@ -3008,10 +2967,12 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
     { static int st; static uint64_t at; uint64_t sb = atomic_load(&g_set_back_at); module_t *sm = main_module(); uint64_t hroot = 0; if (sm) memcpy(&hroot, sm->base + 0x2f05458, 8);
       if (sb && fr >= sb) { atomic_store(&g_set_back_at, 0); ui_auto_key(DM_BTN_B); }
       { uint64_t qb = atomic_load(&g_speech_back_at); if (qb && fr >= qb) { atomic_store(&g_speech_back_at, 0); uint64_t qp = hroot ? ui_find(hroot, "QuestLogPanelExpansion", 1) : 0; if (qp && *(uint8_t *)(qp + 0x50)) ui_auto_key(DM_BTN_B); } }
-      if ((atomic_load(&g_tab_left) > 0 || atomic_load(&g_tab_direct)) && atomic_load(&g_tab_top) == 1) { uint64_t sp = hroot ? ui_find(hroot, "SettingsPanel", 1) : 0; int open = sp && *(uint8_t *)(sp + 0x50);
+      int tab_work = atomic_load(&g_tab_left) > 0 || atomic_load(&g_tab_direct), tab_change = atomic_load(&g_tab_left) > 0;
+      if (atomic_load(&g_tab_direct)) { uint64_t sw = hroot ? ui_find(hroot, "UISwitcher", 0) : 0; tab_change = !sw || *(int32_t *)(sw + 0x1b8) != g_tab_k; }
+      if (tab_work && tab_change && atomic_load(&g_tab_top) == 1) { uint64_t sp = hroot ? ui_find(hroot, "SettingsPanel", 1) : 0; int open = sp && *(uint8_t *)(sp + 0x50);
           if (st == 0 && open) { ui_auto_key(DM_BTN_B); st = 1; at = fr + 36; LOG("界面页签：设置页开着，先按返回键退出"); return; }
           if (st == 1) { if (open && fr < at) return; st = 0; if (open) { atomic_store(&g_tab_left, 0); atomic_store(&g_tab_direct, 0); LOG("界面页签：设置页没关（在等确认框），这次不切页签"); return; } } }
-      else if (!atomic_load(&g_tab_left) && !atomic_load(&g_tab_direct)) st = 0;
+      else if (!tab_change) st = 0;
       if (atomic_exchange(&g_tab_direct, 0) && sm && hroot) {   // 直接切：页签条还在界面树里、可见、还是页签条类，才调 | direct switch: called only if the tab bar is still in the UI tree, visible, and still of the tab bar class
           uint64_t gw = dm_wref_get(&g_tab_ref), tw = gw && ui_has(hroot, gw, 0) ? gw : 0, us = ui_find(hroot, "UISwitcher", 0); int d = atomic_load(&g_tab_delta);
           if (!strcmp(g_tab_name, "UISwitcherTabs") && us && *(uint8_t *)(us + 0x50) && *(uint64_t *)(*(uint64_t *)us + 0x28) == (uint64_t)sm->base + 0x404fd8) {
@@ -3020,35 +2981,15 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
               // Top function pages (quest log ... options): the pages are switched by the function page panel UISwitcher itself, and it does not take the tab bar's page-switch message. It takes L / R (the two branches 0x4052a8 / 0x4052d4 of message handler main+0x404fd8),
               // both of which compute "current page ± 1" and then call main+0x405898(panel, target page, direction); here the target page is given to it directly, in one step. Current page +0x1b8, page count +0x188
               int cur = *(int32_t *)(us + 0x1b8), n = *(int32_t *)(us + 0x188), to = g_tab_k; if (to < 0) to = 0; if (n > 0 && to >= n) to = n - 1;   // 页号 = 页签的第 K 个（隐藏的佣兵页也占一页），不能用可见页签数推：没佣兵时从选项往回点物品栏会多走一页 | page number = the Kth tab (the hidden mercenary page also takes up a page); it cannot be derived from the visible tab count: without a mercenary, tapping back from options to the inventory panel would go one page too far
-              // 本地改动（修 bug：点顶部功能页签时黄色高亮不跟随）：原版「点页签」这条路的动作都在页签条自己身上
-              // （0xad9b80：写 +0xdc4、放切页音效、经界面根发切页消息），而换页函数 0x405898 只负责装卸页面、
-              // 完全不碰页签条（反汇编 0x405898 里没有任何页签条相关的读写；L / R 两支也只是算完 当前页±1 就跳进它）。
-              // 所以必须**先照原版点一次页签**（高亮从这条路更新），页面要是没跟上再用 0x405898 补一刀
-              // （原作者的观察：顶部功能页不接页签条那条切页消息）。顺序反过来就会「页面换了、高亮没换」。
-              // Local change (bug fix: tapping a top function tab left the yellow highlight on the old tab): in the
-              // original game all the work of "tapping a tab" is done by the tab bar itself (0xad9b80: writes +0xdc4,
-              // plays the page sound, sends the page-change message through the UI root), while the page switch
-              // 0x405898 only loads and unloads pages and never touches the tab bar (its disassembly reads and writes
-              // nothing tab-bar related, and the L / R branches just compute current+/-1 and jump into it). So the tab
-              // must be selected first, the original way; if the page did not follow, 0x405898 is used as a fallback
-              // (the original author's observation: the top function page panel does not take the tab bar's
-              // page-change message). The old order produced "page switched, highlight not".
-              int sel_ok = 0;
-              if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8) { ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, to, 0); sel_ok = 1; }
-              if (*(int32_t *)(us + 0x1b8) != to) ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, d > 0);
-              // 本地改动（修 bug：点顶部功能页签时黄色高亮不跟随）：页面是 UISwitcher 自己换的，但页签条自己记的
-              // 「当前选中第几个」+0xdc4 没人更新，而高亮（以及翻页键）读的就是它 —— 所以高亮留在旧页签上。
-              // 这里补一次「选中第 to 个」，用页签条自己的 0xad9b80（正是下面其它页签条走的那一支）。功能页面板
-              // 不接页签条的切页消息（见上面的注释），所以不会因此多切一页；声音传 0，免得与换页音重叠。
-              // Local change (bug fix: tapping a top function tab left the yellow highlight on the old tab): the page
-              // is switched by UISwitcher itself, but nothing updates the tab bar's own "which one is current"
-              // (+0xdc4), and that is what the highlight (and the page keys) read. Select the target tab here with the
-              // tab bar's own 0xad9b80, the same call the other tab bars use below. The function page panel does not
-              // take the tab bar's page-switch message (see above), so this cannot switch the page twice; the sound
-              // argument is 0 so it does not overlap the page-change sound.
-              LOG("界面页签：功能页第 %d → 第 %d 页（现为 %d；页签%s选中 %d）", cur, to, *(int32_t *)(us + 0x1b8), sel_ok ? "" : "没选到、只切了页，", sel_ok ? TAB_SEL(tw) : -1); }
+              // Function pages and the tab strip keep separate indices: switch the page first, then sync the strip.
+              // 功能页与页签条分别保存当前项：先装载目标页，再同步页签条。
+              if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) {
+                  if (cur != to) ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, to > cur);
+                  ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, to, 0); int selected = TAB_SEL(tw);
+                  LOG("界面页签：功能页第 %d → 第 %d 页；页签记录同步到 %d%s", cur, to, selected, selected == to ? "" : "（目标页签未选中）"); }
+              else LOG("【红】界面页签：功能页目标 %d，但页签条已不在 / 不可见，这次不切", to); }
           else if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) { int was = TAB_SEL(tw);
-              ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, g_tab_k, 1); LOG("界面页签：「%s」第 %d → 第 %d 个（直接选中，现为 %d）", g_tab_name, was, g_tab_k, TAB_SEL(tw)); }
+              ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, g_tab_k, was != g_tab_k); LOG("界面页签：「%s」第 %d → 目标第 %d 个（现为 %d）", g_tab_name, was, g_tab_k, TAB_SEL(tw)); }
           else LOG("【红】界面页签：页签条「%s」已不在 / 不可见，这次不切", g_tab_name);
           dm_wref_set(&g_tab_ref, 0); atomic_store(&g_tab_have, 0); } }
     { static uint64_t tnext; if (fr >= tnext) { if (atomic_load(&g_tab_left) > 0) { atomic_fetch_sub(&g_tab_left, 1); ui_auto_key(atomic_load(&g_tab_mask)); tnext = fr + 2; }

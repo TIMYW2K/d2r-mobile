@@ -120,27 +120,6 @@ eb['fields']['rect']['x']=-6000   # 挪出屏幕（实例仍在）。靠底图�
 # Native skill buttons 1–5: instances kept (bindings are read from them), moved under the slot 5 base image to hide them -- the right-side skill area has iOS draw PC-style round skill buttons, and the native square frames no longer show under the circles
 for n in ('SkillButton1','SkillButton2','SkillButton3','SkillButton4','SkillButton5'):
     w_=by[n]; kids.remove(w_); kids.insert(kids.index(by['Overlay']),w_); w_['fields']['rect']=dict(by['SkillButton6']['fields']['rect']); w_['fields']['anchor']={'x':0.5,'y':1}
-# 本地改动：生命/法力球上的数字改成金色 —— 那两处数字是游戏原版 HUD 的 TextBoxWidget（ValueDisplay），
-# 按 dm/ios/NativeHUD/README.zh-CN.md 的说明，球和上面的文字都是原版部件，只有位置由我们调整；这里只给它加一个 fontColor。
-# Local change: gold colour for the life/mana orb numbers. Those numbers are the original HUD's own TextBoxWidget
-# ("ValueDisplay") inside HealthBall / ManaBall (see NativeHUD/README.zh-CN.md: the balls and their text are original
-# parts, only their placement is ours), so just add a fontColor to the text style here.
-GOLD_VALUE_COLOR = {'r': 217, 'g': 201, 'b': 161}   # #D9C9A1（与左下角版本号同一个金色） | same gold as the version label
-def _gold_ball_numbers(node):
-    if not isinstance(node, dict):
-        return
-    if node.get('name') in ('HealthBall', 'ManaBall'):
-        for ch in node.get('children', []) or []:
-            if isinstance(ch, dict) and ch.get('name') == 'ValueDisplay':
-                fields = ch.setdefault('fields', {})
-                style = fields.get('style')
-                if not isinstance(style, dict):
-                    style = fields['style'] = {}
-                style['fontColor'] = dict(GOLD_VALUE_COLOR)
-    for ch in node.get('children', []) or []:
-        _gold_ball_numbers(ch)
-_gold_ball_numbers(j)
-
 json.dump(j,open(f'{OUT}/hud.json','w'),ensure_ascii=False,indent=1)
 
 # ---- 前端 UIKit 素材（hud_v4_ui/）：几何（效果图像素，前端按 屏高/1320 换算、以屏宽中线对齐效果图 x=1434）、预渲染字形、难度数字、选择条格子 ----
@@ -172,7 +151,10 @@ font_v=ImageFont.truetype(_OURFONT,30) if os.path.isfile(_OURFONT) else SRC.font
 import re, dm_i18n   # 生命 / 法力两行的字形：原有中文这一套 + 中英表 dmHudLife / dmHudMana 英文用到的字（英文版；字形不全 v4text 会空着） | glyphs for the life / mana rows: the existing Chinese set plus the characters used by the English of dmHudLife / dmHudMana in the Chinese-English string table (English version; with missing glyphs v4text would leave blanks)
 _vt={k:(z,e) for k,z,e in dm_i18n.rows()}; _vc='生命法力:/ 0123456789'
 _vc+=''.join(sorted({c for k in ('dmHudLife','dmHudMana') for c in dm_i18n.FMT.sub('',_vt[k][0]+_vt[k][1])}-set(_vc)))
-ui['vital']['glyphs']=glyphs('v',(235,235,235,255),font_v,_vc)
+# 右上地图名使用游戏的暗金色；数值由 UIKit 贴预渲染字形（不是已移出屏幕的原生 ValueDisplay），用同一暗金色。
+# The top-right map label uses the game's dark gold; the visible values are UIKit glyphs (the native ValueDisplay is off-screen), so bake them in that same dark gold.
+MAP_LABEL_GOLD = (212,196,145,255)  # FontColorGold 的实机取色 | sampled from the in-game FontColorGold
+ui['vital']['glyphs']=glyphs('v',MAP_LABEL_GOLD,font_v,_vc)
 g['slot'].save(os.path.join(UI,'slot.png'))
 FULL.save(os.path.join(UI,'base_full.png')); ui['base']={'x':bx0,'y':by0}
 lvlsheet=SRC.img('levelupbutton')   # 原版 LevelUpButton 两帧（亮 / 按下），整格替换第 6 格 | The original game's LevelUpButton two frames (lit / pressed), replaces slot 6 entirely

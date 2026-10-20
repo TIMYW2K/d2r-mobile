@@ -237,9 +237,8 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
 - (void)drawRect:(CGRect)rect {
     (void)rect;
     CGContextRef c = UIGraphicsGetCurrentContext();
-    // 本地改动：生命/法力球数字金色 + 左上角佣兵/傀儡名字按血量四档色。
-    // 宿主已把游戏原文字清空，这里只画一份，所以不会出现两份。
-    // The host cleared the game's own text, so there is exactly one copy drawn here.
+    // 宿主每帧清掉游戏原有的佣兵名字，由覆盖层按佣兵实血重绘；球上数值由预渲染字形素材绘制。
+    // The host clears the game's mercenary name each frame; this overlay redraws it using the mercenary's actual HP. Orb values come from pre-rendered glyph assets.
     {
         extern int dm_hud_overlay(float rects[12], char txt[3][64], int lens[3], int *flags, int *stat4, int *mhp);
         extern void dm_ui_rect(int *x, int *y, int *w, int *h);
