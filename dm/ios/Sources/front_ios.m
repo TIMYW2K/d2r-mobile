@@ -331,6 +331,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
             in_box = !(pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1);
         }
         if (!in_box) return NO;   // 区域外静默拒绝（缩放已定稿，不再记日志） | outside: silent reject
+    }
     return YES;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
