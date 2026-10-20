@@ -50,15 +50,35 @@ workflows:
           set -euo pipefail
           cd tools
           SHORT=$(git -C upstream rev-parse --short=12 HEAD)
-          TAG="prepared-manual-$SHORT"
-          URL="https://github.com/$SOURCE_REPOSITORY/releases/download/$TAG/D2RMobile-Prepared.zip"
-          DIGEST=$(curl -fsSL "https://api.github.com/repos/$SOURCE_REPOSITORY/releases/tags/$TAG" \
-                   | python3 -c 'import json,sys; d=json.load(sys.stdin); a=d["assets"][0]; print(a.get("digest") or "")')
-          if [ -z "$DIGEST" ]; then echo "❌ 找不到 $TAG 的预处理包（先在本机跑一次发布）"; exit 1; fi
-          echo "prepared: $TAG  $DIGEST"
-          printf 'PREPARED_INPUT={"url":"%s","sha256":"%s"}\n' "$URL" "$DIGEST" > .prepared-env
-          cat .prepared-env
+          cat > pick_pack.py <<'PYEOF'
+#!/usr/bin/env python3
+"""Print the prepared package release to use: exact prepared-manual-<HEAD12> if present, else the newest one.
+   Output: line 1 tag, line 2 asset URL, line 3 digest."""
+import json, sys, urllib.request
 
+repo, short = sys.argv[1], sys.argv[2]
+req = urllib.request.Request('https://api.github.com/repos/%s/releases?per_page=40' % repo,
+                             headers={'User-Agent': 'codemagic'})
+rels = json.load(urllib.request.urlopen(req, timeout=60))
+cands = [r for r in rels if r['tag_name'].startswith('prepared-manual-') and r['assets']]
+exact = [r for r in cands if r['tag_name'] == 'prepared-manual-' + short]
+pick = (exact or cands or [None])[0]
+if not pick:
+    sys.exit('no prepared package release found')
+a = pick['assets'][0]
+print(pick['tag_name'])
+print(a['browser_download_url'])
+print(a.get('digest') or '')
+PYEOF
+          INFO=$(python3 pick_pack.py "$SOURCE_REPOSITORY" "$SHORT")
+          TAG=$(printf '%s\n' "$INFO" | sed -n 1p)
+          URL=$(printf '%s\n' "$INFO" | sed -n 2p)
+          DIGEST=$(printf '%s\n' "$INFO" | sed -n 3p)
+          if [ -z "$DIGEST" ]; then echo "no prepared package found"; exit 1; fi
+          echo "prepared package: $TAG"
+          echo "  url: $URL"
+          echo "  digest: $DIGEST"
+          printf 'PREPARED_INPUT={"url":"%s","sha256":"%s"}\n' "$URL" "$DIGEST" > .prepared-env
       - name: Prepare inputs (download pack + regenerate interface + native inputs)
         script: |
           set -euo pipefail
