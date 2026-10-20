@@ -234,6 +234,23 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     CGFloat k = l->joy_radius / 60;
     if (k <= 0) return;
     CGContextRef c = UIGraphicsGetCurrentContext();
+    // 本地改动：左下角显示版本号（主界面与局内都显示；小字、半透明，不挡触屏控件）。
+    // Local change: show the version string at the bottom-left corner (both on the main screens and in game; small and
+    // faint so it never covers the touch controls).
+    {
+        static NSString *ver; static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            NSString *s = [NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] description];
+            if (s.length) ver = [@"v" stringByAppendingString:s];
+        });
+        if (ver.length) {
+            UIFont *vf = dm_game_font(9.0);
+            if (vf) { NSMutableParagraphStyle *vp = [NSMutableParagraphStyle new]; vp.alignment = NSTextAlignmentLeft;
+                [ver drawInRect:CGRectMake(self.bounds.origin.x + 6, self.bounds.origin.y + self.bounds.size.height - 15, 90, 12)
+                    withAttributes:@{NSFontAttributeName:vf, NSForegroundColorAttributeName:[UIColor colorWithWhite:1 alpha:0.45], NSParagraphStyleAttributeName:vp}]; }
+        }
+    }
+
     uint64_t hostNow=now_ns(); dm_tg_snapshot native=self.nativeMapping;
     // 圆钮上可能写出来的字一律走中英表（dm/i18n/ui_text.tsv），跟游戏语言：技能钮画图标 / 键位图、不写字；腰带 / 十字由底栏画（下面整个跳过），这几格不会写字
     // Any text that could be written on round buttons always goes through the bilingual table (dm/i18n/ui_text.tsv) and follows the game language: skill buttons draw icons / key glyphs and no text; the belt / cross are drawn by the bottom bar (skipped entirely below), so these cells never get text

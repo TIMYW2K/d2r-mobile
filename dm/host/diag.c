@@ -377,11 +377,10 @@ static void monhp_tint(const uint64_t *regs, uint64_t payload) {
     int hp = get(unit, 6, 0) >> 8, mx = get(unit, 7, 0) >> 8;
     if (hp <= 0 || mx <= 0) return;
     int pct = hp * 100 / mx;
-    const char *code = pct >= 80 ? "\xee\x81\xbe" "2"     // 绿
-                     : pct >= 60 ? "\xee\x81\xbe" "9"     // 黄
-                     : pct >= 40 ? "\xee\x81\xbe" "4"     // 金
-                     : pct >= 20 ? "\xee\x81\xbe" "8"     // 橙
-                                 : "\xee\x81\xbe" "1";    // 红
+    const char *code = pct >= 75 ? "\xee\x81\xbe" "2"     // 绿 | green
+                     : pct >= 50 ? "\xee\x81\xbe" "9"     // 黄 | yellow
+                     : pct >= 25 ? "\xee\x81\xbe" "8"     // 橙 | orange
+                                 : "\xee\x81\xbe" "1";    // 红 | red
     char *buf = (char *)name; size_t len = strnlen(buf, 0x7f0);
     if (len >= 0x7f0) return;
     memmove(buf + 4, buf, len + 1);
