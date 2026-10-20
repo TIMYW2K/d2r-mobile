@@ -120,6 +120,27 @@ eb['fields']['rect']['x']=-6000   # 挪出屏幕（实例仍在）。靠底图�
 # Native skill buttons 1–5: instances kept (bindings are read from them), moved under the slot 5 base image to hide them -- the right-side skill area has iOS draw PC-style round skill buttons, and the native square frames no longer show under the circles
 for n in ('SkillButton1','SkillButton2','SkillButton3','SkillButton4','SkillButton5'):
     w_=by[n]; kids.remove(w_); kids.insert(kids.index(by['Overlay']),w_); w_['fields']['rect']=dict(by['SkillButton6']['fields']['rect']); w_['fields']['anchor']={'x':0.5,'y':1}
+# 本地改动：生命/法力球上的数字改成金色 —— 那两处数字是游戏原版 HUD 的 TextBoxWidget（ValueDisplay），
+# 按 dm/ios/NativeHUD/README.zh-CN.md 的说明，球和上面的文字都是原版部件，只有位置由我们调整；这里只给它加一个 fontColor。
+# Local change: gold colour for the life/mana orb numbers. Those numbers are the original HUD's own TextBoxWidget
+# ("ValueDisplay") inside HealthBall / ManaBall (see NativeHUD/README.zh-CN.md: the balls and their text are original
+# parts, only their placement is ours), so just add a fontColor to the text style here.
+GOLD_VALUE_COLOR = {'r': 217, 'g': 201, 'b': 161}   # #D9C9A1（与左下角版本号同一个金色） | same gold as the version label
+def _gold_ball_numbers(node):
+    if not isinstance(node, dict):
+        return
+    if node.get('name') in ('HealthBall', 'ManaBall'):
+        for ch in node.get('children', []) or []:
+            if isinstance(ch, dict) and ch.get('name') == 'ValueDisplay':
+                fields = ch.setdefault('fields', {})
+                style = fields.get('style')
+                if not isinstance(style, dict):
+                    style = fields['style'] = {}
+                style['fontColor'] = dict(GOLD_VALUE_COLOR)
+    for ch in node.get('children', []) or []:
+        _gold_ball_numbers(ch)
+_gold_ball_numbers(j)
+
 json.dump(j,open(f'{OUT}/hud.json','w'),ensure_ascii=False,indent=1)
 
 # ---- 前端 UIKit 素材（hud_v4_ui/）：几何（效果图像素，前端按 屏高/1320 换算、以屏宽中线对齐效果图 x=1434）、预渲染字形、难度数字、选择条格子 ----
