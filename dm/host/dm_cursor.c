@@ -2926,9 +2926,78 @@ static void dm_ui_text_tint(void) {
     (void)init;
 }
 
+// 本地改动：生命/法力球数字改金色、左上角佣兵/傀儡名字按血量四档着色 —— 都靠覆盖层画，不是改游戏文字控件。
+// 命中函数 = 虚表 +0x48（参数 xy 打包成 64 位，界面虚拟坐标 vw×vh）；矩形用二分四条边得到。
+// Local change: draw the life/mana numbers gold and the hireling name in the HP colour from the overlay.
+static void dm_widget_rect(uint64_t w, int32_t vw, int32_t vh, float out[4]) {
+    uint64_t f = *(uint64_t *)(*(uint64_t *)w + 0x48);
+    int (*hit)(uint64_t, uint64_t) = (int (*)(uint64_t, uint64_t))f;
+    if (!hit || vw <= 0 || vh <= 0) return;
+    int sx = -1, sy = -1;
+    for (int gy = 1; gy < 40 && sy < 0; gy++)
+        for (int gx = 1; gx < 40; gx++) {
+            int x = vw * gx / 40, y = vh * gy / 40;
+            if (hit(w, (uint32_t)x | ((uint64_t)(uint32_t)y << 32)) & 1) { sx = x; sy = y; break; }
+        }
+    if (sx < 0) return;
+    int x0 = 0, x1 = vw - 1, y0 = 0, y1 = vh - 1;
+    { int lo = 0, hi = sx; while (lo < hi) { int m = (lo + hi) / 2; if (hit(w, (uint32_t)m | ((uint64_t)(uint32_t)sy << 32)) & 1) hi = m; else lo = m + 1; } x0 = lo; }
+    { int lo = sx, hi = vw - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hit(w, (uint32_t)m | ((uint64_t)(uint32_t)sy << 32)) & 1) lo = m; else hi = m - 1; } x1 = lo; }
+    { int lo = 0, hi = sy; while (lo < hi) { int m = (lo + hi) / 2; if (hit(w, (uint32_t)sx | ((uint64_t)(uint32_t)m << 32)) & 1) hi = m; else lo = m + 1; } y0 = lo; }
+    { int lo = sy, hi = vh - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hit(w, (uint32_t)sx | ((uint64_t)(uint32_t)m << 32)) & 1) lo = m; else hi = m - 1; } y1 = lo; }
+    out[0] = (float)x0 / vw; out[1] = (float)y0 / vh; out[2] = (float)x1 / vw; out[3] = (float)y1 / vh;
+}
+static uint64_t dm_child_named(uint64_t w, const char *nm) {
+    if (!w) return 0;
+    uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60);
+    if (!ch || n > 256) return 0;
+    for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (!c) continue;
+        const char *cn = (const char *)*(uint64_t *)(c + 8);
+        if (cn && !strcmp(cn, nm)) return c; }
+    return 0;
+}
+static _Atomic float g_hud_life[4], g_hud_mana[4], g_hud_merc[4];
+static _Atomic int g_hud_lv, g_hud_lmax, g_hud_mv, g_hud_mmax, g_hud_mhp, g_hud_has;
+static char g_hud_name[64]; static _Atomic int g_hud_name_len;
+static void dm_ui_hud_pump(void) {
+    module_t *m = main_module(); if (!m) return;
+    uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
+    int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
+    uint64_t hud = ui_panel(root, "HUDPanel");
+    uint64_t hb = hud ? dm_child_named(hud, "HealthBall") : 0, mb = hud ? dm_child_named(hud, "ManaBall") : 0;
+    float r[4] = {0, 0, 0, 0};
+    if (hb) { dm_widget_rect(hb, vw, vh, r); for (int i = 0; i < 4; i++) atomic_store(&g_hud_life[i], r[i]); }
+    if (mb) { dm_widget_rect(mb, vw, vh, r); for (int i = 0; i < 4; i++) atomic_store(&g_hud_mana[i], r[i]); }
+    uint64_t hire = ui_panel(root, "HireablesPanel"), ic = 0;
+    if (hire) { uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
+        for (uint64_t i = 0; i < n && ch && n < 256 && !ic; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (c && *(uint8_t *)(c + 0x50)) ic = c; } }
+    if (ic) { dm_widget_rect(ic, vw, vh, r); for (int i = 0; i < 4; i++) atomic_store(&g_hud_merc[i], r[i]);
+        uint64_t tw = dm_txt_widget(ic, 1); int nl = 0;
+        if (tw) { uint64_t tp = *(uint64_t *)(tw + 0x88), tl = *(uint64_t *)(tw + 0x90);
+            if (tp && tl > 0 && tl < 64) { nl = (int)tl; for (uint64_t k = 0; k < tl; k++) g_hud_name[k] = *(char *)(tp + k); g_hud_name[tl] = 0; } }
+        atomic_store(&g_hud_name_len, nl); }
+    // 数值：玩家生命/法力 + 友方单位血量百分比
+    int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(m->base + 0x5b9290);
+    uint64_t pl = dm_player_unit();
+    if (pl) { atomic_store(&g_hud_lv, get(pl, 6, 0) >> 8); atomic_store(&g_hud_lmax, get(pl, 7, 0) >> 8);
+               atomic_store(&g_hud_mv, get(pl, 8, 0) >> 8); atomic_store(&g_hud_mmax, get(pl, 9, 0) >> 8); }
+    atomic_store(&g_hud_mhp, dm_friendly_hp_pct());
+    atomic_store(&g_hud_has, 1);
+}
+int dm_hud_overlay(float life[4], float mana[4], float merc[4], int *lv, int *lmax, int *mv, int *mmax, int *mhp, char *name) {
+    if (!atomic_load(&g_hud_has)) return 0;
+    for (int i = 0; i < 4; i++) { life[i] = atomic_load(&g_hud_life[i]); mana[i] = atomic_load(&g_hud_mana[i]); merc[i] = atomic_load(&g_hud_merc[i]); }
+    *lv = atomic_load(&g_hud_lv); *lmax = atomic_load(&g_hud_lmax);
+    *mv = atomic_load(&g_hud_mv); *mmax = atomic_load(&g_hud_mmax);
+    *mhp = atomic_load(&g_hud_mhp);
+    int nl = atomic_load(&g_hud_name_len); if (nl > 0 && nl < 64) { memcpy(name, g_hud_name, nl); name[nl] = 0; } else name[0] = 0;
+    return 1;
+}
+
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
+    { static unsigned hu; if ((hu++ % 6) == 0) dm_ui_hud_pump(); }   // HUD 数值/矩形发布 | publish HUD values + rects
     { static unsigned tnt; if ((tnt++ % 15) == 0) dm_ui_text_tint(); }
     { static int done; if (!done && fr > 300) { done = 1; dm_probe_ui_text(); } }   // 临时探针：跑起来 5 秒后打一次 | one-shot locator probe
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread

@@ -741,6 +741,7 @@ static int state_read_item(uint64_t u, state_item *it, size_t ord, uint64_t *nex
 }
 enum { CLS_TBK = 533, CLS_TSC = 544 };   // 回城书 / 回城卷轴（原版 misc.txt 行序 + 武器 306 + 护甲 217，跳过 Expansion 分隔行；与手机存档 tsc=544 对上） | Tome of Town Portal / Scroll of Town Portal (the original game's misc.txt row order + weapons 306 + armor 217, skipping the Expansion separator row; matches tsc=544 in the phone save)
 static uint64_t g_player_unit;   // 最近一拍找到的受控玩家单位（0 = 没读到） | Controlled player unit found on the most recent tick (0 = not read)
+uint64_t dm_player_unit(void) { return g_player_unit; }   // 覆盖层画生命/法力数字用 | used by the overlay to draw life/mana
 // 测试开关 DM_TEST_WORLD_SEEK（造现场用，客户端一侧在 dm_world.c w_test_seek_step）的服务端一半：探路不走路，用游戏服务端自己的传送 main+0x7cc530(游戏, 单位, 房间, x, y, 0, 0)
 // ——传送技能、传送阵、任务挪人都调它（D2MOO sub_6FCBDFE0）：房间给 0 时它在单位当前房间与相邻房间里按坐标找，在落点旁找空位，给客户端发重定位包。
 // 所以一次只能跳到相邻房间：按关卡房间的矩形贴边关系做广度优先，朝「没去过的房间」一间一间跳；门、怪、墙都不挡。人进了一间房，相邻房间就会载入，要找的物件随之出现。
