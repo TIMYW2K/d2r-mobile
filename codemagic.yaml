@@ -1,0 +1,92 @@
+# Codemagic 构建配置（免费 macOS 机器出 unsigned IPA，不依赖 GitHub Actions）
+# Codemagic build config: one macOS machine builds the unsigned sideload IPA with the same pipeline as the
+# GitHub workflow (prepare -> generate interface -> xcodebuild -> package IPA), without GitHub Actions minutes.
+#
+# 用法 / How to use:
+#   1. codemagic.io 用 GitHub 账号登录 -> Add application -> 选 TIMYW2K/d2r-mobile -> 分支 lang-voice
+#   2. 项目设置里选 "codemagic.yaml" 配置（本文件在仓库根）
+#   3. 直接 Start new build（不需要任何签名证书：包是 ad-hoc 未签名，Sideloadly 装）
+#   4. 构建结束在 Artifacts 下载 D2RMobile-*.ipa
+# 说明: 预处理包按当前提交自动找 release 标签 prepared-manual-<前12位>，无需手工填 URL。
+# Note: the prepared package is auto-resolved from the release tagged prepared-manual-<HEAD12>.
+
+workflows:
+  d2r-ios:
+    name: D2R Mobile IPA (unsigned, sideload)
+    instance_type: mac_mini_m4          # macOS 26 / Xcode 26；若该机型不可用改成 mac_mini_m2 或删掉此行用默认
+    max_build_duration: 120
+    environment:
+      vars:
+        TOOLS_REPOSITORY: jiayx/d2r-mobile-build
+        SOURCE_REPOSITORY: TIMYW2K/d2r-mobile
+        SOURCE_REF: lang-voice
+        MINIMUM_IOS: "26.0"
+      # GH_TOKEN 可不填（仓库都是公开的，匿名 API 足够）
+    scripts:
+      - name: Check machine (macOS 26 / Xcode 26 required)
+        script: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Clone tools and source
+        script: |
+          set -euo pipefail
+          git clone --branch "$TOOLS_REPOSITORY" "https://github.com/$TOOLS_REPOSITORY.git" tools 2>/dev/null || \
+            git clone "https://github.com/$TOOLS_REPOSITORY.git" tools
+          git -C tools checkout main
+          git clone --branch "$SOURCE_REF" "https://github.com/$SOURCE_REPOSITORY.git" tools/upstream
+          git -C tools/upstream log --oneline -1
+
+      - name: Python environment
+        script: |
+          set -euo pipefail
+          cd tools
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check --upgrade pip
+          .venv/bin/python -m pip install --disable-pip-version-check pillow numpy PyYAML
+
+      - name: Resolve prepared package for this commit
+        script: |
+          set -euo pipefail
+          cd tools
+          SHORT=$(git -C upstream rev-parse --short=12 HEAD)
+          TAG="prepared-manual-$SHORT"
+          URL="https://github.com/$SOURCE_REPOSITORY/releases/download/$TAG/D2RMobile-Prepared.zip"
+          DIGEST=$(curl -fsSL "https://api.github.com/repos/$SOURCE_REPOSITORY/releases/tags/$TAG" \
+                   | python3 -c 'import json,sys; d=json.load(sys.stdin); a=d["assets"][0]; print(a.get("digest") or "")')
+          if [ -z "$DIGEST" ]; then echo "❌ 找不到 $TAG 的预处理包（先在本机跑一次发布）"; exit 1; fi
+          echo "prepared: $TAG  $DIGEST"
+          printf 'PREPARED_INPUT={"url":"%s","sha256":"%s"}\n' "$URL" "$DIGEST" > .prepared-env
+          cat .prepared-env
+
+      - name: Prepare inputs (download pack + regenerate interface + native inputs)
+        script: |
+          set -euo pipefail
+          cd tools
+          set -a; . ./.prepared-env; set +a
+          export GH_TOKEN="${GH_TOKEN:-}"
+          .venv/bin/python scripts/source/configure.py
+          .venv/bin/python scripts/source/prepared.py resolve
+          .venv/bin/python scripts/source/prepared.py download
+          .venv/bin/python scripts/source/prepared.py prepare
+
+      - name: Build IPA
+        script: |
+          set -euo pipefail
+          cd tools
+          python3 scripts/source/select_xcode.py
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          tar -xzf outputs/native-inputs.tar.gz
+          .venv/bin/python scripts/source/build.py "$MINIMUM_IOS" 2>&1 | tee outputs/native-build.log
+
+    artifacts:
+      - tools/outputs/D2RMobile-*.ipa
+      - tools/outputs/*-report.json
+      - tools/outputs/native-build.log
+    publishing:
+      email:
+        recipients:
+          - placeholder@example.com
+        notify:
+          success: false
+          failure: true
