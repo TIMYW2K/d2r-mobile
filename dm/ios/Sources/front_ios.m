@@ -266,7 +266,21 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
         // left joystick and the bottom-right skill buttons.
         CGFloat x0 = bd.origin.x + bd.size.width * 0.40, x1 = bd.origin.x + bd.size.width * 0.60;
         CGFloat y0 = bd.origin.y + bd.size.height * 0.40, y1 = bd.origin.y + bd.size.height * 0.60;
-        if (pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1) {
+        // 本地改动：之前只看两指中点，两指都在红框外、中点落在框里也会触发（玩家实测反馈）。改成「两根手指都必须
+        // 落在框内」才生效，这样红框 = 真正的可缩放范围。
+        // Local change: the gate used to look only at the fingers' midpoint, so a pinch whose fingers were outside the
+        // red box but whose midpoint was inside still worked (player report). Now BOTH fingers must start inside the box.
+        BOOL in_box = YES;
+        NSUInteger nt = gestureRecognizer.numberOfTouches;
+        if (nt >= 2) {
+            for (NSUInteger i = 0; i < nt; i++) {
+                CGPoint q = [gestureRecognizer locationOfTouch:i inView:self];
+                if (q.x < x0 || q.x > x1 || q.y < y0 || q.y > y1) { in_box = NO; break; }
+            }
+        } else {
+            in_box = !(pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1);
+        }
+        if (!in_box) {
             // 本地改动：中心 40%–60% 之外不缩放，并记一行，便于确认"外部不生效" | Local: outside the centre
             // 40%-60% box nothing happens; the line proves it from the log.
             static int out_n; out_n++;
