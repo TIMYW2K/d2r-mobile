@@ -812,6 +812,15 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         if(ph==2) _uiFinger=nil;
     }
 }
+- (void)finishTouches:(NSSet<UITouch *> *)ts phase:(const char *)phase {
+    // 本地改动：灵动岛单击 —— 抬起时短按（≤0.45 秒）且没移开才开门，然后清掉记录。
+    // Local change: Dynamic Island tap -- fire the portal on a short release (<=0.45 s) that did not move, then clear.
+    if (_islandTouch && [ts containsObject:_islandTouch]) {
+        if (!_islandFired) LOG("前端：传送门区按得不够久（%.2f 秒 < 0.5）→ 不开门", CACurrentMediaTime() - _islandT0);
+        _islandTouch = nil;   // 定时块看到 nil 就不再触发 | the timer block sees nil and will not fire
+    }
+    if (_pinching) return;
+
     // 本地改动：面板开着时，单击松手 = 把游戏光标放到落点（游戏据此刷新悬停/焦点 → 说明框出现）；
     // 点别处光标跟过去、说明框随之消失 —— 等于把 PC 的「悬停显示」改成「单击显示」。
     // Local change: with a panel open, releasing a tap puts the game cursor on that point (the game then refreshes its
@@ -822,15 +831,6 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         for (UITouch *ht in ts) { CGPoint hp = [ht locationInView:self];
             dm_ui_hover_norm((float)(hp.x / self.bounds.size.width), (float)(hp.y / self.bounds.size.height)); break; }
     }
-
-- (void)finishTouches:(NSSet<UITouch *> *)ts phase:(const char *)phase {
-    // 本地改动：灵动岛单击 —— 抬起时短按（≤0.45 秒）且没移开才开门，然后清掉记录。
-    // Local change: Dynamic Island tap -- fire the portal on a short release (<=0.45 s) that did not move, then clear.
-    if (_islandTouch && [ts containsObject:_islandTouch]) {
-        if (!_islandFired) LOG("前端：传送门区按得不够久（%.2f 秒 < 0.5）→ 不开门", CACurrentMediaTime() - _islandT0);
-        _islandTouch = nil;   // 定时块看到 nil 就不再触发 | the timer block sees nil and will not fire
-    }
-    if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) { [r removeObject:t]; [_swallow removeObject:t]; } if(!r.count) return; ts=r; }   // 手柄模式下落下的那根：抬起也不交 | The touch that landed in controller mode: its lift is not passed on either
     // 界面手指那一根交给 uiTouch，其余照常结束、清槽（真机 SIGSEGV：原先 _uiFinger 在就整批交走 return，局内手指的槽留下已释放的触摸）
     // Hand the UI finger to uiTouch and end the rest as usual, clearing their slots (real-device SIGSEGV: previously, if _uiFinger was present the whole batch was handed over and return, leaving released touches in the slots of in-run fingers)
