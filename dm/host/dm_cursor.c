@@ -2881,9 +2881,55 @@ static void dm_probe_ui_text(void) {
     }
 }
 
+// 本地改动：生命/法力球上的数字改金色；左上角佣兵/傀儡名字按血量四档着色（递归找文字控件）。
+static uint64_t dm_txt_widget(uint64_t w, int dep) {
+    if (!w || dep > 6) return 0;
+    uint64_t tp = *(uint64_t *)(w + 0x88), tl = *(uint64_t *)(w + 0x90);
+    if (tp && tl > 0 && tl < 0x400) return w;
+    uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60);
+    if (!ch || n > 64) return 0;
+    for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (!c || !*(uint8_t *)(c + 0x50)) continue;
+        uint64_t r = dm_txt_widget(c, dep + 1); if (r) return r; }
+    return 0;
+}
+static void dm_set_text_code(uint64_t w, const char *code) {
+    if (!w) return;
+    uint64_t tp = *(uint64_t *)(w + 0x88), tl = *(uint64_t *)(w + 0x90);
+    if (!tp || tl < 1 || tl > 0x3f0) return;
+    uint8_t *b = (uint8_t *)tp;
+    if (b[0] == 0xee && tl >= 4) { size_t l = tl - 4; memmove(b, b + 4, l); tl = l; }
+    if (tl + 4 >= 0x3f0) return;
+    memmove(b + 4, b, tl + 1); memcpy(b, code, 4); *(uint64_t *)(w + 0x90) = tl + 4;
+}
+static const char *dm_hp_code(int pct) {
+    if (pct < 0) return "\xee\x81\xbe" "0";     // 没数据：白色 | no data: white
+    if (pct >= 75) return "\xee\x81\xbe" "2";   // 绿
+    if (pct >= 50) return "\xee\x81\xbe" "9";   // 黄
+    if (pct >= 25) return "\xee\x81\xbe" "8";   // 橙
+    return "\xee\x81\xbe" "1";                  // 红
+}
+static void dm_ui_text_tint(void) {
+    static int init;
+    static const char *GOLD = "\xee\x81\xbe" "4";
+    module_t *m = main_module(); if (!m) return;
+    uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
+    uint64_t hud = ui_panel(root, "HUDPanel");
+    if (hud) { uint64_t ch = *(uint64_t *)(hud + 0x58), n = *(uint64_t *)(hud + 0x60);
+        for (uint64_t i = 0; i < n && ch && n < 128; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (!c) continue;
+            const char *nm = (const char *)*(uint64_t *)(c + 8);
+            if (nm && (!strcmp(nm, "HealthBall") || !strcmp(nm, "ManaBall"))) dm_set_text_code(dm_txt_widget(c, 1), GOLD); } }
+    uint64_t hire = ui_panel(root, "HireablesPanel");
+    if (hire) { uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
+        for (uint64_t i = 0; i < n && ch && n < 64; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (!c || !*(uint8_t *)(c + 0x50)) continue;
+            uint64_t t = dm_txt_widget(c, 1); if (!t) continue;
+            int dm_friendly_hp_pct(void); dm_set_text_code(t, dm_hp_code(dm_friendly_hp_pct())); } }
+    (void)init;
+}
+
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
+    { static unsigned tnt; if ((tnt++ % 15) == 0) dm_ui_text_tint(); }
     { static int done; if (!done && fr > 300) { done = 1; dm_probe_ui_text(); } }   // 临时探针：跑起来 5 秒后打一次 | one-shot locator probe
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame

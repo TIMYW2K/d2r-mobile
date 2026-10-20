@@ -395,6 +395,8 @@ static int unit_friendly_hp(module_t *mm, uint64_t unit) {
     }
     return 0;
 }
+static _Atomic int g_fr_hp = -1;
+int dm_friendly_hp_pct(void) { return atomic_load(&g_fr_hp); }
 static void monhp_tint(const uint64_t *regs, uint64_t payload) {
     module_t *mm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) mm = &g_mod[i];
     uint64_t unit = regs[19], name = 0; uint32_t type = 0; vm_size_t got = 0;
@@ -405,7 +407,7 @@ static void monhp_tint(const uint64_t *regs, uint64_t payload) {
     if (vm_read_overwrite(mach_task_self(), payload, 8, (vm_address_t)&name, &got) || !name) return;
     int hp = get(unit, 6, 0) >> 8, mx = get(unit, 7, 0) >> 8;
     if (hp <= 0 || mx <= 0) return;
-    int pct = hp * 100 / mx;
+    int pct = hp * 100 / mx; atomic_store(&g_fr_hp, pct);
     const char *code = pct >= 75 ? "\xee\x81\xbe" "2"     // 绿 | green
                      : pct >= 50 ? "\xee\x81\xbe" "9"     // 黄 | yellow
                      : pct >= 25 ? "\xee\x81\xbe" "8"     // 橙 | orange
