@@ -1284,6 +1284,27 @@ int dm_diag_srv_merc(uint32_t id, int *hp, int *mx, int *healing) {
         if (!tk_rd(u + 0x158, &u, 8)) return 0; }
     return 0;
 }
+// 佣兵当前血量百分比（服务端怪物表 G+0x2630 里类号 271/338/359/560/561 且活着的那只）；-1 = 没佣兵 / 不在局内。
+// 左上角头像名字按血量着色用它（血条名字那条观测事件对佣兵名字不一定触发，之前一直读到 -1 → 画成白色）。
+// Mercenary life percentage from the server monster table; -1 when there is no mercenary / not in a run.
+// Used for the top-left portrait name colour: the friendly health-bar event does not always fire, which used to leave it -1 (white).
+int dm_merc_hp_pct(void) {
+    module_t *m = main_mod(); if (!in_game() || !m || !g_lastG) return -1;
+    int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(m->base + 0x5b9290);
+    for (int b = 0; b < 128; b++) { uint64_t u = 0; if (!tk_rd(g_lastG + 0x2630 + 8 * b, &u, 8)) continue;
+        for (int k = 0; u && k < 4096; k++) {
+            uint32_t ty = 0, cls = 0, mode = 0;
+            if (tk_rd(u, &ty, 4) && tk_rd(u + 4, &cls, 4) && tk_rd(u + 0xc, &mode, 4) && ty == 1 &&
+                (cls == 271 || cls == 338 || cls == 359 || cls == 560 || cls == 561) && mode != 0 && mode != 12) {
+                int hp = get(u, 6, 0) >> 8, mx = get(u, 7, 0) >> 8;
+                if (hp > 0 && mx > 0) return hp * 100 / mx;
+            }
+            if (!tk_rd(u + 0x158, &u, 8)) break;
+        }
+    }
+    return -1;
+}
+
 int dm_diag_difficulty(void) { uint8_t d = 0; return in_game() && tk_rd(g_lastG + 0x104, &d, 1) && d < 3 ? d : -1; }   // 当前局难度（G+0x104：0 普通 1 噩梦 2 地狱），不在局内 -1；一键重开用（dm_cursor.c） | Difficulty of the current run (G+0x104: 0 Normal 1 Nightmare 2 Hell), -1 when not in a run; used by one-tap restart (dm_cursor.c)
 uint32_t dm_cur_tick(void) { uint32_t t = 0; if (in_game()) tk_rd(g_lastG + 0x170, &t, 4); return t; }   // 触点脚本（touch_mac.c）用 | For the touch point script (touch_mac.c)
 static uint32_t cur_tick(void) { return dm_cur_tick(); }

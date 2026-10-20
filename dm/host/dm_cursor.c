@@ -2986,10 +2986,39 @@ static void hud_capture(hud_slot *h, uint64_t pcell, int32_t vw, int32_t vh) {
     }
     if (h->len > 0 && h->rect_ok) { *(char *)tp = 0; *(uint64_t *)(t + 0x90) = 0; }   // 没拿到矩形就不动游戏文字（避免文字消失又没得画）| only clear when we own the rect
 }
+// 一次性探针：把 HealthBall / ManaBall / 可见 Icon 的子树打出来（控件名、文本、矩形、虚表偏移），
+// 用于确定「球上的数字」到底是什么控件（文字？还是绘制出来的位图）。
+static void dm_probe_tree(uint64_t w, int32_t vw, int32_t vh, int dep) {
+    if (!w || dep > 3) return;
+    const char *nm = (const char *)*(uint64_t *)(w + 8);
+    uint64_t tp = *(uint64_t *)(w + 0x88), tl = *(uint64_t *)(w + 0x90), vt = *(uint64_t *)w;
+    char txt[40]; txt[0] = 0;
+    if (tp && tl > 0 && tl < 32) { int n = (int)tl; for (int i = 0; i < n; i++) { unsigned char c = *(unsigned char *)(tp + i); txt[i] = c >= 0x20 ? (char)c : '.'; } txt[n] = 0; }
+    float r[4] = {0, 0, 0, 0}; dm_widget_rect(w, vw, vh, r);
+    LOG("HUD树%s %s 可见%d 文本\\"%s\\" 矩形%.3f,%.3f-%.3f,%.3f vt+0x%llx", dep ? "  " : "", nm ? nm : "?", *(uint8_t *)(w + 0x50) ? 1 : 0, txt,
+        (double)r[0], (double)r[1], (double)r[2], (double)r[3], (unsigned long long)(vt & 0xfffff));
+    uint64_t ch = *(uint64_t *)(w + 0x58), n2 = *(uint64_t *)(w + 0x60);
+    if (!ch || n2 > 32) return;
+    for (uint64_t i = 0; i < n2; i++) dm_probe_tree(*(uint64_t *)(ch + 8 * i), vw, vh, dep + 1);
+}
+static void dm_probe_hud_tree(void) {
+    module_t *m = main_module(); if (!m) return;
+    uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
+    int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
+    uint64_t hud = ui_panel(root, "HUDPanel");
+    if (hud) { LOG("HUD树 ===== HealthBall ====="); dm_probe_tree(dm_child_named(hud, "HealthBall"), vw, vh, 0);
+               LOG("HUD树 ===== ManaBall ====="); dm_probe_tree(dm_child_named(hud, "ManaBall"), vw, vh, 0); }
+    uint64_t hire = ui_panel(root, "HireablesPanel");
+    if (hire) { uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
+        for (uint64_t i = 0; i < n && ch && n < 256; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i);
+            if (c && *(uint8_t *)(c + 0x50)) { LOG("HUD树 ===== 可见 Icon ====="); dm_probe_tree(c, vw, vh, 0); break; } } }
+}
+
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
     int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
+    { static int done; if (!done) { uint32_t dm_cur_tick(void); if (dm_cur_tick() > 480) { done = 1; dm_probe_hud_tree(); } } }   // 一次性控件树探针 | one-shot widget tree probe
     uint64_t hud = ui_panel(root, "HUDPanel"), hire = ui_panel(root, "HireablesPanel");
     hud_capture(&g_hs[0], hud ? dm_child_named(hud, "HealthBall") : 0, vw, vh);
     hud_capture(&g_hs[1], hud ? dm_child_named(hud, "ManaBall") : 0, vw, vh);
@@ -3001,7 +3030,8 @@ static void dm_ui_hud_pump(void) {
     uint64_t dm_player_unit(void); int dm_friendly_hp_pct(void); uint64_t pl = dm_player_unit();
     if (pl) { atomic_store(&g_hud_stat[0], get(pl, 6, 0) >> 8); atomic_store(&g_hud_stat[1], get(pl, 7, 0) >> 8);
               atomic_store(&g_hud_stat[2], get(pl, 8, 0) >> 8); atomic_store(&g_hud_stat[3], get(pl, 9, 0) >> 8); }
-    atomic_store(&g_hud_mhp, dm_friendly_hp_pct());
+    { int dm_merc_hp_pct(void); int dm_friendly_hp_pct(void); int mp = dm_merc_hp_pct();
+      if (mp < 0) mp = dm_friendly_hp_pct(); atomic_store(&g_hud_mhp, mp); }
     atomic_store(&g_hud_ready, (g_hs[0].has | (g_hs[1].has << 1) | (g_hs[2].has << 2)));
 }
 int dm_hud_overlay(float rects[12], char txt[3][64], int lens[3], int *flags, int *stat4, int *mhp) {
