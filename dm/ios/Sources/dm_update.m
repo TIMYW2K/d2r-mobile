@@ -25,6 +25,7 @@
 #import <UIKit/UIKit.h>
 #import <Network/Network.h>
 #include <stdatomic.h>
+#include <stdlib.h>   // strtol：构建号允许 58.1 这种带点版本 | strtol for dotted build numbers
 void plog(const char *fmt, ...);
 void dm_update_init(int own_build, void (*on_select)(void), void (*on_click)(void));   // dm/host/dm_update.c
 void dm_update_offer(int new_build, const char *note, int urgent);
