@@ -262,7 +262,7 @@ static void scale3d_tick(void) {
         // Local change: the 3D render scale follows the view extent continuously -- 0.80 native at the widest
         // view (less heat) up to 1.00 native at the closest view (sharp close-up), linear in between.
         { float z = dm_cam_zoom_factor(); if (z > 1.0f) z = 1.0f; if (z < 0.80f) z = 0.80f;
-          want_cfg = 0.80f + (1.0f - z); }
+          want_cfg = 0.80f + (1.0f - z) * 0.5f; }   // 拉近时 0.90（原来 1.00；降 19% 像素换来明显降温）
 #else
         want_cfg = 1.0f;
 #endif
