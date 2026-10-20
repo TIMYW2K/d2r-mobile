@@ -56,7 +56,7 @@ static dm_ta_glyph shown_glyph(const dm_tg_snapshot *n, uint64_t button, uint64_
     return g;
 }
 @implementation DmTouchOverlay {
-    UIImage *_circle, *_socket, *_map, *_menu, *_nativeAtlases[DM_TA_ATLASES], *_silAtlases[DM_TA_ATLASES];   // _sil：同帧位的银色剪影图集（gen_hud_v4.py） | _sil: silver silhouette atlas at the same frame positions (gen_hud_v4.py)
+    UIImage *_circle, *_socketV[6], *_socket, *_map, *_menu, *_nativeAtlases[DM_TA_ATLASES], *_silAtlases[DM_TA_ATLASES];   // _sil：同帧位的银色剪影图集（gen_hud_v4.py） | _sil: silver silhouette atlas at the same frame positions (gen_hud_v4.py)
     NSMutableDictionary<NSString *,UIImage *> *_glyphFrames, *_buttonFrames;
     dm_ta_glyph _nativeVisualGlyphs[5];
 }
@@ -67,6 +67,11 @@ static dm_ta_glyph shown_glyph(const dm_tg_snapshot *n, uint64_t button, uint64_
     // 通用按钮材质为新生成的美术，技能图案仍来自玩家自己的游戏文件。
     // The generic socket texture is newly generated artwork; skill glyphs still come from the player's own game files.
     _socket=[UIImage imageNamed:@"dm_mobile_socket"];
+    // 本地改动：六个按钮用不同随机种子的锈迹贴图（dm_mobile_socket + _1.._5），按控件序号轮换。
+    // Local change: six rusted socket variants (different noise seeds), picked by the control index.
+    _socketV[0]=_socket;
+    for(int vi=1;vi<6;vi++) { _socketV[vi]=[UIImage imageNamed:[NSString stringWithFormat:@"dm_mobile_socket_%d",vi]];
+        if(!_socketV[vi]) _socketV[vi]=_socket; }
     _map=[UIImage imageNamed:@"dm_native_map"]; _menu=[UIImage imageNamed:@"dm_native_menu"];
     _glyphFrames=[NSMutableDictionary dictionary]; _buttonFrames=[NSMutableDictionary dictionary];
     for(int i=0;i<DM_TA_ATLASES;i++) _nativeAtlases[i]=[UIImage imageNamed:[NSString stringWithUTF8String:dm_ta_atlases[i].asset]];
@@ -127,12 +132,12 @@ static dm_ta_glyph shown_glyph(const dm_tg_snapshot *n, uint64_t button, uint64_
     }
     return image;
 }
-- (void)drawButton:(CGRect)rect held:(BOOL)held empty:(BOOL)empty primary:(BOOL)primary {
-    NSString *key=[NSString stringWithFormat:@"skill:%d:%d:%d",held,empty,primary];
+- (void)drawButton:(CGRect)rect held:(BOOL)held empty:(BOOL)empty primary:(BOOL)primary variant:(int)variant {
+    NSString *key=[NSString stringWithFormat:@"skill:%d:%d:%d:%d",held,empty,primary,variant%6];
     UIImage *image=[self controlArt:key size:rect.size draw:^(CGContextRef c){
         CGRect r=(CGRect){CGPointZero,rect.size};
-        if(self->_socket && !empty) {
-            [self->_socket drawInRect:r];dm_socket_neutralize(c,r);
+        UIImage *sock=self->_socketV[variant%6] ? self->_socketV[variant%6] : self->_socket;   // 每个按钮换一个锈迹种子 | per-button rust seed
+        if(sock && !empty) {
             if(held) dm_button_highlight(c,r);
         } else dm_button_draw(c,r,held,empty,primary);
     }];
@@ -272,8 +277,8 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         }
         if(!self.navigationMode && i==DM_TC_MAP && s->map_cancel_active) {icon=nil;showCaption=YES;}
         BOOL emptySkill=skillKey && !icon && (!showCaption || i==DM_TC_MAIN);
-        if(skillKey) [self drawButton:b held:held empty:emptySkill primary:i==DM_TC_MAIN];
-        if(!self.navigationMode && i==DM_TC_PORTAL) [self drawButton:b held:held empty:NO primary:NO];   // 回城钮圆底 | portal circle
+        if(skillKey) [self drawButton:b held:held empty:emptySkill primary:i==DM_TC_MAIN variant:(int)i];
+        if(!self.navigationMode && i==DM_TC_PORTAL) [self drawButton:b held:held empty:NO primary:NO variant:5];   // 回城钮圆底 | portal circle
         if(emptySkill) continue;   // 空槽保留绑定入口，细边框和刻印由背景绘制 | Empty slots keep their binding entry; the background draws their thin rim and engraving
         if(skillKey) {   // 技能美术居中；无图的未知槽保留原标签回退 | Center skill artwork; unknown slots with no image keep the existing label fallback
             BOOL bare=icon!=nil;   // 有图标的技能钮不写字（最大的钮是「主技能 / 交互」、可绑任意技能，钮上只画所绑技能的图标，不写「攻击」）：图标放大并居中。取不到图标时主钮仍落回「攻击」字样 | skill buttons that have an icon carry no text (the largest button is "main skill / interact" and can be bound to any skill, so the button draws only the bound skill's icon and does not say 「攻击」(Attack)): the icon is enlarged and centered. When no icon can be obtained the main button still falls back to the 「攻击」(Attack) text | skill buttons that have an icon carry no text (the largest button is "main skill / interact" and can be bound to any skill, so it draws only the bound skill's icon and no Attack label): the icon is enlarged and centered. When no icon can be obtained the main button still falls back to the Attack label
