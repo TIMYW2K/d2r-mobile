@@ -332,7 +332,8 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             [icon drawInRect:glyph blendMode:kCGBlendModeNormal alpha:held?1:.82];showCaption=NO;
         }
         CGFloat textSize = (i==DM_TC_MAIN ? 13 : i==DM_TC_PORTAL ? 20 : 10)*k;
-        if(showCaption) caption(labels[i],CGRectMake(b.origin.x,t->y-textSize*.72,b.size.width,textSize*1.6),textSize,held ? 1 : .84);
+        CGFloat capY = t->y - textSize*.72 - (i==DM_TC_PORTAL ? 3.0 : 0);   // 换装 I/II 上移 3pt | weapon-set label 3pt higher
+        if(showCaption) caption(labels[i],CGRectMake(b.origin.x,capY,b.size.width,textSize*1.6),textSize,held ? 1 : .84);
         if (i>=DM_TC_BELT1 && i<=DM_TC_BELT4) caption([NSString stringWithFormat:@"%d",i-DM_TC_BELT1+1],CGRectMake(t->x-10*k,t->y+8*k,20*k,12*k),8*k,.65);
     }
     [self drawV4:c];   // 底栏：它自己按面板栈 / 死亡判显隐（dm_hud_bar_visible）。原先放在摇杆之后，被下面「面板开着就不画摇杆」的提前返回一起跳过—— | Bottom bar: it decides its own visibility from the panel stack / death (dm_hud_bar_visible). It used to come after the joystick and was skipped along with the early return below for "don't draw the joystick while a panel is open" —

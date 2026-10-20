@@ -358,6 +358,28 @@ static void monres_on_setinfo(const uint64_t *regs, uint64_t payload) {
     memcpy(buf + keep, add, n); memcpy(buf + keep + n, "\xee\x81\xbe" "0", 4); memset(buf + keep + n + 4, ' ', len - keep); buf[keep + n + 4 + (len - keep)] = 0;
 }
 
+// 本地改动：怪物血条上的名字按当前血量着色：≥70% 绿、45–70% 黄、25–45% 橙、<25% 红（颜色码在血条名字里确实能渲染，
+// 抗性后缀用的就是同一套码）。血量走游戏自己的取属性函数 main+0x5b9290：6 = 当前生命、7 = 上限（都是 ×256 定点）。
+// Local change: tint the monster health-bar name by current HP: >=70% green, 45-70% yellow, 25-45% orange, <25% red
+// (colour codes do render in that name -- the resistance suffix already uses them). HP comes from the game's own stat
+// getter main+0x5b9290: 6 = current, 7 = max (both fixed point x256).
+static void monhp_tint(const uint64_t *regs, uint64_t payload) {
+    module_t *mm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) mm = &g_mod[i];
+    uint64_t unit = regs[19], name = 0; uint32_t type = 0; vm_size_t got = 0;
+    if (!mm || !unit) return;
+    if (vm_read_overwrite(mach_task_self(), unit, 4, (vm_address_t)&type, &got) || type != 1) return;   // 只认怪物 | monsters only
+    if (vm_read_overwrite(mach_task_self(), payload, 8, (vm_address_t)&name, &got) || !name) return;
+    int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(mm->base + 0x5b9290);
+    int hp = get(unit, 6, 0) >> 8, mx = get(unit, 7, 0) >> 8;
+    if (hp <= 0 || mx <= 0) return;
+    int pct = hp * 100 / mx;
+    const char *code = pct >= 70 ? "\xee\x81\xbe2" : pct >= 45 ? "\xee\x81\xbe9" : pct >= 25 ? "\xee\x81\xbe8" : "\xee\x81\xbe1";
+    char *buf = (char *)name; size_t len = strnlen(buf, 0x7f0);
+    if (len >= 0x7f0) return;
+    memmove(buf + 4, buf, len + 1);
+    memcpy(buf, code, 4);
+}
+
 static void uimsg_print(const uint64_t *regs) {   // 观测门回调：只读寄存器 | Observation gate callback: registers are read-only
     if ((g_ui_print || atomic_load(&g_nui_sub)) && !g_uih) uih_build();
     uint64_t msg = regs[1], f[3] = {0}; vm_size_t got = 0;
@@ -370,7 +392,7 @@ static void uimsg_print(const uint64_t *regs) {   // 观测门回调：只读寄
                                                                                                          // The pointed-to bytes happened to look like characters (happened once: arg was written as "\xf0\xbc\xb8", the assertion script reading uimsg.jsonl as UTF-8 errored out, and inv_tap failed spuriously twice)
         if (k == got) have_arg = 0;                                         // 64 字节内没有终止 0 | No terminating 0 within 64 bytes
     }
-    if (f[0] == UIH_MONSTERHEALTH && f[1] == UIH_SETINFO && f[2]) monres_on_setinfo(regs, f[2]);
+    if (f[0] == UIH_MONSTERHEALTH && f[1] == UIH_SETINFO && f[2]) { monhp_tint(regs, f[2]); monres_on_setinfo(regs, f[2]); }
     prof_on_uimsg(f[1], have_arg ? nm : "");
     char c0[24], c1[24], stage[256];
     const char *n0 = uih_name(f[0], c0), *n1 = uih_name(f[1], c1);   // 名字表里有就返回表里的串、不写进 c0 / c1（原先拿 c0 / c1 比「ToGame」永远比不上） | If the name table has it, return the table's string without writing into c0 / c1 (it used to compare c0 / c1 against "ToGame", which could never match)

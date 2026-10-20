@@ -1159,21 +1159,19 @@ def _settings_tabs(text):
 # height and position are adjusted by the same factor (18 -> 24, -19 -> -25) to clear the enlarged portrait above it.
 # Its LENGTH stays the original 120 -- the player asked for the original bar length back.
 def _merc_health_bar(t):
-    # 用正则找「name": "Health"」那一段里的 rect，按 1.32 倍重写；不依赖文件里的空白写死，改不到就返回 0。
-    # Find the rect inside the "name": "Health" block and rewrite it at 1.32x; not tied to the file's exact spacing,
-    # and returns 0 when nothing matched.
+    # 本地改动：佣兵头像栏的血条整条去掉（玩家要求删掉血条）。做法 = 把 Health 控件的 rect 推到屏幕外并清零宽高，
+    # 布局结构不动，游戏照常更新它只是看不见。
+    # Local change: remove the mercenary portrait health bar completely (player request): push the Health widget's rect
+    # off-screen and zero its size; the layout structure is untouched and the game keeps updating it invisibly.
     import re
     pat = re.compile(r'("name":\s*"Health"[\s\S]{0,400}?"rect":\s*\{)([^}]*)\}')
-    def _scale(m):
+    def _hide(m):
         body, out = m.group(2), []
-        # 只缩放高度与纵向位置；宽度（血条长度）保持原版数值 —— 玩家要求长度回到原有大小。
-        # Scale only the height and vertical offset; keep the original width (bar length) as the player asked.
-        for key in ('y', 'height'):
-            r = re.search(r'"%s":\s*(-?\d+)' % key, body)
-            if r:
-                out.append('"%s": %d' % (key, round(int(r.group(1)) * 1.32)))
-        return m.group(1) + ' ' + ', '.join(out) + ' }'   # group(1) 已经含开头的 {，不能再补 | group(1) already ends with the opening brace
-    return pat.subn(_scale, t, count=1)
+        for key in ('y', 'width', 'height'):
+            if re.search(r'"%s":\s*-?\d+' % key, body):
+                out.append('"%s": %d' % (key, -9000 if key == 'y' else 0))
+        return m.group(1) + ' ' + ', '.join(out) + ' }'
+    return pat.subn(_hide, t, count=1)
 
 def _drop_rows(*rows):
     """把选项表里的整行（TableRowWidget "Row <名>"）删掉：表格按剩下的行重排，不留空行。每个名字必须恰好删到一行。 | Delete whole rows (TableRowWidget "Row <name>") from the options table: the table re-lays out the remaining rows and leaves no empty row. Each name must delete exactly one row."""
