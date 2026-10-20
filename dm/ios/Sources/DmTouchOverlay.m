@@ -251,6 +251,29 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         [[UIColor colorWithRed:0.1 green:0.85 blue:0.25 alpha:0.20] setFill]; [bp fill];
         [[UIColor colorWithRed:0.1 green:0.95 blue:0.3 alpha:0.95] setStroke]; bp.lineWidth = 2; [bp stroke];
     }
+    // ===== 本地改动（临时诊断）：绿框标出「灵动岛单击区」= 左右安全区内的边缘带（竖向 30%–70%）=====
+    // 横屏时灵动岛正好占住左右安全区；点这条绿色带（短按）就会开门（免费回城）。只画，不改变命中判定。
+    // Local change (temporary diagnostic): green band = the Dynamic-Island tap zone (inside the left/right safe-area
+    // inset, vertical 30%-70%). A short tap there opens the town portal. Purely visual -- the hit test is unchanged.
+    {
+        CGRect bd = self.bounds;
+        UIEdgeInsets ins = self.safeAreaInsets;
+        if (ins.left <= 0 && ins.right <= 0 && self.superview) ins = self.superview.safeAreaInsets;
+        if (ins.left <= 0 && ins.right <= 0) ins = UIEdgeInsetsMake(0, 62, 0, 62);   // 兜底：17 Pro 系列横屏实测 62 点
+        CGFloat gy0 = bd.origin.y + bd.size.height * 0.30, gh = bd.size.height * 0.40;
+        CGContextSaveGState(c);
+        for (int side = 0; side < 2; side++) {
+            CGFloat gw = side ? ins.right : ins.left;
+            if (gw <= 0) continue;
+            CGRect gr = CGRectMake(side ? bd.origin.x + bd.size.width - gw : bd.origin.x, gy0, gw, gh);
+            CGContextSetFillColorWithColor(c, [UIColor colorWithRed:0.1 green:0.85 blue:0.25 alpha:0.18].CGColor);
+            CGContextFillRect(c, gr);
+            CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:0.1 green:0.95 blue:0.3 alpha:0.95].CGColor);
+            CGContextSetLineWidth(c, 2);
+            CGContextStrokeRect(c, gr);
+        }
+        CGContextRestoreGState(c);
+    }
     // ===== 本地改动（临时诊断）：红框标出双指缩放的命中区域 = 屏幕中央 30%–70%（横纵各 30%）=====
     // 比例与 front_ios.m 的 gestureRecognizerShouldBegin 一致（30%–70%），改一边要同步改另一边。外框 = 命中边界，内框 = 建议落指区。
     // Local change (temporary diagnostic): red box marking the pinch-zoom hit area = centre 40%-60% on both axes
