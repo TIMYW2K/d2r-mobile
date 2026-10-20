@@ -218,14 +218,14 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     if (k <= 0) return;
     CGContextRef c = UIGraphicsGetCurrentContext();
 
-    // ===== 本地改动（临时诊断）：红框标出双指缩放的命中区域 = 屏幕中央 40%–60%（横纵各 20%）=====
-    // 比例与 front_ios.m 的 gestureRecognizerShouldBegin 一致，改一边要同步改另一边。外框 = 命中边界，内框 = 建议落指区。
+    // ===== 本地改动（临时诊断）：红框标出双指缩放的命中区域 = 屏幕中央 35%–65%（横纵各 30%）=====
+    // 比例与 front_ios.m 的 gestureRecognizerShouldBegin 一致（35%–65%），改一边要同步改另一边。外框 = 命中边界，内框 = 建议落指区。
     // Local change (temporary diagnostic): red box marking the pinch-zoom hit area = centre 40%-60% on both axes
-    // (20% of width/height). Same fractions as gestureRecognizerShouldBegin in front_ios.m; keep them in sync.
+    // (30% of width/height). Same fractions as gestureRecognizerShouldBegin in front_ios.m; keep them in sync.
     {
         CGRect bd = self.bounds;
-        CGFloat zx0 = bd.origin.x + bd.size.width * 0.40, zx1 = bd.origin.x + bd.size.width * 0.60;
-        CGFloat zy0 = bd.origin.y + bd.size.height * 0.40, zy1 = bd.origin.y + bd.size.height * 0.60;
+        CGFloat zx0 = bd.origin.x + bd.size.width * 0.35, zx1 = bd.origin.x + bd.size.width * 0.65;
+        CGFloat zy0 = bd.origin.y + bd.size.height * 0.35, zy1 = bd.origin.y + bd.size.height * 0.65;
         CGRect zr = CGRectMake(zx0, zy0, zx1 - zx0, zy1 - zy0);
         CGContextSaveGState(c);
         CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:1 green:0.15 blue:0.15 alpha:0.95].CGColor);

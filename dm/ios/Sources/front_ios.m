@@ -260,12 +260,12 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
         // 避开左下摇杆、右下技能区与底栏，双指操作不再和走位/放技能打架。
         // Local change: narrowed to the play area the player marked (x 30-70%, y 35-75%), clear of the
         // joystick, the skill buttons and the bottom bar.
-        // 本地改动：只认屏幕正中央的 40%–60%（横纵都 20% 宽度）—— 避开左侧摇杆与右下技能区。
+        // 本地改动：只认屏幕中央的 35%–65%（横纵都 30% 宽度）—— 比 40–60% 略放宽，仍是中央区域。
         // 离左侧摇杆和右下技能区都更远。
-        // Local change: only the exact centre box 40%-60% on both axes (20% wide).
+        // Local change: only the centre box 35%-65% on both axes (30% wide).
         // left joystick and the bottom-right skill buttons.
-        CGFloat x0 = bd.origin.x + bd.size.width * 0.40, x1 = bd.origin.x + bd.size.width * 0.60;
-        CGFloat y0 = bd.origin.y + bd.size.height * 0.40, y1 = bd.origin.y + bd.size.height * 0.60;
+        CGFloat x0 = bd.origin.x + bd.size.width * 0.35, x1 = bd.origin.x + bd.size.width * 0.65;
+        CGFloat y0 = bd.origin.y + bd.size.height * 0.35, y1 = bd.origin.y + bd.size.height * 0.65;
         // 本地改动：之前只看两指中点，两指都在红框外、中点落在框里也会触发（玩家实测反馈）。改成「两根手指都必须
         // 落在框内」才生效，这样红框 = 真正的可缩放范围。
         // Local change: the gate used to look only at the fingers' midpoint, so a pinch whose fingers were outside the
@@ -281,8 +281,8 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
             in_box = !(pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1);
         }
         if (!in_box) {
-            // 本地改动：中心 40%–60% 之外不缩放，并记一行，便于确认"外部不生效" | Local: outside the centre
-            // 40%-60% box nothing happens; the line proves it from the log.
+            // 本地改动：中心 35%–65% 之外不缩放，并记一行，便于确认"外部不生效" | Local: outside the centre
+            // 35%-65% box nothing happens; the line proves it from the log.
             static int out_n; out_n++;
             if (out_n <= 10 || out_n % 25 == 0)
                 LOG("前端：双指在中心区域外，不缩放（x %.0f%%，y %.0f%%，第 %d 次）",
