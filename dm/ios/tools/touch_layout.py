@@ -1152,12 +1152,12 @@ def _settings_tabs(text):
     new = new.replace('"@Controls"', '"@KeyBindingTypeCustom"').replace('SettingsPanelMessage:CheckChanges:KeyBindingMenu', 'SettingsPanelMessage:CheckChanges:VideoOptionsPanel')
     return new, n + k + 1
 # 本地改动：佣兵头像栏放大 1.32 倍（宿主 dm_cursor.c 把面板的缩放字段 +0x80 设成 1.32）。头像会变大，
-# 但血条是 HealthBarWidget：它既不认 +0x80（玩家实测头像变大后压住了血条），相对头像的偏移也不会被放大。
-# 所以在这里把血条本身也按同一倍数放大（120x18 -> 158x24）并上移（-19 -> -26），让它在放大后的头像上方留出位置。
-# Local change: the mercenary portrait bar is scaled 1.32x by the host (dm_cursor.c writes the panel's scale field
-# +0x80). The portraits grow, but the health bar is a HealthBarWidget: it does not follow +0x80 (the player reported
-# the enlarged portrait covering it) and its offset is not magnified either. So the bar itself is scaled by the same
-# factor here (120x18 -> 158x24) and moved up (-19 -> -26) to clear the enlarged portrait above it.
+# 但血条是 HealthBarWidget：它既不认 +0x80，相对头像的偏移也不会被放大。所以把血条的**高度与位置**按同一倍数
+# 调整（18 -> 24、-19 -> -25），让它在放大后的头像上方留出位置；但**长度保持原版 120**——玩家要求血条长度回到原有大小。
+# Local change: the mercenary portrait panel is scaled 1.32x by the host (dm_cursor.c writes the panel's scale field
+# +0x80). The health bar is a HealthBarWidget: it does not follow +0x80 and its offset is not magnified either, so its
+# height and position are adjusted by the same factor (18 -> 24, -19 -> -25) to clear the enlarged portrait above it.
+# Its LENGTH stays the original 120 -- the player asked for the original bar length back.
 def _merc_health_bar(t):
     # 用正则找「name": "Health"」那一段里的 rect，按 1.32 倍重写；不依赖文件里的空白写死，改不到就返回 0。
     # Find the rect inside the "name": "Health" block and rewrite it at 1.32x; not tied to the file's exact spacing,
@@ -1166,7 +1166,9 @@ def _merc_health_bar(t):
     pat = re.compile(r'("name":\s*"Health"[\s\S]{0,400}?"rect":\s*\{)([^}]*)\}')
     def _scale(m):
         body, out = m.group(2), []
-        for key, dflt in (('y', None), ('width', None), ('height', None)):
+        # 只缩放高度与纵向位置；宽度（血条长度）保持原版数值 —— 玩家要求长度回到原有大小。
+        # Scale only the height and vertical offset; keep the original width (bar length) as the player asked.
+        for key in ('y', 'height'):
             r = re.search(r'"%s":\s*(-?\d+)' % key, body)
             if r:
                 out.append('"%s": %d' % (key, round(int(r.group(1)) * 1.32)))
