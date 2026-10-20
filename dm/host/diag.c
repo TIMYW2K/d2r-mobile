@@ -1058,6 +1058,24 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
     if (memcmp(&ha, &hb, sizeof ha) && logged < 200) { logged++;   // 只在变化时记一行（前 200 次）：真机 / Mac 核对读数 | Log a line only on change (first 200 times): readout for cross-checking real device / Mac
         LOG("dm_hud：区域 %d (%d,%d) Lv %d 经验 %d‰ 生命 %d/%d 法力 %d/%d 腰带 %d/%d/%d/%d 回城 %d 人数档 %d 点数 %d 新任务 %d%s%s", h.area, h.x, h.y, h.level, h.exp_permille, h.hp, h.hp_max, h.mp, h.mp_max, h.belt[0], h.belt[1], h.belt[2], h.belt[3], h.portal, h.players, h.points, h.quest_unread, h.dead ? " 已死亡" : "", h.valid ? "" : "（未读到玩家）"); }
     g_hud = h; dm_hud_publish(&h);
+    // 难度验证：每见一只新怪记一行（类号 / stat100 人数档 / 最大生命 / 当前人数设置），确认 /players 对新生成的怪生效
+    // Difficulty verification: for every newly seen monster log class / stat100 (players count) / max life / current players setting
+    { static uint32_t sseen[96]; static int ns, nlog;
+      for (int b = 0; b < 128 && nlog < 24; b++) { uint64_t u = 0; if (!tk_rd(G + 0x2630 + 8 * b, &u, 8)) continue;
+        for (int k = 0; u && k < 4096 && nlog < 24; k++) {
+            uint32_t id = 0, cls = 0, s100 = 0;
+            if (!tk_rd(u + 8, &id, 4) || !tk_rd(u + 4, &cls, 4)) break;
+            int dup = 0; for (int q = 0; q < ns; q++) if (sseen[q] == id) { dup = 1; break; }
+            if (!dup) {
+                if (ns < 96) sseen[ns++] = id;
+                module_t *mm2 = main_mod(); int mx = 0, cy = 0;
+                if (stat_read(u, 100, &s100) && mm2) { int (*get2)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(mm2->base + 0x5b9290); mx = get2(u, 7, 0) >> 8; cy = get2(u, 6, 0) >> 8; }
+                LOG("难度验证：新怪 id %u 类号 %u stat100=%u 生命 %d/%d 当前人数档 %d", id, cls, s100, cy, mx, g_hud.players);
+                nlog++;
+            }
+            if (!tk_rd(u + 0x158, &u, 8)) break;
+        } } }
+
 }
 
 static void state_dump(const uint64_t *regs) {
