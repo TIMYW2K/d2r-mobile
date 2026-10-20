@@ -709,7 +709,6 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
             _islandTouch = t0; _islandP0 = p0; _islandT0 = CACurrentMediaTime(); _islandFired = NO;
             if (!_swallow) _swallow = [NSHashTable weakObjectsHashTable];
             for (UITouch *t in ts) [_swallow addObject:t];
-                (long)dm_scene_orientation(self), dm_island_on_right(self) ? "右" : "左");
             __weak typeof(self) weakSelf = self;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.38 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 typeof(self) sf = weakSelf; if (!sf || sf->_islandTouch != t0 || sf->_islandFired) return;
