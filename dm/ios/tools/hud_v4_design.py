@@ -109,7 +109,11 @@ def load(src, VAR='C'):
         ns['layer'].alpha_composite(im, (round(cx - im.width / 2), round(cy - im.height / 2)))
     pc = src.img
     exo = lambda s: src.font('exocetblizzardot-medium.otf', s)
-    num = lambda s: src.font('blizzardglobal-v5_81.ttf', s)   # 角标与 Lv：原版界面字体等高数字 | Badge and Lv: lining figures in the original game's UI font
+    # 本地改动：底部 HUD 的数字/角标/Lv/百分比改成用汇文明朝体烤（它们是预渲染图片，不是游戏文字）
+    # Local change: the bottom HUD digits / badges / Lv / percent are pre-rendered images, so bake them with
+    # the same Huiwen Mincho subset to keep the whole HUD in one font.
+    _OURFONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts', 'huiwen-subset.ttf')
+    num = lambda s: ImageFont.truetype(_OURFONT, s) if os.path.isfile(_OURFONT) else src.font('blizzardglobal-v5_81.ttf', s)
     def metal(t, size):           # 原版标题字效：暗金竖向渐变 + 细深描边 + 轻斜面（左上高光、右下暗影） | The original game's title text effect: dark gold vertical gradient + thin dark outline + light bevel (upper-left highlight, lower-right shadow)
         f = exo(size); pad = size // 4; W0, H0 = size * len(t) + 2 * pad, size * 2
         m = Image.new('L', (W0, H0)); ImageDraw.Draw(m).text((pad, pad), t, font=f, fill=255)

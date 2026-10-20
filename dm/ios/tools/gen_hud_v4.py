@@ -144,7 +144,10 @@ ui={'ref':[W,H],'center_x':W/2,'slots':g['slots'],'inner':[g['IX0'],g['IY0'],g['
     'badge':{'glyphs':glyphs('b',(235,235,235,255)),'dx':-3,'dy':-1},     # 右下内角锚点 = 格左上 + 内框右下 + (dx,dy)，右对齐、基线 | Lower-right inner corner anchor = slot top-left + inner frame bottom-right + (dx,dy), right-aligned, baseline
     'pick':{'center_x':1390,'pitch':120,'y':1051.5},
     'vital':{'left_x':g['LBC'][0],'right_x':g['RBC'][0],'baseline':g['YB']}}
-font_v=SRC.font('blizzardglobal-v5_81.ttf',30)
+# 本地改动：生命 / 法力数值也用汇文明朝体烤（预渲染字形）| Local change: life / mana values are pre-rendered
+# glyph images too -- bake them with the same font.
+_OURFONT=os.path.join(os.path.dirname(os.path.abspath(__file__)),'fonts','huiwen-subset.ttf')
+font_v=ImageFont.truetype(_OURFONT,30) if os.path.isfile(_OURFONT) else SRC.font('blizzardglobal-v5_81.ttf',30)
 import re, dm_i18n   # 生命 / 法力两行的字形：原有中文这一套 + 中英表 dmHudLife / dmHudMana 英文用到的字（英文版；字形不全 v4text 会空着） | glyphs for the life / mana rows: the existing Chinese set plus the characters used by the English of dmHudLife / dmHudMana in the Chinese-English string table (English version; with missing glyphs v4text would leave blanks)
 _vt={k:(z,e) for k,z,e in dm_i18n.rows()}; _vc='生命法力:/ 0123456789'
 _vc+=''.join(sorted({c for k in ('dmHudLife','dmHudMana') for c in dm_i18n.FMT.sub('',_vt[k][0]+_vt[k][1])}-set(_vc)))
