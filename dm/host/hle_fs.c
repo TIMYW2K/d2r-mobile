@@ -597,7 +597,6 @@ static const char *font_subset_override(const char *path) {
     return NULL;
 }
 HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
-    { static int nx; if (nx < 40 && strstr(path, "excel") && (strstr(path, ".bin") || strstr(path, ".txt") || strstr(path, ".json"))) { nx++; LOG("FS excel: %s", path); } }   // 临时：看游戏到底读哪张表 | temporary: which table files the game opens
     HP(path);
     {   // 本地改动：字体替换（见 font_subset_override）| Local change: font redirect, see font_subset_override
         const char *font_sub = font_subset_override(path);
