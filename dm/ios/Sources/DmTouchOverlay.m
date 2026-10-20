@@ -34,6 +34,7 @@ static UIFont *dm_game_font(CGFloat size) {
     return name ? [UIFont fontWithName:name size:size] : [UIFont systemFontOfSize:size];
 }
 
+UIFont *dm_game_font_ui(CGFloat size) { return dm_game_font(size); }   // 前端右下角版本号用游戏字体 | expose the game font
 static void caption(NSString *s, CGRect rect, CGFloat size, CGFloat alpha) {
     NSMutableParagraphStyle *p = [NSMutableParagraphStyle new]; p.alignment = NSTextAlignmentCenter;
     UIFont *f = dm_game_font(size);
@@ -138,6 +139,7 @@ static dm_ta_glyph shown_glyph(const dm_tg_snapshot *n, uint64_t button, uint64_
         CGRect r=(CGRect){CGPointZero,rect.size};
         UIImage *sock=self->_socketV[variant%6] ? self->_socketV[variant%6] : self->_socket;   // 每个按钮换一个锈迹种子 | per-button rust seed
         if(sock && !empty) {
+            [sock drawInRect:r];dm_socket_neutralize(c,r);   // 恢复：先画贴图再中和内槽 | restore: draw the socket first
             if(held) dm_button_highlight(c,r);
         } else dm_button_draw(c,r,held,empty,primary);
     }];

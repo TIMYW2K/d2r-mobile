@@ -1,3 +1,4 @@
+UIFont *dm_game_font_ui(CGFloat size);   // DmTouchOverlay.m：游戏字体（汇文明朝体子集） | game font from the overlay
 #include <math.h>
 // iOS 前端（front.h 的 iOS 实现）。App 在主线程建好 Metal 视图（front_ios_view），再在大栈线程上调 dm_main；
 // front_run在该线程跑客体；真实触点保留dm_touch_set通路，独立控制器输出完整手柄状态。
@@ -251,8 +252,8 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
         NSString *v = [[NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] description] copy];
         _verLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         _verLabel.text = v.length ? [@"v" stringByAppendingString:v] : @"";
-        _verLabel.font = [UIFont systemFontOfSize:10 weight:UIFontWeightRegular];
-        _verLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.5];
+        _verLabel.font = dm_game_font_ui(11.0) ?: [UIFont systemFontOfSize:11];   // 用游戏字体 | game font
+        _verLabel.textColor = [UIColor colorWithRed:.85 green:.79 blue:.65 alpha:0.62];   // 与游戏 UI 同一暖白 | game-UI warm white
         _verLabel.backgroundColor = UIColor.clearColor;
         _verLabel.userInteractionEnabled = NO;
         _verLabel.hidden = NO;
@@ -272,7 +273,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     if (_verLabel) {   // 左下角，避开安全区 | bottom-left, clear of the safe area
         UIEdgeInsets si = self.safeAreaInsets;
         CGSize vs = [_verLabel sizeThatFits:CGSizeMake(200, 40)];
-        _verLabel.frame = CGRectMake(si.left + 6, self.bounds.size.height - si.bottom - vs.height - 4, vs.width + 2, vs.height);
+        _verLabel.frame = CGRectMake(si.left + 2, self.bounds.size.height - si.bottom - vs.height - 2, vs.width + 2, vs.height);   // 贴屏幕左下角 | pinned to the bottom-left corner
     }
     apply_touch_overrides(&_controls);
     CAMetalLayer *l=(CAMetalLayer *)self.layer;

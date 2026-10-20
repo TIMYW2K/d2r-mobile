@@ -89,7 +89,7 @@ void dm_update_pump(void) {   // 取手柄处每帧调（游戏主线程） | Ca
     if (atomic_load(&g_safe_l) < 0) return;
     atomic_compare_exchange_strong(&g_dirty, &left, left - 1);   // 期间又被置回 30（新结果 / 面板重建）就不减 | If it was set back to 30 in the meantime (new result / panel rebuilt), do not decrement
     int build, urgent; char note[160]; pthread_mutex_lock(&g_mu); build = g_offer.build; urgent = g_offer.urgent; memcpy(note, g_offer.note, sizeof note); pthread_mutex_unlock(&g_mu);
-    char t[256]; snprintf(t, sizeof t, dm_str(b, "dmUpdBuild"), g_own); set_text(b, bw, t);
+    (void)t; set_text(b, bw, "");   // 本地改动：不再显示构建号（只保留左下角版本号） | local: no build number, version only
     int sl = atomic_load(&g_safe_l), bx = sl + 6 > 79 ? sl + 6 : 79; int dm_padmode_current(void); int pad = dm_padmode_current();
     // 手柄模式（原版手柄主菜单）：左下角是原版的按钮栏和提示条，这两行改放右上角、靠右对齐。原版手柄主菜单面板的矩形是 0×0（锚点无从算起），
     // 这份控件在布局里不带锚点（touch_layout.pad_mainmenu），位置全由这里按屏宽（布局单位：2160 = 屏高）算

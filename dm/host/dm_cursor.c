@@ -2834,17 +2834,31 @@ static int ui_touch_mode(void) { int dm_padmode_current(void), dm_padmode_busy(v
 
 // 本地改动：把出图画面归一化坐标换算成界面坐标，交给「立即刷新悬停」那条路（说明框常驻 / 装备对比都读它）。
 // Local change: convert normalized frame coordinates to UI coordinates and go through the immediate hover refresh.
+// 本地改动：把「点哪里就把光标放哪里」改成请求式 —— 前端在触摸线程只记下坐标，真正的游戏调用在
+// dm_ui_mouse_pump（游戏主线程）里做，避免跨线程调游戏函数导致闪退。
+// Local change: queue the tap-to-hover request; the game call itself happens on the game thread inside dm_ui_mouse_pump.
+static _Atomic int g_hov_req;
+static _Atomic int g_hov_xy;
 void dm_ui_hover_norm(float nx, float ny) {
+    if (!(nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1)) return;
+    atomic_store(&g_hov_xy, (int)((nx * 65535.0f) + 0.5f) | ((int)((ny * 65535.0f) + 0.5f) << 16));
+    atomic_store(&g_hov_req, 1);
+}
+static void dm_ui_hover_apply(void) {
+    if (!atomic_exchange(&g_hov_req, 0)) return;
+    int packed = atomic_load(&g_hov_xy);
+    float nx = (float)(packed & 0xffff) / 65535.0f, ny = (float)((packed >> 16) & 0xffff) / 65535.0f;
     module_t *m = main_module(); if (!m) return;
     int32_t W = *(int32_t *)(m->base + 0x211da38), H = *(int32_t *)(m->base + 0x211da3c);
     if (W <= 0 || H <= 0) return;
-    int x = (int)(nx * W), y = (int)(ny * H);
-    int dm_ui_hover_now(int x, int y); dm_ui_hover_now(x, y);
+    int dm_ui_hover_now(int x, int y);
+    dm_ui_hover_now((int)(nx * W), (int)(ny * H));
 }
 
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
+    dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame
     ui_watch_pump();
     { module_t *pm0 = main_module(); uint64_t pr = 0; if (pm0) memcpy(&pr, pm0->base + 0x2f05458, 8); if (pr) { ui_panel_heal(pr, fr); ui_panel_state_pump(pr); } }
