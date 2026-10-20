@@ -2995,7 +2995,7 @@ static void dm_probe_tree(uint64_t w, int32_t vw, int32_t vh, int dep) {
     char txt[40]; txt[0] = 0;
     if (tp && tl > 0 && tl < 32) { int n = (int)tl; for (int i = 0; i < n; i++) { unsigned char c = *(unsigned char *)(tp + i); txt[i] = c >= 0x20 ? (char)c : '.'; } txt[n] = 0; }
     float r[4] = {0, 0, 0, 0}; dm_widget_rect(w, vw, vh, r);
-    LOG("HUD树%s %s 可见%d 文本\\"%s\\" 矩形%.3f,%.3f-%.3f,%.3f vt+0x%llx", dep ? "  " : "", nm ? nm : "?", *(uint8_t *)(w + 0x50) ? 1 : 0, txt,
+    LOG("HUD树%s %s 可见%d 文本\"%s\" 矩形%.3f,%.3f-%.3f,%.3f vt+0x%llx", dep ? "  " : "", nm ? nm : "?", *(uint8_t *)(w + 0x50) ? 1 : 0, txt,
         (double)r[0], (double)r[1], (double)r[2], (double)r[3], (unsigned long long)(vt & 0xfffff));
     uint64_t ch = *(uint64_t *)(w + 0x58), n2 = *(uint64_t *)(w + 0x60);
     if (!ch || n2 > 32) return;
