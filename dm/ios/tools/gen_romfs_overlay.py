@@ -222,10 +222,22 @@ with tempfile.TemporaryDirectory() as t:
         print('字体：覆盖层替换 BlizzardGlobal-V5_81.ttf（%d 字节）' % os.path.getsize(_fontfile))
     else:
         print('字体：没找到 %s，按原版字体出包' % _fontfile)
-    # 本地改动：怪物不再掉回城/鉴定卷轴与书 —— 直接改原版掉落表 TreasureClassEx.txt：把 tsc/tbk/isc/ibk 的
-    # 概率改成 0（代码见 dm/data/game/treasureclassex.txt），随覆盖层替换进游戏。
-    # Local change: no town-portal / identify scrolls or tomes from monsters -- patch the original TreasureClassEx.txt
-    # (those item codes get probability 0) and ship it through the romfs overlay.
+    # 本地改动：怪物不再掉回城/鉴定卷轴 —— 运行期读的是编译表 TreasureClassEx.bin（原版包里 .txt 只是给 mod 的参考；
+    # 29.1 只换 .txt 上机仍掉卷轴，就是证据）。所以构建时从原版 RomFS 现算一份 patched bin：把 tsc/isc 的物品格与
+    # 概率清零（行结构不动）随覆盖层替换；base/ 那份是经典模式用的表，同样清。手改的 bin 进不了仓库（dm/.gitignore
+    # 的 *.bin 把它挡了，29.1 因此没带上），所以改成每次从原版现算——包里的游戏版本换了也自动跟上。
+    # 表结构（3.3.94012 实测，root 1358 行 / base 1138 行，行宽都是 772）：头 u32 = 行数，首行偏移 4；物品码在
+    # row+72 起 10 槽 × 64 字节（内联字符串 32 字节）；概率 u16×10 在 row+712。两份各 94 个卷轴槽。
+    # Local change: no town-portal / identify scrolls from monsters -- what the game loads at run time is the compiled
+    # TreasureClassEx.bin (the .txt in the original package is only a reference for mods; build 29.1 shipped the .txt
+    # only and scrolls still dropped on the device, which is the evidence). So derive a patched bin from the original
+    # RomFS at build time: zero the tsc/isc item slots and probabilities (row layout untouched) and ship it through the
+    # overlay; the base/ copy (used by classic mode) is patched the same way. A hand-patched bin cannot reach the
+    # repository (dm/.gitignore has *.bin, which is why 29.1 did not carry it), so compute it from the original on every
+    # build -- it also follows the game version automatically.
+    # Row structure (measured on 3.3.94012; root 1358 rows / base 1138 rows, row width 772 for both): u32 row count,
+    # first row at offset 4; item codes from row+72, ten slots of 64 bytes (inline string, 32 bytes); the ten u16
+    # probabilities at row+712. Both tables have 94 scroll slots.
     _tc=os.path.join(HERE,'..','..','data','game','treasureclassex.txt')
     if os.path.isfile(_tc):
         _n='tc_treasureclassex.txt'; shutil.copyfile(_tc,os.path.join(t,_n))
@@ -233,17 +245,28 @@ with tempfile.TemporaryDirectory() as t:
         print('掉落表：已替换 TreasureClassEx.txt（回城/鉴定卷轴概率 0）')
     else:
         print('掉落表：没找到 %s，按原版掉落' % _tc)
-    # 本地改动：游戏读的是编译表 TreasureClassEx.bin（NSO 里是 "%s.bin"），所以直接改 bin：把 tsc/isc 的物品格
-    # 与概率清零（行结构不动），随覆盖层替换。
-    # Local change: the game loads the compiled TreasureClassEx.bin ("%s.bin" in the NSO), so patch the bin directly:
-    # the tsc/isc item slots and their probabilities are zeroed (row layout untouched) and shipped via the overlay.
-    _tcb=os.path.join(HERE,'..','..','data','game','treasureclassex.bin')
-    if os.path.isfile(_tcb):
-        _nb='tc_treasureclassex.bin'; shutil.copyfile(_tcb,os.path.join(t,_nb))
-        REPL['data/global/excel/treasureclassex.bin']=_nb
-        print('掉落表：已替换 TreasureClassEx.bin（回城/鉴定卷轴清零）')
-    else:
-        print('掉落表：没找到 %s' % _tcb)
+    sys.path.insert(0,os.path.join(HERE,'..','..','tools')); import dmx
+    dmx.ROOT=os.path.join(romfs,'data')
+    def _tc_noscroll(rel):
+        b=bytearray(dmx.get(rel)); N=struct.unpack_from('<I',b,0)[0]; ROW=(len(b)-4)//N
+        assert N>0 and 4+N*ROW==len(b), (rel,len(b),N,ROW)
+        n=0
+        for i in range(N):
+            off=4+i*ROW
+            for k in range(10):
+                so=off+72+64*k
+                if bytes(b[so:so+32]).split(b'\x00')[0] in (b'tsc',b'isc'):
+                    b[so:so+32]=b'\x00'*32                       # 清掉物品码 | clear the item code
+                    struct.pack_into('<H',b,off+712+2*k,0)       # 概率也清 0 | probability 0 as well
+                    n+=1
+        return bytes(b),n
+    for _rel,_fn in (('data/global/excel/TreasureClassEx.bin','tc_treasureclassex.bin'),
+                     ('data/global/excel/base/TreasureClassEx.bin','tc_base_treasureclassex.bin')):
+        try: _raw,_n=_tc_noscroll(_rel)
+        except Exception as _e: raise SystemExit('掉落表：取不到原版 %s（%s）；覆盖层没生成，不能按旧包出包' % (_rel,_e))
+        open(os.path.join(t,_fn),'wb').write(_raw)
+        REPL[_rel.lower()]=_fn
+        print('掉落表：%s 清零 %d 个 tsc/isc 槽（%d 字节）' % (_rel,_n,len(_raw)))
     n0,z0=emit(REPL,out,'')
     # 本地改动：把中文字体子集放进覆盖层目录（App 只带这一份；宿主 hle_fs.c 在 OpenFile 里替换 CJK 字体）
     # Local change: put the Chinese font subset into the overlay directory (single copy in the app; the host
