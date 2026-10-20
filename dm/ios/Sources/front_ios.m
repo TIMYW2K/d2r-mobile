@@ -710,7 +710,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
             if (!_swallow) _swallow = [NSHashTable weakObjectsHashTable];
             for (UITouch *t in ts) [_swallow addObject:t];
             __weak typeof(self) weakSelf = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.38 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 typeof(self) sf = weakSelf; if (!sf || sf->_islandTouch != t0 || sf->_islandFired) return;
                 CGPoint q = [t0 locationInView:sf];
                 CGFloat dx = q.x - sf->_islandP0.x, dy = q.y - sf->_islandP0.y;

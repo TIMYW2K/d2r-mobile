@@ -2831,50 +2831,8 @@ static int ui_touch_mode(void) { int dm_padmode_current(void), dm_padmode_busy(v
 #else
 #define UI_MOUSE_ITEM_PUMPS(pm, proot, pw, phh) do { } while (0)
 #endif
-// 本地改动：物品对比提示框描边 —— TooltipsPanel 里最后一个可见子控件 = 「当前已装备」那个说明框；用控件自己的
-// 命中函数（虚表 +0x48，参数是界面虚拟坐标 vw×vh 打包成 64 位）二分出四条边，归一化后交给覆盖层描 1pt #332925。
-// 每 4 帧算一次、面板不可见就清 0，所以框跟着提示框走，不依赖任何固定位置。
-// Local change: border for the item-comparison tooltip -- the tooltip panel's last visible child is the currently
-// equipped box; its rect is found by bisecting the four edges with the widget's own hit test (vtable +0x48, xy packed in
-// UI layout units vw x vh), normalised and handed to the overlay which strokes it 1pt in #332925. Re-evaluated every 4
-// frames and cleared when the panel is hidden, so the border follows the box wherever it appears.
-static _Atomic int g_tt_on; static _Atomic float g_tt[4]; static unsigned g_tt_tick;
-static void dm_ui_tooltip_edge_pump(void) {
-    if ((g_tt_tick++ & 3) != 0) return;
-    module_t *m = main_module(); if (!m) return;
-    uint64_t root = *(uint64_t *)(m->base + 0x2f05458); if (!root) return;
-    int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
-    if (vw <= 0 || vh <= 0) { atomic_store(&g_tt_on, 0); return; }
-    uint64_t tp = ui_panel(root, "TooltipsPanel");
-    if (!tp || !*(uint8_t *)(tp + 0x50)) { atomic_store(&g_tt_on, 0); return; }
-    uint64_t ch = *(uint64_t *)(tp + 0x58), n = *(uint64_t *)(tp + 0x60);
-    if (!ch || n > 64) { atomic_store(&g_tt_on, 0); return; }
-    uint64_t tw = 0; int cnt = 0;
-    for (uint64_t i = 0; i < n; i++) { uint64_t w = *(uint64_t *)(ch + 8 * i); if (w && *(uint8_t *)(w + 0x50)) { tw = w; cnt++; } }
-    if (cnt < 2 || !tw) { atomic_store(&g_tt_on, 0); return; }   // 没在比较（单框）就不描 | no comparison: no border
-    int (*hit)(uint64_t, uint64_t) = (int (*)(uint64_t, uint64_t))(*(uint64_t *)(*(uint64_t *)tw + 0x48));
-    if (!hit) { atomic_store(&g_tt_on, 0); return; }
-#define TT_HIT(x, y) (hit(tw, (uint64_t)(uint32_t)(x) | ((uint64_t)(uint32_t)(y) << 32)) & 1)
-    int sx = -1, sy = -1;
-    for (int gy = 1; gy < 24 && sy < 0; gy++)
-        for (int gx = 1; gx < 24; gx++) { int x = vw * gx / 24, y = vh * gy / 24; if (TT_HIT(x, y)) { sx = x; sy = y; break; } }
-    if (sx < 0) { atomic_store(&g_tt_on, 0); return; }
-    int x0 = 0, x1 = vw - 1, y0 = 0, y1 = vh - 1;
-    { int lo = 0, hi = sx; while (lo < hi) { int mid = (lo + hi) / 2; if (TT_HIT(mid, sy)) hi = mid; else lo = mid + 1; } x0 = lo; }
-    { int lo = sx, hi = vw - 1; while (lo < hi) { int mid = (lo + hi + 1) / 2; if (TT_HIT(mid, sy)) lo = mid; else hi = mid - 1; } x1 = lo; }
-    { int lo = 0, hi = sy; while (lo < hi) { int mid = (lo + hi) / 2; if (TT_HIT(sx, mid)) hi = mid; else lo = mid + 1; } y0 = lo; }
-    { int lo = sy, hi = vh - 1; while (lo < hi) { int mid = (lo + hi + 1) / 2; if (TT_HIT(sx, mid)) lo = mid; else hi = mid - 1; } y1 = lo; }
-    if (x1 <= x0 || y1 <= y0) { atomic_store(&g_tt_on, 0); return; }
-    atomic_store(&g_tt[0], (float)x0 / vw); atomic_store(&g_tt[1], (float)y0 / vh);
-    atomic_store(&g_tt[2], (float)x1 / vw); atomic_store(&g_tt[3], (float)y1 / vh);
-    atomic_store(&g_tt_on, 1);
-    { static int was; if (!was) { const char *nm = (const char *)*(uint64_t *)(tw + 8);
-        LOG("描边：已装备说明框 %.0f,%.0f–%.0f,%.0f（子控件 %d 个，最后那个=%s）", (double)x0, (double)y0, (double)x1, (double)y1, cnt, nm ? nm : "?"); } was = 1; }
-}
-int dm_ui_tooltip_rect(float out[4]) { if (!atomic_load(&g_tt_on)) return 0; for (int i = 0; i < 4; i++) out[i] = atomic_load(&g_tt[i]); return 1; }
 
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
-    dm_ui_tooltip_edge_pump();
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame

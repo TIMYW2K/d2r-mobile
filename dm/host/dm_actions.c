@@ -513,33 +513,8 @@ static void test_bindtbl(uint8_t *b, uint64_t pl) {
     char t[400]; int k = 0; for (int i = 0; i < 32; i++) k += snprintf(t + k, sizeof t - k, "%s%d", i == 16 ? " ‖ " : i ? "," : "", cur[i]);
     LOG("测试 DM_TEST_BINDTBL：绑定表 [%s]", t);
 }
-// 本地改动（一次性探针）：物品提示框（TooltipsPanel）可见时，把它的子控件名字与 +0x40..+0x78 的原始整数打一遍，
-// 用来找出「当前已装备」那个说明框的矩形字段（下一版据此描 #332925 细边）。每 120 拍最多一次。
-// Local change (one-off probe): while the item tooltip panel is visible, dump its child widget names and the raw ints at
-// +0x40..+0x78, to locate the equipped-item box rect (next build draws the #332925 1pt border from it). At most once/120 ticks.
-static void dm_tooltip_probe(void) {
-    static uint32_t last_tick; uint32_t tq = (uint32_t)dm_cur_tick(); if (tq - last_tick < 120) return;
-    uint8_t *b = ab(); if (!b) return;
-    uint64_t root = *(uint64_t *)(b + 0x2f05458); if (!root) return;
-    uint64_t tp = a_panel(root, "TooltipsPanel"); if (!tp || !*(uint8_t *)(tp + 0x50)) return;   // 不可见就不打 | invisible: skip
-    last_tick = tq;
-    uint64_t ch = *(uint64_t *)(tp + 0x58), n = *(uint64_t *)(tp + 0x60); if (!ch || n > 64) return;
-    LOG("探针：TooltipsPanel 子控件 %llu 个", (unsigned long long)n);
-    for (uint64_t i = 0; i < n && i < 16; i++) {
-        uint64_t w = *(uint64_t *)(ch + i * 8); if (!w) continue;
-        char b2[64] = ""; uint64_t nm = *(uint64_t *)(w + 8);
-        if (nm) { for (int k = 0; k < 48; k++) { char c = *(char *)(nm + k); if (!c) break; b2[k] = (c >= 0x20 && c < 0x7f) ? c : '?'; } }
-        int v[8]; for (int k = 0; k < 8; k++) v[k] = *(int *)(w + 0x40 + k * 8);
-        uint64_t chn = *(uint64_t *)(w + 0x58), nn = *(uint64_t *)(w + 0x60);
-        LOG("探针：  [%llu] %s vis=%d +0x40..=%d,%d,%d,%d,%d,%d,%d,%d 子=%llu",
-            (unsigned long long)i, b2[0] ? b2 : "(无名)", *(uint8_t *)(w + 0x50), v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], (unsigned long long)nn);
-        (void)chn;
-    }
-}
-
 void dm_actions_pump(void) {
     uint8_t *b = ab(); if (!b) return; uint64_t root = *(uint64_t *)(b + 0x2f05458); if (!root) return;
-    dm_tooltip_probe();
     {   // 本地改动：换装请求 —— 调游戏自己的换武器函数，切到「另一组」 | local: weapon-set swap request
         if (atomic_exchange(&g_wswap_req, 0)) {
             int wset = dm_swapskill_wset();

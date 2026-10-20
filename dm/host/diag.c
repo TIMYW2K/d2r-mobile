@@ -358,22 +358,30 @@ static void monres_on_setinfo(const uint64_t *regs, uint64_t payload) {
     memcpy(buf + keep, add, n); memcpy(buf + keep + n, "\xee\x81\xbe" "0", 4); memset(buf + keep + n + 4, ' ', len - keep); buf[keep + n + 4 + (len - keep)] = 0;
 }
 
-// 本地改动：怪物血条上的名字按当前血量着色：≥70% 绿、45–70% 黄、25–45% 橙、<25% 红（颜色码在血条名字里确实能渲染，
-// 抗性后缀用的就是同一套码）。血量走游戏自己的取属性函数 main+0x5b9290：6 = 当前生命、7 = 上限（都是 ×256 定点）。
-// Local change: tint the monster health-bar name by current HP: >=70% green, 45-70% yellow, 25-45% orange, <25% red
-// (colour codes do render in that name -- the resistance suffix already uses them). HP comes from the game's own stat
-// getter main+0x5b9290: 6 = current, 7 = max (both fixed point x256).
+// 本地改动：只给「友方单位（佣兵 / 召唤物 / 傀儡）」的血条名字按血量着色；敌对怪物不动。
+// 友方判定用游戏自己的阵营位（单位 +0x88 状态表 +0x1c 位 31，然后与 dm_rift.c unit_align 同一条路取属性 0xac：
+// 0 = 敌对、2 = 玩家这一方）。色板只有绿/黄/金/橙/红五档，按血量分五段。
+// Local change: tint the health-bar name only for friendly units (hireling / minions): enemy monsters are untouched.
+// Friendliness uses the game's own alignment (unit +0x88 stat table +0x1c bit 31, then stat 0xac the same way dm_rift.c
+// unit_align reads it: 0 = hostile, 2 = player side). The text palette only has green/yellow/gold/orange/red, so 5 bands.
 static void monhp_tint(const uint64_t *regs, uint64_t payload) {
     module_t *mm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) mm = &g_mod[i];
     uint64_t unit = regs[19], name = 0; uint32_t type = 0; vm_size_t got = 0;
     if (!mm || !unit) return;
-    if (vm_read_overwrite(mach_task_self(), unit, 4, (vm_address_t)&type, &got) || type != 1) return;   // 只认怪物 | monsters only
-    if (vm_read_overwrite(mach_task_self(), payload, 8, (vm_address_t)&name, &got) || !name) return;
+    if (vm_read_overwrite(mach_task_self(), unit, 4, (vm_address_t)&type, &got) || type != 1) return;   // 只认怪物类单位
+    { uint64_t sl = 0; if (vm_read_overwrite(mach_task_self(), unit + 0x88, 8, (vm_address_t)&sl, &got) || !sl) return;
+      uint32_t fl = 0; if (vm_read_overwrite(mach_task_self(), sl + 0x1c, 4, (vm_address_t)&fl, &got) || !(fl & 0x80000000u)) return; }
     int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(mm->base + 0x5b9290);
+    if (get(unit, 0xac, 0) == 0) return;                                  // 敌对 = 不动 | hostile: leave alone
+    if (vm_read_overwrite(mach_task_self(), payload, 8, (vm_address_t)&name, &got) || !name) return;
     int hp = get(unit, 6, 0) >> 8, mx = get(unit, 7, 0) >> 8;
     if (hp <= 0 || mx <= 0) return;
     int pct = hp * 100 / mx;
-    const char *code = pct >= 70 ? "\xee\x81\xbe" "2" : pct >= 45 ? "\xee\x81\xbe" "9" : pct >= 25 ? "\xee\x81\xbe" "8" : "\xee\x81\xbe" "1";
+    const char *code = pct >= 80 ? "\xee\x81\xbe" "2"     // 绿
+                     : pct >= 60 ? "\xee\x81\xbe" "9"     // 黄
+                     : pct >= 40 ? "\xee\x81\xbe" "4"     // 金
+                     : pct >= 20 ? "\xee\x81\xbe" "8"     // 橙
+                                 : "\xee\x81\xbe" "1";    // 红
     char *buf = (char *)name; size_t len = strnlen(buf, 0x7f0);
     if (len >= 0x7f0) return;
     memmove(buf + 4, buf, len + 1);

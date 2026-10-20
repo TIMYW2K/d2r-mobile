@@ -234,29 +234,6 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     CGFloat k = l->joy_radius / 60;
     if (k <= 0) return;
     CGContextRef c = UIGraphicsGetCurrentContext();
-    // 本地改动：物品对比时，给「当前已装备」的说明框描 1pt #332925 细边（矩形每帧从游戏界面读取，跟着框走）。
-    // Local change: 1pt #332925 border around the currently equipped item's description box while comparing
-    // (the rect is read from the game UI every frame, so it follows the box).
-    {
-        extern int dm_ui_tooltip_rect(float out[4]);
-        extern void dm_ui_rect(int *x, int *y, int *w, int *h);
-        float r[4]; int ux = 0, uy = 0, uw = 0, uh = 0;
-        if (dm_ui_tooltip_rect(r)) {
-            dm_ui_rect(&ux, &uy, &uw, &uh);
-            CGFloat sc = self.window.screen.scale; if (sc <= 0) sc = UIScreen.mainScreen.scale; if (sc <= 0) sc = 3;
-            if (uw > 0 && uh > 0) {
-                CGRect tr = CGRectMake((ux + r[0] * uw) / sc, (uy + r[1] * uh) / sc,
-                                       (r[2] - r[0]) * uw / sc, (r[3] - r[1]) * uh / sc);
-                CGContextSaveGState(c);
-                CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:0x33 / 255.0 green:0x29 / 255.0 blue:0x25 / 255.0 alpha:1.0].CGColor);
-                CGContextSetLineWidth(c, 1.0);
-                CGContextStrokeRect(c, CGRectInset(tr, 0.5, 0.5));
-                CGContextRestoreGState(c);
-            }
-        }
-    }
-
-
     uint64_t hostNow=now_ns(); dm_tg_snapshot native=self.nativeMapping;
     // 圆钮上可能写出来的字一律走中英表（dm/i18n/ui_text.tsv），跟游戏语言：技能钮画图标 / 键位图、不写字；腰带 / 十字由底栏画（下面整个跳过），这几格不会写字
     // Any text that could be written on round buttons always goes through the bilingual table (dm/i18n/ui_text.tsv) and follows the game language: skill buttons draw icons / key glyphs and no text; the belt / cross are drawn by the bottom bar (skipped entirely below), so these cells never get text
@@ -330,7 +307,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             [icon drawInRect:glyph blendMode:kCGBlendModeNormal alpha:held?1:.82];showCaption=NO;
         }
         CGFloat textSize = (i==DM_TC_MAIN ? 13 : i==DM_TC_PORTAL ? 20 : 10)*k;
-        CGFloat capY = t->y - textSize*.72 - (i==DM_TC_PORTAL ? 3.0 : 0);   // 换装 I/II 上移 3pt | weapon-set label 3pt higher
+        CGFloat capY = t->y - textSize*.72 - (i==DM_TC_PORTAL ? 2.0 : 0);   // 净上移 2pt | net 2pt up
         if(showCaption) caption(labels[i],CGRectMake(b.origin.x,capY,b.size.width,textSize*1.6),textSize,held ? 1 : .84);
         if (i>=DM_TC_BELT1 && i<=DM_TC_BELT4) caption([NSString stringWithFormat:@"%d",i-DM_TC_BELT1+1],CGRectMake(t->x-10*k,t->y+8*k,20*k,12*k),8*k,.65);
     }
