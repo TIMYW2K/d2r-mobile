@@ -260,13 +260,21 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
         // 避开左下摇杆、右下技能区与底栏，双指操作不再和走位/放技能打架。
         // Local change: narrowed to the play area the player marked (x 30-70%, y 35-75%), clear of the
         // joystick, the skill buttons and the bottom bar.
-        // 本地改动：再往里收 20%（原来 30–70% / 35–75%）——误触还是偏多，收窄到中央 32%×32% 的区域，
+        // 本地改动：只认屏幕正中央的 40%–60%（横纵都 20% 宽度）—— 避开左侧摇杆与右下技能区。
         // 离左侧摇杆和右下技能区都更远。
-        // Local change: narrowed another 20% (was 30-70% / 35-75%) to a central 32%x32% box, further from the
+        // Local change: only the exact centre box 40%-60% on both axes (20% wide).
         // left joystick and the bottom-right skill buttons.
-        CGFloat x0 = bd.origin.x + bd.size.width * 0.34, x1 = bd.origin.x + bd.size.width * 0.66;
-        CGFloat y0 = bd.origin.y + bd.size.height * 0.39, y1 = bd.origin.y + bd.size.height * 0.61;
-        if (pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1) return NO;   // 只有中间 1/3
+        CGFloat x0 = bd.origin.x + bd.size.width * 0.40, x1 = bd.origin.x + bd.size.width * 0.60;
+        CGFloat y0 = bd.origin.y + bd.size.height * 0.40, y1 = bd.origin.y + bd.size.height * 0.60;
+        if (pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1) {
+            // 本地改动：中心 40%–60% 之外不缩放，并记一行，便于确认"外部不生效" | Local: outside the centre
+            // 40%-60% box nothing happens; the line proves it from the log.
+            static int out_n; out_n++;
+            if (out_n <= 10 || out_n % 25 == 0)
+                LOG("前端：双指在中心区域外，不缩放（x %.0f%%，y %.0f%%，第 %d 次）",
+                    100.0 * (pt.x - bd.origin.x) / bd.size.width, 100.0 * (pt.y - bd.origin.y) / bd.size.height, out_n);
+            return NO;
+        }
     }
     return YES;
 }

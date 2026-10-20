@@ -211,6 +211,17 @@ with tempfile.TemporaryDirectory() as t:
         if os.environ.get('DM_OVERLAY_MAC'): open(os.path.join(dst,'kbd_glyphs'),'w').write('ztouch_controller_buttons_ui/switchk*.sprite\n')   # 标记文件：覆盖层带键盘键帽，宿主 dm_padmode.c 见到它才用 | marker file: the overlay carries keyboard key caps; the host's dm_padmode.c uses them only when it sees this
         open(os.path.join(dst,'ctrl_touch'),'w').write('触屏版布局在 layouts/xtouch_lay、ztouch_console_lay、0touch_console_switch_lay（dm_padmode.c 见到本文件才改写前缀）\n')
         return new[0], os.path.getsize(os.path.join(dst,'data',new[0]))
+    # 本地改动：中文字体 —— 主界面字体 BlizzardGlobal-V5_81.ttf 换成汇文明朝体子集。
+    # 57.1 先换过 BlizzardGlobalTCUnicode / arfangxinshuh，界面上看不出变化；含汉字的主界面字体只剩这一款。
+    # Local change: the main UI font BlizzardGlobal-V5_81.ttf is replaced with the Huiwen Mincho subset.
+    # 57.1 tried BlizzardGlobalTCUnicode / arfangxinshuh with no visible effect; this is the remaining CJK UI font.
+    _fontfile=os.path.join(HERE,'fonts','huiwen-subset.ttf')
+    if os.path.isfile(_fontfile):
+        _n='font-v5.ttf'; shutil.copyfile(_fontfile,os.path.join(t,_n))
+        REPL['data/hd/ui/fonts/blizzardglobal-v5_81.ttf']=_n
+        print('字体：覆盖层替换 BlizzardGlobal-V5_81.ttf（%d 字节）' % os.path.getsize(_fontfile))
+    else:
+        print('字体：没找到 %s，按原版字体出包' % _fontfile)
     n0,z0=emit(REPL,out,'')
     # 本地改动：把中文字体子集放进覆盖层目录（App 只带这一份；宿主 hle_fs.c 在 OpenFile 里替换 CJK 字体）
     # Local change: put the Chinese font subset into the overlay directory (single copy in the app; the host
