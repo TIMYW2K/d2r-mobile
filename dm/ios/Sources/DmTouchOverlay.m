@@ -235,30 +235,6 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     if (k <= 0) return;
     CGContextRef c = UIGraphicsGetCurrentContext();
 
-    // ===== 本地改动（临时诊断）：绿色 = 灵动岛 + 周围 +12 点的回城区（只有岛所在那侧/位置有）=====
-    // Local change (temporary diagnostic): green = the Dynamic Island and the +12pt portal ring around it.
-    {
-        CGRect bd = self.bounds; CGFloat W = bd.size.width, H = bd.size.height;
-        const CGFloat inset = 11, pillW = 125, pillH = 37, ring = 12;
-        UIInterfaceOrientation o = UIInterfaceOrientationUnknown;
-        UIWindowScene *ws = self.window.windowScene;
-        if (ws) { if (@available(iOS 26.0, *)) o = ws.effectiveGeometry.interfaceOrientation; else o = ws.interfaceOrientation; }
-        BOOL landscape = UIInterfaceOrientationIsLandscape(o);
-        BOOL onRight = (o != UIInterfaceOrientationLandscapeRight);
-        CGRect isl;
-        if (landscape) {
-            CGFloat x = onRight ? W - inset - pillH : inset;
-            isl = CGRectMake(x, (H - pillW) * 0.5, pillH, pillW);
-        } else {
-            isl = CGRectMake((W - pillW) * 0.5, inset, pillW, pillH);
-        }
-        CGRect zone = CGRectInset(isl, -ring, -ring);
-        UIBezierPath *zp = [UIBezierPath bezierPathWithRoundedRect:zone cornerRadius:MIN(zone.size.width, zone.size.height) * 0.5];
-        [[UIColor colorWithRed:0.1 green:0.85 blue:0.25 alpha:0.16] setFill]; [zp fill];
-        [[UIColor colorWithRed:0.1 green:0.95 blue:0.3 alpha:0.95] setStroke]; zp.lineWidth = 2; [zp stroke];
-        UIBezierPath *ip = [UIBezierPath bezierPathWithRoundedRect:isl cornerRadius:MIN(isl.size.width, isl.size.height) * 0.5];
-        [[UIColor colorWithRed:1 green:0.2 blue:0.2 alpha:0.85] setStroke]; ip.lineWidth = 1.5; [ip stroke];
-    }
     uint64_t hostNow=now_ns(); dm_tg_snapshot native=self.nativeMapping;
     // 圆钮上可能写出来的字一律走中英表（dm/i18n/ui_text.tsv），跟游戏语言：技能钮画图标 / 键位图、不写字；腰带 / 十字由底栏画（下面整个跳过），这几格不会写字
     // Any text that could be written on round buttons always goes through the bilingual table (dm/i18n/ui_text.tsv) and follows the game language: skill buttons draw icons / key glyphs and no text; the belt / cross are drawn by the bottom bar (skipped entirely below), so these cells never get text

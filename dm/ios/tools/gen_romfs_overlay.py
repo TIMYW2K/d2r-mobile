@@ -211,17 +211,28 @@ with tempfile.TemporaryDirectory() as t:
         if os.environ.get('DM_OVERLAY_MAC'): open(os.path.join(dst,'kbd_glyphs'),'w').write('ztouch_controller_buttons_ui/switchk*.sprite\n')   # 标记文件：覆盖层带键盘键帽，宿主 dm_padmode.c 见到它才用 | marker file: the overlay carries keyboard key caps; the host's dm_padmode.c uses them only when it sees this
         open(os.path.join(dst,'ctrl_touch'),'w').write('触屏版布局在 layouts/xtouch_lay、ztouch_console_lay、0touch_console_switch_lay（dm_padmode.c 见到本文件才改写前缀）\n')
         return new[0], os.path.getsize(os.path.join(dst,'data',new[0]))
-    # 本地改动：中文字体 —— 主界面字体 BlizzardGlobal-V5_81.ttf 换成汇文明朝体子集。
-    # 57.1 先换过 BlizzardGlobalTCUnicode / arfangxinshuh，界面上看不出变化；含汉字的主界面字体只剩这一款。
-    # Local change: the main UI font BlizzardGlobal-V5_81.ttf is replaced with the Huiwen Mincho subset.
-    # 57.1 tried BlizzardGlobalTCUnicode / arfangxinshuh with no visible effect; this is the remaining CJK UI font.
-    _fontfile=os.path.join(HERE,'fonts','huiwen-subset.ttf')
-    if os.path.isfile(_fontfile):
-        _n='font-v5.ttf'; shutil.copyfile(_fontfile,os.path.join(t,_n))
-        REPL['data/hd/ui/fonts/blizzardglobal-v5_81.ttf']=_n
-        print('字体：覆盖层替换 BlizzardGlobal-V5_81.ttf（%d 字节）' % os.path.getsize(_fontfile))
-    else:
-        print('字体：没找到 %s，按原版字体出包' % _fontfile)
+    # 本地改动：中文字体 —— 主界面字体 BlizzardGlobal-V5_81.ttf 换成汇文明朝体子集。
+    # 57.1 先换过 BlizzardGlobalTCUnicode / arfangxinshuh，界面上看不出变化；含汉字的主界面字体只剩这一款。
+    # Local change: the main UI font BlizzardGlobal-V5_81.ttf is replaced with the Huiwen Mincho subset.
+    # 57.1 tried BlizzardGlobalTCUnicode / arfangxinshuh with no visible effect; this is the remaining CJK UI font.
+    _fontfile=os.path.join(HERE,'fonts','huiwen-subset.ttf')
+    if os.path.isfile(_fontfile):
+        _n='font-v5.ttf'; shutil.copyfile(_fontfile,os.path.join(t,_n))
+        REPL['data/hd/ui/fonts/blizzardglobal-v5_81.ttf']=_n
+        print('字体：覆盖层替换 BlizzardGlobal-V5_81.ttf（%d 字节）' % os.path.getsize(_fontfile))
+    else:
+        print('字体：没找到 %s，按原版字体出包' % _fontfile)
+    # 本地改动：怪物不再掉回城/鉴定卷轴与书 —— 直接改原版掉落表 TreasureClassEx.txt：把 tsc/tbk/isc/ibk 的
+    # 概率改成 0（代码见 dm/data/game/treasureclassex.txt），随覆盖层替换进游戏。
+    # Local change: no town-portal / identify scrolls or tomes from monsters -- patch the original TreasureClassEx.txt
+    # (those item codes get probability 0) and ship it through the romfs overlay.
+    _tc=os.path.join(HERE,'..','..','data','game','treasureclassex.txt')
+    if os.path.isfile(_tc):
+        _n='tc_treasureclassex.txt'; shutil.copyfile(_tc,os.path.join(t,_n))
+        REPL['data/global/excel/treasureclassex.txt']=_n
+        print('掉落表：已替换 TreasureClassEx.txt（回城/鉴定卷轴概率 0）')
+    else:
+        print('掉落表：没找到 %s，按原版掉落' % _tc)
     n0,z0=emit(REPL,out,'')
     # 本地改动：把中文字体子集放进覆盖层目录（App 只带这一份；宿主 hle_fs.c 在 OpenFile 里替换 CJK 字体）
     # Local change: put the Chinese font subset into the overlay directory (single copy in the app; the host

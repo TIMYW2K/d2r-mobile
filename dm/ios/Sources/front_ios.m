@@ -709,10 +709,6 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
             _islandTouch = t0; _islandP0 = p0; _islandT0 = CACurrentMediaTime(); _islandFired = NO;
             if (!_swallow) _swallow = [NSHashTable weakObjectsHashTable];
             for (UITouch *t in ts) [_swallow addObject:t];
-            { CGRect ir = dm_island_rect(self), zr = dm_island_zone_rect(self);
-              LOG("前端：按到灵动岛回城区（%.0f,%.0f；方向 %ld，岛在%s；岛矩形 %.1f,%.1f %.1fx%.1f，圈 %.1fx%.1f）", p0.x, p0.y,
-                  (long)dm_scene_orientation(self), dm_island_on_right(self) ? "右" : "左",
-                  ir.origin.x, ir.origin.y, ir.size.width, ir.size.height, zr.size.width, zr.size.height); }
                 (long)dm_scene_orientation(self), dm_island_on_right(self) ? "右" : "左");
             __weak typeof(self) weakSelf = self;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.38 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -723,7 +719,6 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
                 sf->_islandFired = YES;
                 void dm_tp_request(void); dm_tp_request();
                 dm_tp_haptic();
-                LOG("前端：长按灵动岛回城区 → 开门（震动）");
             });
             return;
         }
@@ -754,7 +749,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     if (_islandTouch && [ts containsObject:_islandTouch] && !_islandFired) {   // 移开 30 点 = 取消长按
         CGPoint p = [_islandTouch locationInView:self];
         CGFloat dx = p.x - _islandP0.x, dy = p.y - _islandP0.y;
-        if (dx * dx + dy * dy > 900) { _islandTouch = nil; LOG("前端：传送门区按着移开 → 取消"); }
+        if (dx * dx + dy * dy > 900) _islandTouch = nil;
     }
     if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) [r removeObject:t]; if(!r.count) return; ts=r; }
