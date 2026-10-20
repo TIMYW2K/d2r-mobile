@@ -14,6 +14,7 @@ enum {
 };
 #define DM_STICK_MAX 32767
 void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+void dm_input_cancel_pending_press(uint64_t buttons);   // 已松开的触屏键若尚未被游戏取样，不再补发一次按下沿 | Cancel a touch press edge that is still pending after the key is released
 uint64_t dm_input_samples(void);   // 游戏已取手柄的累计次数 | Cumulative number of times the game has sampled the controller
 // 实体 / 虚拟手柄（iOS GameController，dm_gamepad.m）：与触屏输入分开存，游戏取手柄时按键按位或、摇杆手柄非零就用手柄的。没连手柄时全 0，取值与原来逐位相同
 // Physical / virtual controller (iOS GameController, dm_gamepad.m): stored separately from touch input; when the game reads the controller, buttons are

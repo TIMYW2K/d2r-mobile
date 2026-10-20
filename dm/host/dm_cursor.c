@@ -7,6 +7,7 @@
 #include "dm_hud.h"
 #include "dm_actions.h"
 #include "dm_cursor_item.h"
+#include "dm_widget.h"
 #include "dm_i18n.h"
 #include <stdatomic.h>
 #include <stdio.h>
@@ -2856,106 +2857,97 @@ static void dm_ui_hover_apply(void) {
 }
 
 
-// 本地改动：生命/法力球上的数字改金色；左上角佣兵/傀儡名字按血量四档着色（递归找文字控件）。
-static uint64_t dm_txt_widget(uint64_t w, int dep) {
-    if (!w || dep > 6) return 0;
-    uint64_t tp = *(uint64_t *)(w + 0x88), tl = *(uint64_t *)(w + 0x90);
-    if (tp && tl > 0 && tl < 0x400) return w;
+static uint64_t dm_widget_named_text(module_t *m, uint64_t w, const char *name, int dep) {
+    if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return 0;
+    const char *nm = (const char *)*(uint64_t *)(w + 8);
+    if (nm && !strcmp(nm, name) && dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
+        const char *s = (const char *)*(uint64_t *)(w + 0x88); uint64_t len = *(uint64_t *)(w + 0x90);
+        if (s && len > 0 && len < 256 && s[0]) return w;
+    }
     uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60);
-    if (!ch || n > 64) return 0;
-    for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (!c || !*(uint8_t *)(c + 0x50)) continue;
-        uint64_t r = dm_txt_widget(c, dep + 1); if (r) return r; }
+    if (!ch || n > 256) return 0;
+    for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); uint64_t found = dm_widget_named_text(m, c, name, dep + 1); if (found) return found; }
     return 0;
 }
-// 本地改动：采集左上角佣兵名字，让 iOS 覆盖层按真实佣兵血量绘制；球数字由 v4 字形素材负责。
-// 做法：把游戏自己那份文字的「矩形 + 内容」读出来，然后把游戏文字清空（避免重复显示），只在覆盖层重画一份。
-// Local change: capture the game's own HUD text (rect + string), clear it, and redraw it in the overlay.
-static void dm_widget_rect(uint64_t w, int32_t vw, int32_t vh, float out[4]) {
-    uint64_t f = *(uint64_t *)(*(uint64_t *)w + 0x48);
-    int (*hit)(uint64_t, uint64_t) = (int (*)(uint64_t, uint64_t))f;
-    if (!hit || vw <= 0 || vh <= 0) return;
-    int sx = -1, sy = -1;
-    for (int gy = 1; gy < 40 && sy < 0; gy++)
-        for (int gx = 1; gx < 40; gx++) {
-            int x = vw * gx / 40, y = vh * gy / 40;
-            if (hit(w, (uint32_t)x | ((uint64_t)(uint32_t)y << 32)) & 1) { sx = x; sy = y; break; }
+
+static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
+    if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return;
+    const char *nm = (const char *)*(uint64_t *)(w + 8);
+    if (nm && !strcmp(nm, "AttackDamageTitle") && dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
+        static const uint8_t attack[] = {0xe6,0x94,0xbb,0xe5,0x87,0xbb};     // 攻击
+        static const uint8_t damage[] = {0xe4,0xbc,0xa4,0xe5,0xae,0xb3};     // 伤害
+        uint8_t *s = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t len = *(uint64_t *)(w + 0x90);
+        if (s && len >= sizeof attack + 1 + sizeof damage && len < 256) {
+            for (uint64_t i = 0; i + sizeof attack + 1 + sizeof damage <= len; i++) {
+                if (memcmp(s + i, attack, sizeof attack)) continue;
+                uint64_t nl = i + sizeof attack; size_t skip = s[nl] == '\r' && nl + 1 < len && s[nl + 1] == '\n' ? 2 : s[nl] == '\n' || s[nl] == '\r' ? 1 : 0;
+                if (!skip || nl + skip + sizeof damage > len || memcmp(s + nl + skip, damage, sizeof damage)) continue;
+                uint8_t compact[256]; uint64_t compact_len = len - skip;
+                memcpy(compact, s, (size_t)nl);
+                memcpy(compact + nl, s + nl + skip, (size_t)(len - nl - skip));
+                ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, (const char *)compact, compact_len);
+                ((void (*)(uint64_t))(m->base + 0xadc434))(w); break;  // 用原版字符串与排版入口移除换行，不动字号 | Use the game's string and layout APIs to remove the newline without changing font size
+            }
         }
-    if (sx < 0) return;
-    int x0 = 0, x1 = vw - 1, y0 = 0, y1 = vh - 1;
-    { int lo = 0, hi = sx; while (lo < hi) { int m = (lo + hi) / 2; if (hit(w, (uint32_t)m | ((uint64_t)(uint32_t)sy << 32)) & 1) hi = m; else lo = m + 1; } x0 = lo; }
-    { int lo = sx, hi = vw - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hit(w, (uint32_t)m | ((uint64_t)(uint32_t)sy << 32)) & 1) lo = m; else hi = m - 1; } x1 = lo; }
-    { int lo = 0, hi = sy; while (lo < hi) { int m = (lo + hi) / 2; if (hit(w, (uint32_t)sx | ((uint64_t)(uint32_t)m << 32)) & 1) hi = m; else lo = m + 1; } y0 = lo; }
-    { int lo = sy, hi = vh - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hit(w, (uint32_t)sx | ((uint64_t)(uint32_t)m << 32)) & 1) lo = m; else hi = m - 1; } y1 = lo; }
-    out[0] = (float)x0 / vw; out[1] = (float)y0 / vh; out[2] = (float)x1 / vw; out[3] = (float)y1 / vh;
-}
-typedef struct { float r[4]; char txt[64]; int len, has, rect_ok; } hud_slot;
-static hud_slot g_hs[3];   // 0=生命 1=法力 2=佣兵名字 | 0=life 1=mana 2=hireling
-static _Atomic int g_hud_ready;      // 采集完成 | captured
-static _Atomic int g_hud_stat[4];    // 生命当前/上限/法力当前/上限（备用）| life/max/mana/max
-static _Atomic int g_hud_mhp = -1;   // 当前佣兵血量百分比；-1 时名字保持白色 | current mercenary HP %; -1 keeps the name white
-// 文字缓冲的合理性检查：不能有控制字符（中文 UTF-8 高位字节允许），长度上限由调用方给
-// sanity check: no control bytes (UTF-8 continuation bytes are fine), the caller caps the length
-static int hud_text_ok(uint64_t tp, uint64_t tl) {
-    for (uint64_t i = 0; i < tl && i < 48; i++) {
-        unsigned char c = *(unsigned char *)(tp + i);
-        if (c < 0x20) return 0;
     }
-    return 1;
+    uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60); if (!ch || n > 256) return;
+    for (uint64_t i = 0; i < n; i++) dm_char_damage_titles_walk(m, *(uint64_t *)(ch + 8 * i), dep + 1);
 }
 
-// 采集并清空游戏文字：pcell = HealthBall/ManaBall/Icon
-static void hud_capture(hud_slot *h, uint64_t pcell, int32_t vw, int32_t vh) {
-    if (!pcell) { h->has = 0; return; }
-    uint64_t t = dm_txt_widget(pcell, 1);
-    if (!t) { h->has = 0; return; }
-    uint64_t tp = *(uint64_t *)(t + 0x88), tl = *(uint64_t *)(t + 0x90);
-    if (!tp) { h->has = 0; return; }
-    if (!h->rect_ok) { float rr[4] = {0, 0, 0, 0}; dm_widget_rect(t, vw, vh, rr); if (rr[2] > rr[0] && rr[3] > rr[1]) { for (int q = 0; q < 4; q++) h->r[q] = rr[q]; h->rect_ok = 1; } }
-    if (tl > 0 && tl < 63 && hud_text_ok(tp, tl)) {
-        int n = (int)tl;
-        for (int i = 0; i < n; i++) h->txt[i] = *(char *)(tp + i);
-        h->txt[n] = 0; h->len = n; h->has = 1;
+static void dm_text_rgb(module_t *m, uint64_t w, const int rgb[3]) {
+    if (!m || !w || !dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) return;
+    int32_t *c = (int32_t *)(uintptr_t)(w + 0xbc);
+    if (c[0] == rgb[0] && c[1] == rgb[1] && c[2] == rgb[2]) return;
+    c[0] = rgb[0]; c[1] = rgb[1]; c[2] = rgb[2];
+    ((void (*)(uint64_t))(m->base + 0xadc434))(w);  // 字色改动后走原版重排入口 | Re-layout through the game's text-widget entry after changing its color
+}
+
+static void dm_merc_name_tint(module_t *m, uint64_t root) {
+    static dm_wref cached_name;
+    static int original_rgb[3], have_original;
+    uint64_t hire = ui_panel(root, "HireablesPanel"), name = 0;
+    if (hire && *(uint8_t *)(hire + 0x50)) {
+        uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
+        if (ch && n <= 256) for (uint64_t i = 0; i < n && !name; i++) {
+            uint64_t entry = *(uint64_t *)(ch + 8 * i);
+            if (entry) name = dm_widget_named_text(m, entry, "Name", 1);
+        }
     }
-    if (h->len > 0 && h->rect_ok) { *(char *)tp = 0; *(uint64_t *)(t + 0x90) = 0; }   // 没拿到矩形就不动游戏文字（避免文字消失又没得画）| only clear when we own the rect
+    if (!name || !dm_widget_is((const uint8_t *)m->base, name, DM_VT_TEXT)) {
+        uint64_t old = dm_wref_get(&cached_name);
+        if (old && have_original) dm_text_rgb(m, old, original_rgb);
+        dm_wref_set(&cached_name, 0); have_original = 0; return;
+    }
+    if (dm_wref_get(&cached_name) != name) {
+        dm_wref_set(&cached_name, name);
+        int32_t *c = (int32_t *)(uintptr_t)(name + 0xbc); for (int i = 0; i < 3; i++) original_rgb[i] = c[i]; have_original = 1;
+    }
+    static int cached_hp_pct = -1; static uint64_t next_hp_read;
+    uint64_t frame = dm_guest_frame();
+    if (frame >= next_hp_read) { int dm_merc_hp_pct(void); cached_hp_pct = dm_merc_hp_pct(); next_hp_read = frame + 4; }
+    int color[3];
+    if (cached_hp_pct < 0) memcpy(color, original_rgb, sizeof color);
+    else if (cached_hp_pct >= 75) { color[0] = 64; color[1] = 217; color[2] = 89; }
+    else if (cached_hp_pct >= 50) { color[0] = 242; color[1] = 217; color[2] = 51; }
+    else if (cached_hp_pct >= 25) { color[0] = 242; color[1] = 140; color[2] = 38; }
+    else { color[0] = 230; color[1] = 51; color[2] = 38; }
+    dm_text_rgb(m, name, color);
 }
 
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
+    if (dm_ui_unstable()) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
-    int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
-    uint64_t hire = ui_panel(root, "HireablesPanel");
-    // 球数字由 UIKit 的 vital 字形绘制；这里只采集佣兵栏名字，避免对屏外 ValueDisplay 做无效着色。
-    g_hs[0].has = 0; g_hs[0].len = 0;
-    g_hs[1].has = 0; g_hs[1].len = 0;
-    uint64_t ic = 0;
-    if (hire) { uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
-        for (uint64_t i = 0; i < n && ch && n < 256 && !ic; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (c && *(uint8_t *)(c + 0x50)) ic = c; } }
-    hud_capture(&g_hs[2], ic, vw, vh);
-    int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(m->base + 0x5b9290);
-    uint64_t dm_player_unit(void); uint64_t pl = dm_player_unit();
-    if (pl) { atomic_store(&g_hud_stat[0], get(pl, 6, 0) >> 8); atomic_store(&g_hud_stat[1], get(pl, 7, 0) >> 8);
-              atomic_store(&g_hud_stat[2], get(pl, 8, 0) >> 8); atomic_store(&g_hud_stat[3], get(pl, 9, 0) >> 8); }
-    { int dm_merc_hp_pct(void); atomic_store(&g_hud_mhp, dm_merc_hp_pct()); }
-    atomic_store(&g_hud_ready, (g_hs[0].has | (g_hs[1].has << 1) | (g_hs[2].has << 2)));
-}
-int dm_hud_overlay(float rects[12], char txt[3][64], int lens[3], int *flags, int *stat4, int *mhp) {
-    int f = atomic_load(&g_hud_ready); if (!f) return 0;
-    for (int k = 0; k < 3; k++) { for (int i = 0; i < 4; i++) rects[k * 4 + i] = g_hs[k].r[i];
-        int n = g_hs[k].len; if (n > 63) n = 63; for (int i = 0; i < n; i++) txt[k][i] = g_hs[k].txt[i]; txt[k][n] = 0; lens[k] = n; }
-    *flags = f; for (int i = 0; i < 4; i++) stat4[i] = atomic_load(&g_hud_stat[i]);
-    *mhp = atomic_load(&g_hud_mhp);
-    return 1;
-}
-int dm_hud_merc_hp_color_band(void) {
-    int hp = atomic_load(&g_hud_mhp);
-    return hp >= 75 ? 3 : hp >= 50 ? 2 : hp >= 25 ? 1 : hp >= 0 ? 0 : -1;
+    uint64_t cs = ui_panel(root, "CharacterStatsPanel");
+    if (cs && *(uint8_t *)(cs + 0x50)) dm_char_damage_titles_walk(m, cs, 0);
+    dm_merc_name_tint(m, root);
 }
 
 
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
-    dm_ui_hud_pump();   // 每帧采集 HUD 文字（清掉游戏原文字、只留覆盖层）| capture HUD text every frame
+    dm_ui_hud_pump();   // 每帧修正角色栏文字与佣兵名字颜色 | refresh character-panel titles and mercenary name colour each frame
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame
     ui_watch_pump();
@@ -2992,6 +2984,26 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
               ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, g_tab_k, was != g_tab_k); LOG("界面页签：「%s」第 %d → 目标第 %d 个（现为 %d）", g_tab_name, was, g_tab_k, TAB_SEL(tw)); }
           else LOG("【红】界面页签：页签条「%s」已不在 / 不可见，这次不切", g_tab_name);
           dm_wref_set(&g_tab_ref, 0); atomic_store(&g_tab_have, 0); } }
+    // 页面的当前索引是实际显示内容的来源；页签条有时会漏掉自己的高亮刷新。
+    // After page changes, reconcile a stale tab highlight against the page that is actually visible.
+    { static int last_page = -1; static uint64_t repair_at;
+      module_t *tm = main_module(); uint64_t tr = 0; if (tm) memcpy(&tr, tm->base + 0x2f05458, 8);
+      uint64_t us = tr ? ui_find(tr, "UISwitcher", 0) : 0, tw = tr ? ui_find(tr, "UISwitcherTabs", 0) : 0;
+      int correct_switcher = 0;
+      uint64_t us_vt = us ? *(uint64_t *)us : 0;
+      if (tm && us && us_vt && *(uint8_t *)(us + 0x50)) correct_switcher = *(uint64_t *)(us_vt + 0x28) == (uint64_t)tm->base + 0x404fd8;
+      if (!atomic_load(&g_tab_direct) && !atomic_load(&g_tab_left) && tm && !dm_ui_unstable() && correct_switcher &&
+          tw && *(uint8_t *)(tw + 0x50) && dm_widget_is((const uint8_t *)tm->base, tw, DM_VT_TABBAR)) {
+          int page = *(int32_t *)(us + 0x1b8), pages = *(int32_t *)(us + 0x188), selected = TAB_SEL(tw);
+          if (page < 0 || pages <= 0 || page >= pages) last_page = -1;
+          else if (page != last_page) { last_page = page; repair_at = fr + 2; }
+          else if (selected != page && fr >= repair_at) {
+              ((void (*)(uint64_t, int, int))(tm->base + 0xad9b80))(tw, page, 0);
+              repair_at = fr + 3;
+              if (TAB_SEL(tw) == page) LOG("界面页签：按当前功能页 %d 修复页签高亮", page);
+          }
+      } else last_page = -1;
+    }
     { static uint64_t tnext; if (fr >= tnext) { if (atomic_load(&g_tab_left) > 0) { atomic_fetch_sub(&g_tab_left, 1); ui_auto_key(atomic_load(&g_tab_mask)); tnext = fr + 2; }
         else { uint64_t th = atomic_exchange(&g_tab_then, 0);
             // 对话菜单：按确认键之前核一遍菜单自己记的选中行是不是点的那一行；不是就补挪（至多两轮），还不对就不按——宁可这一下没反应，也不替玩家选错项

@@ -656,23 +656,31 @@ static FILE *g_tkfp; static int g_tkfull; static long g_tkleft = -1; static int6
 static FILE *g_spfp;
 // ---- 难度档位与 HUD 数字（dm_hud.h）：都在拍入口（游戏线程）读写客体，前端经 dm_hud_get / dm_hud_request_players 交互 ----
 // ---- Difficulty setting and HUD numbers (dm_hud.h): both read and write the guest at the tick entry (game thread); the front end interacts via dm_hud_get / dm_hud_request_players ----
-static int g_players_applied; static dm_hud_info g_hud;   // 只在拍线程上读写；对外发布经 dm_hud_publish | Read and written only on the tick thread; published externally via dm_hud_publish
+static int g_players_applied, g_players_waiting; static dm_hud_info g_hud;   // 只在拍线程上读写；对外发布经 dm_hud_publish | Read and written only on the tick thread; published externally via dm_hud_publish
 static module_t *main_mod(void) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) return &g_mod[i]; return NULL; }
 static void *players_obj(module_t *main) { return ((void *(*)(void))(main->base + 0x3102c0))(); }   // 原版 /players 处理函数里同一调用（无参，返回单例） | The same call as in the original game's /players handler (no arguments, returns a singleton)
+static void players_wait_log(int want, const char *why) { if (g_players_waiting != want) { g_players_waiting = want; LOG("DM_PLAYERS：档位 %d 暂不能应用（%s），继续重试", want, why); } }
 
 static void players_apply(void) {          // 有新请求就照原版 /players：模式值 ∈ {0,5,7} 才允许 → main+0x1199c50(对象, N) | On a new request do as the original game's /players does: only allowed when the mode value ∈ {0,5,7} → main+0x1199c50(object, N)
     int want = dm_hud_requested_players();
-    if (!want || want == g_players_applied) return;
-    g_players_applied = want;
+    if (want < 1 || want > 8) return;
     module_t *main = main_mod();
-    if (!main) { LOG("【红】DM_PLAYERS：没有 main 模块"); return; }
+    if (!main) { players_wait_log(want, "main 模块未就绪"); return; }
     uint32_t opmode = 0;
-    if (!tk_rd((uint64_t)main->base + 0x2d20b8c, &opmode, 4)) { LOG("【红】DM_PLAYERS：读 main+0x2d20b8c 失败"); return; }
-    if (opmode != 0 && opmode != 5 && opmode != 7) { LOG("DM_PLAYERS：模式 %u 不在原版允许集合 {0,5,7}，不改档", opmode); return; }
+    if (!tk_rd((uint64_t)main->base + 0x2d20b8c, &opmode, 4)) { players_wait_log(want, "操作模式读数无效"); return; }
+    if (opmode != 0 && opmode != 5 && opmode != 7) { players_wait_log(want, "当前操作模式不允许原版 /players"); return; }
     void *obj = players_obj(main);
-    if (!obj) { LOG("【红】DM_PLAYERS：0x3102c0 返回空对象"); return; }
+    if (!obj) { players_wait_log(want, "原版人数对象未就绪"); return; }
+    uint32_t current = 0;
+    if (!tk_rd((uint64_t)obj + 0xc, &current, 4)) { players_wait_log(want, "当前人数档读数无效"); return; }
+    if (current == (uint32_t)want) { g_players_applied = want; g_players_waiting = 0; return; }
+    uint32_t previous = current;
     ((void (*)(void *, uint32_t))(main->base + 0x1199c50))(obj, (uint32_t)want);
-    LOG("DM_PLAYERS：原版路径 main+0x3102c0() → main+0x1199c50(obj,%d)（模式值 %u）", want, opmode);
+    if (tk_rd((uint64_t)obj + 0xc, &current, 4) && current == (uint32_t)want) {
+        if (g_players_applied != want || g_players_waiting == want)
+            LOG("DM_PLAYERS：已核实对象人数档 %u → %d（原版路径 main+0x3102c0() → main+0x1199c50，模式 %u）", previous, want, opmode);
+        g_players_applied = want; g_players_waiting = 0;
+    } else players_wait_log(want, "原版设置器尚未反映目标档位");
 }
 
 static int stat_read(uint64_t unit, uint32_t want, uint32_t *value) {

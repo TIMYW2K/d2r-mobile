@@ -237,44 +237,6 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
 - (void)drawRect:(CGRect)rect {
     (void)rect;
     CGContextRef c = UIGraphicsGetCurrentContext();
-    // 宿主每帧清掉游戏原有的佣兵名字，由覆盖层按佣兵实血重绘；球上数值由预渲染字形素材绘制。
-    // The host clears the game's mercenary name each frame; this overlay redraws it using the mercenary's actual HP. Orb values come from pre-rendered glyph assets.
-    {
-        extern int dm_hud_overlay(float rects[12], char txt[3][64], int lens[3], int *flags, int *stat4, int *mhp);
-        extern void dm_ui_rect(int *x, int *y, int *w, int *h);
-        float rects[12]; char txt[3][64]; int lens[3] = {0, 0, 0}, flags = 0, stat4[4] = {0, 0, 0, 0}, mhp = -1;
-        if (dm_hud_overlay(rects, txt, lens, &flags, stat4, &mhp)) {
-            int ux = 0, uy = 0, uw = 0, uh = 0; dm_ui_rect(&ux, &uy, &uw, &uh);
-            CGFloat sc = self.window.screen.scale; if (sc <= 0) sc = UIScreen.mainScreen.scale; if (sc <= 0) sc = 3;
-            if (uw > 0 && uh > 0) {
-                NSMutableParagraphStyle *pp = [NSMutableParagraphStyle new]; pp.alignment = NSTextAlignmentCenter;
-                for (int k = 0; k < 3; k++) {
-                    if (!(flags & (1 << k)) || lens[k] <= 0) continue;
-                    float *r = &rects[k * 4];
-                    if (r[2] <= r[0] || r[3] <= r[1]) continue;
-                    CGRect rr = CGRectMake((ux + r[0] * uw) / sc, (uy + r[1] * uh) / sc, (r[2] - r[0]) * uw / sc, (r[3] - r[1]) * uh / sc);
-                    UIColor *col = nil; CGFloat fs = 12;
-                    if (k == 2) {   // 佣兵名字：按血量四档 | hireling name: 4 HP bands
-                        fs = MAX(9, MIN(18, rr.size.height * 0.9));
-                        col = mhp >= 75 ? [UIColor colorWithRed:.25 green:.85 blue:.35 alpha:.98]
-                            : mhp >= 50 ? [UIColor colorWithRed:.95 green:.85 blue:.2 alpha:.98]
-                            : mhp >= 25 ? [UIColor colorWithRed:.95 green:.55 blue:.15 alpha:.98]
-                            : mhp >= 0  ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:.98]
-                                        : [UIColor whiteColor];
-                    } else {        // 生命/法力数字：金色 | life/mana numbers: gold
-                        fs = MAX(9, MIN(18, rr.size.height * 0.9));
-                        col = [UIColor colorWithRed:0.85 green:0.79 blue:0.65 alpha:0.98];
-                    }
-                    UIFont *f = dm_game_font(fs); if (!f) f = [UIFont systemFontOfSize:fs];
-                    NSString *s = [NSString stringWithUTF8String:txt[k]];
-                    if (s.length) [s drawInRect:rr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:col, NSParagraphStyleAttributeName:pp}];
-                }
-            }
-        }
-    }
-
-
-
     const dm_tc_state *s = self.controls; if (!s) return;
     const dm_tc_layout *l = &s->layout;
     CGFloat k = l->joy_radius / 60;

@@ -445,21 +445,13 @@ def _char_no_stamina(s):
 # 图 = NativeHUD/touch/close.png，写在借用路径 PANEL/HUD_02/front_panel）。消息 ClosePanel:UISwitcher = 页签条、当前页、外框一起关，与按 B 的消息序列一致（物品栏实测）；
 # 关闭按钮不放在外框里：外框里的按钮在箱子 / 魔盒 / 小站页会抢走点击却只发 UISwitcher（面板不关），放进页签条面板又被「选项」页签吃掉点击。
 # 改为每个面板各放一个、都落在外框右上角凹槽同一处（屏幕像素包围盒 (2413,41)–(2438,78)）、各发各的关闭消息，见 INGAME。
-# 角色页「<技能名> / 伤害」两行标题：两行的行高合计比格高 84 多出一截，下半行被下一格的底图压住。
-# 换行是代码拼的（技能名 + 换行 + 「伤害」），改不成单行；字号（pointSize）与行距（spacing.leading）改了画面都不变（实测）。
-# 文字在框里垂直居中：把这两个标题框上移 12 单位（实测：16 时上一行的顶被格子上沿压住，9 时下一行的底仍贴边），让溢出的那截落到格内上方的空白里。左右手各一处。
+# 角色页攻击伤害标题的中文换行由宿主在运行时从「攻击\n伤害」压成「攻击伤害」；恢复原版框的位置和字号即可，不再用错位弥补换行。
+# The host compacts the Chinese AttackDamageTitle from 「攻击\n伤害」 to 「攻击伤害」 at runtime; keep the original box position and font size instead of compensating for a forced line break.
 # Outer frame (the ControllerOverlay shared by the five tabbed pages and the chest / cube / waypoint etc.): the row of controller button prompts at the bottom is moved away; a close button is placed in the notch at the top-right corner (stone surface showing through + an old-gold X filling the notch,
 # image = NativeHUD/touch/close.png, written at the borrowed path PANEL/HUD_02/front_panel). The message ClosePanel:UISwitcher = tab strip, current page and outer frame closed together, matching the message sequence of pressing B (measured on the inventory);
 # the close button is not placed inside the outer frame: a button in the outer frame steals taps on the chest / cube / waypoint pages yet only sends UISwitcher (the panel does not close), and placed in the tab strip panel its taps are swallowed by the 「选项」(Options) tab.
 # Instead each panel gets its own, all landing at the same spot in the top-right notch of the outer frame (screen pixel bounding box (2413,41)-(2438,78)) and each sending its own close message, see INGAME.
-# Character page two-line titles 「<技能名> / 伤害」(<skill name> / Damage): the combined line height of the two lines exceeds the cell height of 84 by a margin, and the lower half-line is covered by the next cell's background image.
-# The line break is assembled in code (skill name + line break + 「伤害」(Damage)) and cannot be changed to a single line; changing the font size (pointSize) and line spacing (spacing.leading) leaves the picture unchanged (measured).
-# The text is vertically centered in its box: these two title boxes are moved up 12 units (measured: at 16 the top of the upper line is covered by the cell's top edge, at 9 the bottom of the lower line still touches the edge), so the overflow falls into the blank space at the top inside the cell. One place each for left and right hand.
-def _char_title_up(s):
-    a = re.compile(r'("type": "TextBoxWidget", "name": "AttackDamageTitle",\s*"fields": \{\s*"rect": \{ "x": 0, "y": )0(, "width": \d+, "height": 84 \})')
-    s, n = a.subn(lambda m: m.group(1) + '-12' + m.group(2), s)
-    if n != 2: raise SystemExit('touch_layout：角色页「伤害」标题不是原样（找到 %d 处，应 2 处）' % n)
-    return s, n
+# Character page Attack Damage title: the host removes the Chinese line break at runtime; the original title widgets retain their measured font size and box position.
 def _overlay_touch(s):
     s, n = offscreen(s)
     if n != 1: raise SystemExit('touch_layout：外框底部提示条应为 1 个，找到 %d 个' % n)
@@ -1008,7 +1000,7 @@ def _tooltip_pad(s):
     return s.replace(b, '"showDelayMilliseconds": 0,'), 2
 PRESENT = {
     'controller/uiswitcherhd.json': lambda s: offscreen(s, types=(), names=('CycleLeftIndicator', 'CycleRightIndicator')),   # 页签条两端的 L / R 字形 | The L / R glyphs at the two ends of the tab strip
-    'controller/characterstatspanelhd.json': lambda s: (lambda r1: (lambda r2: (r2[0], r1[1] + r2[1]))(_char_title_up(r1[0])))(_char_no_stamina(s)),
+    'controller/characterstatspanelhd.json': _char_no_stamina,
     'controller/tooltipspanelhd.json': _tooltip_pad,
     'controller/dropgoldmodalhd.json': lambda s: offscreen(s),   # 金币数量框：原版大小与样子（去掉 − / + / 一半 / 全部，只留数字框、好、取消）；这里只挪走「好 / 取消」上的手柄键位提示 | Gold amount box: the original game's size and look (− / + / half / all removed, keeping only the number box, OK and Cancel); here only the controller button prompts on 「好 / 取消」(OK / Cancel) are moved away
     'controller/bankexpansionlayouthd.json': lambda s: offscreen(s, types=(), names=('gold_max',)),   # 储藏箱「金币最大数: N」这行去掉（40 号字在框内放不下） | The stash line 「金币最大数: N」(Max gold: N) is removed (40-point text does not fit inside the frame)

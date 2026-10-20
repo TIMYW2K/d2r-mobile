@@ -522,7 +522,6 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     }
     hud_stack_watch();
     { dm_hud_info h, o=_overlay.hud; dm_hud_get(&h); h.x=h.y=0; if (memcmp(&h,&o,sizeof h)) { _overlay.hud=h; [_overlay setNeedsDisplay]; } }   // 覆盖层不画玩家坐标：不清掉的话走路时每个逻辑拍都判「变了」、整层全屏重画一遍 | The overlay does not draw player coordinates: without clearing them, every logic tick while walking would be judged "changed" and redraw the whole layer fullscreen
-    { extern int dm_hud_merc_hp_color_band(void); static int last=-2; int band=dm_hud_merc_hp_color_band(); if(band!=last) { last=band; [_overlay setNeedsDisplay]; } }   // 只在血量颜色档位变化时使覆盖层失效 | Invalidate the overlay only when the mercenary HP color band changes
     dm_tg_snapshot snapshot={0};
     dm_touch_game_snapshot(&snapshot);
     _overlay.nativeMapping=snapshot;
@@ -839,6 +838,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     UITouch *uf=_uiFinger;   // 先存下：uiTouch 抬起时会把 _uiFinger 置空（b2：置空后再 removeObject:_uiFinger = removeObject:nil 抛异常） | Save it first: uiTouch sets _uiFinger to nil on lift (in one regression case: removeObject:_uiFinger after it was set to nil = removeObject:nil throws an exception)
     if(uf && [ts containsObject:uf]) { [self uiTouch:[NSSet setWithObject:uf] phase:2]; NSMutableSet *r=[ts mutableCopy]; [r removeObject:uf]; ts=r; }
     if(!ts.count) return;
+    uint64_t released_skill_buttons = 0;
     for(UITouch *t in ts) {
         int slot=-1;
         if(t==_mapTouch) { CGPoint p=[t locationInView:self]; _mapTouch=nil;
@@ -872,6 +872,9 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
             if(wait) { _pendEnd=t; _pendEndTime=CACurrentMediaTime(); _pendWall=CACurrentMediaTime(); continue; }
         }
         for(int i=0;i<16;i++) if(_slot[i]==t) {
+            dm_tc_finger *released = &_controls.finger[i];
+            if (released->active && released->target >= DM_TC_SKILL1 && released->target <= DM_TC_SKILL4)
+                released_skill_buttons |= _controls.layout.target[released->target].button;
             // 系统取消触摸（通知横幅、系统手势）不当松手：拖着的物品放回原处、货架 / 成叠格拖出不买不取，别的手指只放掉按着的东西，不补脉冲、不点世界、不点界面
             // A system-cancelled touch (notification banner, system gesture) is not treated as a release: the dragged item is put back, a drag out of the shelf / stacked cell neither buys nor withdraws, and other fingers only release what they hold, with no make-up pulse, no world tap and no UI tap
             if(!strcmp(phase,"cancelled")) { dm_tc_finger *cf=&_controls.finger[i]; BOOL drag=_controls.navigation_mode && _controls.pointer_slot==i && (cf->pointer_dragged || cf->shop_drag);
@@ -918,6 +921,10 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         [self recordTouch:t slot:slot phase:phase];
     }
     [self pushFrom:"uitouch" phase:phase];
+    // A skill that had been held gets no make-up press after its finger lifts. Keep the latch for a quick tap pulse,
+    // or when another finger is still holding the same mapped skill button.
+    uint64_t released_unheld = released_skill_buttons & ~_controls.buttons;
+    if (released_unheld) dm_input_cancel_pending_press(released_unheld);
     [self armPulseEnd];
 }
 // 脉冲按键（副技能松手施放 / 功能页里点格、拖放的拿起与放下）：原版按一次即放一次，前端按下后要自己收回。
