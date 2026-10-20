@@ -2979,7 +2979,11 @@ static void hud_capture(hud_slot *h, uint64_t pcell, int32_t vw, int32_t vh) {
     uint64_t tp = *(uint64_t *)(t + 0x88), tl = *(uint64_t *)(t + 0x90);
     if (!tp) { h->has = 0; return; }
     if (!h->rect_ok) { float rr[4] = {0, 0, 0, 0}; dm_widget_rect(t, vw, vh, rr); if (rr[2] > rr[0] && rr[3] > rr[1]) { for (int q = 0; q < 4; q++) h->r[q] = rr[q]; h->rect_ok = 1; } }
-    if (tl > 0 && tl < 63 && hud_text_ok(tp, tl)) { int n = (int)tl;
+    if (tl > 0 && tl < 63 && hud_text_ok(tp, tl)) {
+        int n = (int)tl;
+        for (int i = 0; i < n; i++) h->txt[i] = *(char *)(tp + i);
+        h->txt[n] = 0; h->len = n; h->has = 1;
+    }
     if (h->len > 0 && h->rect_ok) { *(char *)tp = 0; *(uint64_t *)(t + 0x90) = 0; }   // 没拿到矩形就不动游戏文字（避免文字消失又没得画）| only clear when we own the rect
 }
 static void dm_ui_hud_pump(void) {
