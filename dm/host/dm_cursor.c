@@ -2961,6 +2961,16 @@ static hud_slot g_hs[3];   // 0=生命 1=法力 2=佣兵名字 | 0=life 1=mana 2
 static _Atomic int g_hud_ready;      // 采集完成 | captured
 static _Atomic int g_hud_stat[4];    // 生命当前/上限/法力当前/上限（备用）| life/max/mana/max
 static _Atomic int g_hud_mhp;        // 友方血量百分比 | friendly HP %
+// 文字缓冲的合理性检查：不能有控制字符（中文 UTF-8 高位字节允许），长度上限由调用方给
+// sanity check: no control bytes (UTF-8 continuation bytes are fine), the caller caps the length
+static int hud_text_ok(uint64_t tp, uint64_t tl) {
+    for (uint64_t i = 0; i < tl && i < 48; i++) {
+        unsigned char c = *(unsigned char *)(tp + i);
+        if (c < 0x20) return 0;
+    }
+    return 1;
+}
+
 // 采集并清空游戏文字：pcell = HealthBall/ManaBall/Icon
 static void hud_capture(hud_slot *h, uint64_t pcell, int32_t vw, int32_t vh) {
     if (!pcell) { h->has = 0; return; }
@@ -2968,9 +2978,9 @@ static void hud_capture(hud_slot *h, uint64_t pcell, int32_t vw, int32_t vh) {
     if (!t) { h->has = 0; return; }
     uint64_t tp = *(uint64_t *)(t + 0x88), tl = *(uint64_t *)(t + 0x90);
     if (!tp) { h->has = 0; return; }
-    if (!h->rect_ok) { dm_widget_rect(t, vw, vh, h->r); h->rect_ok = 1; }
-    if (tl > 0 && tl < 63) { int n = (int)tl; for (int i = 0; i < n; i++) h->txt[i] = *(char *)(tp + i); h->txt[n] = 0; h->len = n; h->has = 1; }
-    if (h->len > 0) { *(char *)tp = 0; *(uint64_t *)(t + 0x90) = 0; }   // 清空游戏原文字（只留覆盖层那份）| hide the game copy
+    if (!h->rect_ok) { float rr[4] = {0, 0, 0, 0}; dm_widget_rect(t, vw, vh, rr); if (rr[2] > rr[0] && rr[3] > rr[1]) { for (int q = 0; q < 4; q++) h->r[q] = rr[q]; h->rect_ok = 1; } }
+    if (tl > 0 && tl < 63 && hud_text_ok(tp, tl)) { int n = (int)tl;
+    if (h->len > 0 && h->rect_ok) { *(char *)tp = 0; *(uint64_t *)(t + 0x90) = 0; }   // 没拿到矩形就不动游戏文字（避免文字消失又没得画）| only clear when we own the rect
 }
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
