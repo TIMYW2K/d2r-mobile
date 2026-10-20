@@ -211,6 +211,20 @@ with tempfile.TemporaryDirectory() as t:
         if os.environ.get('DM_OVERLAY_MAC'): open(os.path.join(dst,'kbd_glyphs'),'w').write('ztouch_controller_buttons_ui/switchk*.sprite\n')   # 标记文件：覆盖层带键盘键帽，宿主 dm_padmode.c 见到它才用 | marker file: the overlay carries keyboard key caps; the host's dm_padmode.c uses them only when it sees this
         open(os.path.join(dst,'ctrl_touch'),'w').write('触屏版布局在 layouts/xtouch_lay、ztouch_console_lay、0touch_console_switch_lay（dm_padmode.c 见到本文件才改写前缀）\n')
         return new[0], os.path.getsize(os.path.join(dst,'data',new[0]))
+    # 本地改动：中文字体换成玩家指定的「汇文明朝体」—— 只保留游戏文本里真实出现的 2910 个字符，
+    # 用 dm/ios/tools/fonts/huiwen-subset.ttf 替换主界面的 CJK 字体（原版这两款都含两万多汉字，
+    # 体积 5.9+8.9 MB；子集只有 2,909 个字形、5.1 MB）。
+    # Local change: swap the in-game Chinese UI font for the player's chosen Huiwen Mincho. The subset keeps
+    # only the characters that actually appear in the game text (2,910 code points) and replaces the two CJK
+    # UI fonts; nothing else about the layout changes.
+    _font=os.path.join(HERE,'fonts','huiwen-subset.ttf')
+    if os.path.isfile(_font):
+        for _p in ('data/hd/ui/fonts/arfangxinshuh7c95b5_eb_t.ttf',
+                   'data/hd/ui/fonts/blizzardglobaltcunicode.ttf'):
+            _n='font-'+os.path.basename(_p); shutil.copyfile(_font,os.path.join(t,_n)); REPL[_p]=_n
+        print('字体：汇文明朝体 %d 字节，替换 arfangxinshuh / BlizzardGlobalTCUnicode' % os.path.getsize(_font))
+    else:
+        print('字体：没找到 %s，按原版字体出包' % _font)
     n0,z0=emit(REPL,out,'')
     print(f'romfs_overlay：{n0} {z0} 字节，底图 {w}x{h}；前端布局 {len(tl)} 个、挪走键位提示 {ntl} 处')
     for d in (out+'_astc',out+'_astc_variants'): shutil.rmtree(d,ignore_errors=True); os.makedirs(d)
