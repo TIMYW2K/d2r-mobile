@@ -236,6 +236,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
 }
 - (void)drawRect:(CGRect)rect {
     (void)rect;
+    CGContextRef c = UIGraphicsGetCurrentContext();
     const dm_tc_state *s = self.controls; if (!s) return;
     const dm_tc_layout *l = &s->layout;
     CGFloat k = l->joy_radius / 60;
