@@ -176,6 +176,10 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
     UIPinchGestureRecognizer *_pinch;
     BOOL _pinching;
     CGFloat _pinchStartExtent;
+    // 本地改动：单击灵动岛 → 开门。记下按在岛区的那根手指，抬起时确认是短按、几乎没动才触发。
+    // Local change: tap the Dynamic Island -> town portal. Remember the finger that landed in the island band and
+    // only fire on a short, nearly-still release.
+    UITouch *_islandTouch; CGPoint _islandP0; double _islandT0;
     UIView *_rsCover;   // 一键重开期间的黑屏（宿主 dm_cursor.c 经 g_dm_restart_cover_hook 开关）：盖在窗口最上层（整屏，含真全屏的留边），不露主菜单，吞掉这段时间的触点 | Black screen during one-tap restart (toggled by the host's dm_cursor.c via g_dm_restart_cover_hook): covers the top of the window (whole screen, including the true-fullscreen margins), does not reveal the main menu, and swallows touch points during this period
     int _navigation;
     CALayer *_mgLabel[12], *_mgMark[12];   // 小地图任务终点：每个终点一个名牌 / 符号层 + 一个灰十字层（mapGoalSync） | Minimap quest goals: one nameplate / symbol layer + one grey cross layer per goal (mapGoalSync)
@@ -656,6 +660,24 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
       if(wasPad || dm_padmode_busy()) { if(!_swallow) _swallow=[NSHashTable weakObjectsHashTable]; for(UITouch *t in ts) [_swallow addObject:t]; if(wasPad) LOG("前端：手柄模式下碰屏 → 只切回触屏模式，这一下不执行"); return; } }   // 切换事务进行中落下的手指同样整根不执行（控件层还没露出来） | Fingers that land while a switch transaction is in progress are likewise ignored for their whole lifetime (the control layer has not been revealed yet)
     if(atomic_load(&g_touch_frontend)) { [self uiTouch:ts phase:0]; return; }
     [self refreshPortalBinding];
+    // 本地改动：单击灵动岛 → 免费回城（开门）。横屏时灵动岛在左右边缘、正好落在安全区内；判定带 = 左右安全区
+    // 宽度之内、竖向 30%–70%。这里只记住落点并吞掉这一根手指（不会同时走位 / 放技能），抬起时才真正触发。
+    // Local change: tapping the Dynamic Island band fires the free town portal. In landscape the island sits on the
+    // left/right edge inside the safe-area inset; band = inside the left/right inset, vertical 30%-70%. The touch is
+    // only remembered and swallowed here (no walking/casting) and fires on release.
+    if (!_navigation && !_padMode && ts.count >= 1 && _rsCover.hidden && !g_movie_cover && _islandTouch == nil) {
+        UITouch *t0 = ts.anyObject; CGPoint p0 = [t0 locationInView:self];
+        UIEdgeInsets ins = self.safeAreaInsets; CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+        BOOL band = (p0.y > h * 0.30 && p0.y < h * 0.70) &&
+                    ((ins.left > 20 && p0.x <= ins.left) || (ins.right > 20 && p0.x >= w - ins.right));
+        if (band) {
+            _islandTouch = t0; _islandP0 = p0; _islandT0 = CACurrentMediaTime();
+            if (!_swallow) _swallow = [NSHashTable weakObjectsHashTable];
+            for (UITouch *t in ts) [_swallow addObject:t];
+            LOG("前端：按到灵动岛区（%.0f,%.0f；安全区左 %.0f 右 %.0f）→ 抬起即开门", p0.x, p0.y, ins.left, ins.right);
+            return;
+        }
+    }
     if(_pendEnd) { UITouch *pt=_pendEnd; _pendFire=YES; [self finishTouches:[NSSet setWithObject:pt] phase:"ended"]; _pendFire=NO; _pendEnd=nil; _finalAsked=NO; }   // 新手指落下前先把挂着的抬起放行 | Before a new finger lands, let the pending lift through first
     for(UITouch *t in ts) {
         int slot=-1;
@@ -678,6 +700,11 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     (void)e;
+    if (_islandTouch && [ts containsObject:_islandTouch]) {   // 岛区那根手指移开超过 30 点 = 不算单击 | moved >30pt = not a tap
+        CGPoint p = [_islandTouch locationInView:self];
+        CGFloat dx = p.x - _islandP0.x, dy = p.y - _islandP0.y;
+        if (dx * dx + dy * dy > 900) _islandTouch = nil;
+    }
     if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) [r removeObject:t]; if(!r.count) return; ts=r; }
     if(atomic_load(&g_touch_frontend)) { [self uiTouch:ts phase:1]; return; }
@@ -721,6 +748,22 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     }
 }
 - (void)finishTouches:(NSSet<UITouch *> *)ts phase:(const char *)phase {
+    // 本地改动：灵动岛单击 —— 抬起时短按（≤0.45 秒）且没移开才开门，然后清掉记录。
+    // Local change: Dynamic Island tap -- fire the portal on a short release (<=0.45 s) that did not move, then clear.
+    if (_islandTouch && [ts containsObject:_islandTouch]) {
+        if (!strcmp(phase, "ended")) {
+            double dt = CACurrentMediaTime() - _islandT0;
+            static double last_fire;
+            if (dt <= 0.45 && CACurrentMediaTime() - last_fire > 1.5) {
+                last_fire = CACurrentMediaTime();
+                void dm_tp_request(void); dm_tp_request();
+                LOG("前端：单击灵动岛 → 开门（%.0f,%.0f，%.2f 秒）", _islandP0.x, _islandP0.y, dt);
+            } else {
+                LOG("前端：灵动岛区按下 %.2f 秒 / 移动过 → 不算单击，不开门", dt);
+            }
+        }
+        _islandTouch = nil;
+    }
     if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) { [r removeObject:t]; [_swallow removeObject:t]; } if(!r.count) return; ts=r; }   // 手柄模式下落下的那根：抬起也不交 | The touch that landed in controller mode: its lift is not passed on either
     // 界面手指那一根交给 uiTouch，其余照常结束、清槽（真机 SIGSEGV：原先 _uiFinger 在就整批交走 return，局内手指的槽留下已释放的触摸）
