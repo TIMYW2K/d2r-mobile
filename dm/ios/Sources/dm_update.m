@@ -132,8 +132,11 @@ static void on_click(void) {   // 宿主在游戏主线程调：玩家点了「�
 }
 void dm_update_boot(void) {   // main.m 起宿主前调一次 | main.m calls this once before starting the host
     const char *tb = getenv("DM_TEST_UPDATE_BUILD"), *tu = getenv("DM_TEST_UPDATE_URL");
-    NSString *v = tb ? @(tb) : [NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] description]; g_own = v.intValue;
-    if (![v isEqualToString:[NSString stringWithFormat:@"%d", g_own]] || g_own < 0) g_own = 0;
+    // 本地改动：构建号允许「58.1」这种带点的版本
+    NSString *v = tb ? @(tb) : [NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] description];
+    g_own = 0;
+    { const char *vs = v.UTF8String ?: ""; char *vend = NULL; long vn = strtol(vs, &vend, 10);
+      if (vn >= 1 && vn < 2000000000 && (!*vend || (*vend == '.' && vend[1] >= '0' && vend[1] <= '9'))) g_own = (int)vn; }
     NSString *url = tu ? @(tu) : NSBundle.mainBundle.infoDictionary[@"SWUpdateURL"];
     if ([url isKindOfClass:NSString.class] && url.length && g_own > 1) g_url = url;
     if (g_url) dm_update_site([NSURL URLWithString:g_url].host.UTF8String);   // 检查失败时提示玩家去浏览器打开的站点 = 版本文件所在的主机 | The site the player is told to open in a browser when the check fails = the host that serves the version file

@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include <ctype.h>
+#include <strings.h>
 #include <sys/clonefile.h>
 #include <sys/xattr.h>
 
@@ -567,20 +568,34 @@ ssize_t dm_data_pread(int fd, void *buf, size_t n, off_t off) {   // 语义同 p
 // Local change: when the game opens any CJK UI font, serve the bundled Huiwen Mincho subset instead. Only
 // glyphs change -- paths, layout and every other font are untouched. Each redirect logs the font name the
 // game asked for, which is how we learn which font it actually uses.
-static const char *font_subset_override(const char *path) {
-    const char *sub = getenv("DM_FONT_SUBSET");
-    if (!sub || !*sub) return NULL;
-    const char *base = strrchr(path, '/'); base = base ? base + 1 : path;
-    static const char *const names[] = {
-        "arfangxinshuh7c95b5_eb_t.ttf", "blizzardglobaltcunicode.ttf", "blizzardglobal-v5_81.ttf",
-        "tbgdb_0pp.ttf", "ik4ll3.ttf" };
-    for (unsigned i = 0; i < sizeof names / sizeof *names; i++) {
-        const char *a = base, *b = names[i];
-        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) { a++; b++; }
-        if (!*a && !*b) { LOG("中文字体：游戏请求 %s → 换成子集字体", base); return sub; }
-    }
-    return NULL;
-}
+static const char *font_subset_override(const char *path) {
+    const char *base = strrchr(path, '/'); base = base ? base + 1 : path;
+    // 本地改动：诊断 —— 游戏打开任何"像字体"的文件都记一行（每个名字只记一次，最多 24 条），
+    // 用来确定中文到底用哪款字体（58.1 的日志里一条都没有，说明那 5 个 TTF 根本没被打开）。
+    // Local change: diagnostics -- log every font-like file the game opens (once per name, at most 24) to find the
+    // font actually used for Chinese (the 58.1 log showed none of the five TTFs being opened at all).
+    { int looks = 0; const char *p = path;
+      while (*p) { if ((p[0] == 'f' || p[0] == 'F') && !strncasecmp(p, "font", 4)) { looks = 1; break; } p++; }
+      if (!looks) { const char *e = strrchr(base, '.');
+        if (e && (!strncasecmp(e, ".ttf", 4) || !strncasecmp(e, ".otf", 4) || !strncasecmp(e, ".dc6", 4) || !strncasecmp(e, ".tbl", 4))) looks = 1; }
+      if (looks) {
+        static char seen[24][96]; static int nseen;
+        int have = 0; for (int i = 0; i < nseen; i++) if (!strcmp(seen[i], base)) { have = 1; break; }
+        if (!have) { if (nseen < 24) { strncpy(seen[nseen], base, sizeof seen[0] - 1); seen[nseen][sizeof seen[0] - 1] = 0; nseen++; } LOG("字体诊断：游戏打开 %s", path); }
+      }
+    }
+    const char *sub = getenv("DM_FONT_SUBSET");
+    if (!sub || !*sub) return NULL;
+    static const char *const names[] = {
+        "arfangxinshuh7c95b5_eb_t.ttf", "blizzardglobaltcunicode.ttf", "blizzardglobal-v5_81.ttf",
+        "tbgdb_0pp.ttf", "ik4ll3.ttf" };
+    for (unsigned i = 0; i < sizeof names / sizeof *names; i++) {
+        const char *a = base, *b = names[i];
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) { a++; b++; }
+        if (!*a && !*b) { LOG("中文字体：游戏请求 %s → 换成子集字体", base); return sub; }
+    }
+    return NULL;
+}
 HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
     HP(path);
     {   // 本地改动：字体替换（见 font_subset_override）| Local change: font redirect, see font_subset_override
