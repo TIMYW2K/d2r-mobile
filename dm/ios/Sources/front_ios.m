@@ -704,7 +704,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     // swallowed, so it never walks or casts.
     if (!_navigation && !_padMode && ts.count >= 1 && _rsCover.hidden && !g_movie_cover && _islandTouch == nil) {
         UITouch *t0 = ts.anyObject; CGPoint p0 = [t0 locationInView:self];
-        if (dm_tc_hit(&_controls, p0.x, p0.y) == DM_TC_NONE && CGRectContainsPoint(dm_island_zone_rect(self), p0)) {
+        if (dm_tc_hit(&_controls.layout, (float)p0.x, (float)p0.y) == DM_TC_NONE && CGRectContainsPoint(dm_island_zone_rect(self), p0)) {
             _islandTouch = t0; _islandP0 = p0; _islandT0 = CACurrentMediaTime(); _islandFired = NO;
             if (!_swallow) _swallow = [NSHashTable weakObjectsHashTable];
             for (UITouch *t in ts) [_swallow addObject:t];
