@@ -166,6 +166,35 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
 - (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e {}
 - (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e {}
 @end
+// 本地改动：灵动岛几何与震动 —— 横屏时岛在左右边缘，方向读界面方向；传送门区 = 岛内侧偏移 12 点的胶囊，
+// 深 44 点（触摸最小尺寸）、长 125 点（岛的长度），竖向居中。长按 0.5 秒触发，触发时中等震动（类似稀有掉落）。
+// Local change: Dynamic Island geometry and haptics -- in landscape the island sits on the left or right edge (side is
+// read from the interface orientation); the portal region is a capsule offset 12pt inward, 44pt deep (minimum touch
+// size), 125pt long (island length), vertically centred. Long-press 0.5 s fires it with a medium haptic.
+static BOOL dm_island_on_right(UIView *v) {
+    UIWindowScene *ws = v.window.windowScene;
+    if (!ws) return NO;
+    return ws.interfaceOrientation == UIInterfaceOrientationLandscapeRight;   // 竖屏/未知按左侧 | portrait/unknown: left
+}
+static CGRect dm_island_portal_rect(UIView *v) {
+    CGRect bd = v.bounds; UIEdgeInsets ins = v.safeAreaInsets;
+    if (ins.left <= 0 && ins.right <= 0 && v.superview) ins = v.superview.safeAreaInsets;
+    CGFloat sideL = ins.left > 0 ? ins.left : 62, sideR = ins.right > 0 ? ins.right : 62;
+    CGFloat depth = 44, length = 125, gap = 12;
+    CGFloat x = dm_island_on_right(v) ? bd.size.width - sideR - gap - depth : sideL + gap;
+    return CGRectMake(x, bd.size.height * 0.5 - length * 0.5, depth, length);
+}
+static void dm_tp_haptic(void) {
+    static UIImpactFeedbackGenerator *g;
+    if (!g) g = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [g prepare]; [g impactOccurred];
+}
+// 本地改动：触屏按钮的两处改指 —— 作者自带的传送门钮改成换装键（清掉它原版的按钮，改由 front_ios 发换装请求）；
+// 原来的换组键（Ⅰ/Ⅱ）多余，半径置 0（不画也不可点）。
+// Local change: two touch-button remaps -- the upstream portal button becomes the weapon-set switch (its game button
+// is cleared; front_ios sends the swap request instead), and the old I/II skill-set key is hidden (radius 0).
+static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTAL].button = 0; s->layout.swap.r = 0; }
+
 @implementation DmMetalView {
     UITouch *_slot[16];   // 强引用（真机 SIGSEGV：原先不保留，某条路径没清槽时手指对象已释放，下次 pushFrom 读它就崩）。所有结束 / 取消路径都要清槽 | Strong references (real-device SIGSEGV: previously not retained, so when some path failed to clear the slot the finger object was already released and the next pushFrom crashed reading it). All end / cancel paths must clear the slot
     dm_tc_state _controls;
@@ -180,6 +209,7 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
     // Local change: tap the Dynamic Island -> town portal. Remember the finger that landed in the island band and
     // only fire on a short, nearly-still release.
     UITouch *_islandTouch; CGPoint _islandP0; double _islandT0;
+    BOOL _islandFired;   // 长按已经触发过（松手不再重复） | long press already fired
     UIView *_rsCover;   // 一键重开期间的黑屏（宿主 dm_cursor.c 经 g_dm_restart_cover_hook 开关）：盖在窗口最上层（整屏，含真全屏的留边），不露主菜单，吞掉这段时间的触点 | Black screen during one-tap restart (toggled by the host's dm_cursor.c via g_dm_restart_cover_hook): covers the top of the window (whole screen, including the true-fullscreen margins), does not reveal the main menu, and swallows touch points during this period
     int _navigation;
     CALayer *_mgLabel[12], *_mgMark[12];   // 小地图任务终点：每个终点一个名牌 / 符号层 + 一个灰十字层（mapGoalSync） | Minimap quest goals: one nameplate / symbol layer + one grey cross layer per goal (mapGoalSync)
@@ -194,7 +224,7 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
     if (!(self = [super initWithFrame:f])) return nil;
     self.multipleTouchEnabled = YES;
     self.isAccessibilityElement=YES; self.accessibilityIdentifier=@"dm_touch_surface"; self.accessibilityLabel=SWT("dmA11ySurface");
-    dm_tc_init(&_controls,f.size.width,f.size.height); _controls.mouse_click_mode=1;   // 功能页里非物品区的点按走界面鼠标点击 | Taps outside the item area in function pages go through UI mouse clicks
+    dm_tc_init(&_controls,f.size.width,f.size.height); _controls.mouse_click_mode=1;   // 功能页里非物品区的点按走界面鼠标点击 | Taps outside the item area in function pages go through UI mouse clicks apply_touch_overrides(&_controls);
     _overlay=[[DmTouchOverlay alloc] initWithFrame:self.bounds]; _overlay.controls=&_controls; _overlay.hidden=YES;   // 启动即前端页面：进局（读取画面撤下）才显示 | Front-end page right at launch: shown only after entering a run (loading screen removed)
     [self addSubview:_overlay]; _info=[[UIView alloc] initWithFrame:self.bounds]; _info.userInteractionEnabled=NO; _info.hidden=YES; [self addSubview:_info]; g_touch_view=self; dm_gamepad_start(pad_mode_changed);
     _rsCover=[[DmSwallowView alloc] initWithFrame:self.bounds]; _rsCover.backgroundColor=UIColor.blackColor; _rsCover.hidden=YES; _rsCover.userInteractionEnabled=YES;   // 开的时候挂到窗口上（restartCover） | Attached to the window when turned on (restartCover)
@@ -209,6 +239,7 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    apply_touch_overrides(&_controls);
     CAMetalLayer *l=(CAMetalLayer *)self.layer;
     if(l==g_layer) l.drawableSize=CGSizeMake(self.bounds.size.width*l.contentsScale,self.bounds.size.height*l.contentsScale);   // 真全屏（iPad）时出图层挂在外层容器上，不是这一层 | In true fullscreen (iPad) the present layer hangs on the outer container, not this layer
     UIEdgeInsets si=self.safeAreaInsets; static CGFloat sl=-1,sr=-1,sb=-1; BOOL safeChanged=(si.left!=sl || si.right!=sr || si.bottom!=sb);   // 安全区变了（首次布局 / 转屏）也要重排控件 | A safe area change (first layout / rotation) also requires re-laying out the widgets
@@ -264,12 +295,12 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
         // 避开左下摇杆、右下技能区与底栏，双指操作不再和走位/放技能打架。
         // Local change: narrowed to the play area the player marked (x 30-70%, y 35-75%), clear of the
         // joystick, the skill buttons and the bottom bar.
-        // 本地改动：只认屏幕中央的 35%–65%（横纵都 30% 宽度）—— 比 40–60% 略放宽，仍是中央区域。
-        // 离左侧摇杆和右下技能区都更远。
-        // Local change: only the centre box 35%-65% on both axes (30% wide).
-        // left joystick and the bottom-right skill buttons.
-        CGFloat x0 = bd.origin.x + bd.size.width * 0.35, x1 = bd.origin.x + bd.size.width * 0.65;
-        CGFloat y0 = bd.origin.y + bd.size.height * 0.35, y1 = bd.origin.y + bd.size.height * 0.65;
+        // 本地改动：只认屏幕中央的 30%–70%（横纵都 30% 宽度）—— 比 40–60% 略放宽，仍是中央区域。
+        // 离左侧摇杆和右下技能区都更远。
+        // Local change: only the centre box 30%-70% on both axes (30% wide).
+        // left joystick and the bottom-right skill buttons.
+        CGFloat x0 = bd.origin.x + bd.size.width * 0.30, x1 = bd.origin.x + bd.size.width * 0.70;
+        CGFloat y0 = bd.origin.y + bd.size.height * 0.30, y1 = bd.origin.y + bd.size.height * 0.70;
         // 本地改动：之前只看两指中点，两指都在红框外、中点落在框里也会触发（玩家实测反馈）。改成「两根手指都必须
         // 落在框内」才生效，这样红框 = 真正的可缩放范围。
         // Local change: the gate used to look only at the fingers' midpoint, so a pinch whose fingers were outside the
@@ -285,8 +316,8 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
             in_box = !(pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1);
         }
         if (!in_box) {
-            // 本地改动：中心 35%–65% 之外不缩放，并记一行，便于确认"外部不生效" | Local: outside the centre
-            // 35%-65% box nothing happens; the line proves it from the log.
+            // 本地改动：中心 30%–70% 之外不缩放，并记一行，便于确认"外部不生效" | Local: outside the centre
+            // 30%-70% box nothing happens; the line proves it from the log.
             static int out_n; out_n++;
             if (out_n <= 10 || out_n % 25 == 0)
                 LOG("前端：双指在中心区域外，不缩放（x %.0f%%，y %.0f%%，第 %d 次）",
@@ -660,24 +691,33 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
       if(wasPad || dm_padmode_busy()) { if(!_swallow) _swallow=[NSHashTable weakObjectsHashTable]; for(UITouch *t in ts) [_swallow addObject:t]; if(wasPad) LOG("前端：手柄模式下碰屏 → 只切回触屏模式，这一下不执行"); return; } }   // 切换事务进行中落下的手指同样整根不执行（控件层还没露出来） | Fingers that land while a switch transaction is in progress are likewise ignored for their whole lifetime (the control layer has not been revealed yet)
     if(atomic_load(&g_touch_frontend)) { [self uiTouch:ts phase:0]; return; }
     [self refreshPortalBinding];
-    // 本地改动：单击灵动岛 → 免费回城（开门）。横屏时灵动岛在左右边缘、正好落在安全区内；判定带 = 左右安全区
-    // 宽度之内、竖向 30%–70%。这里只记住落点并吞掉这一根手指（不会同时走位 / 放技能），抬起时才真正触发。
-    // Local change: tapping the Dynamic Island band fires the free town portal. In landscape the island sits on the
-    // left/right edge inside the safe-area inset; band = inside the left/right inset, vertical 30%-70%. The touch is
-    // only remembered and swallowed here (no walking/casting) and fires on release.
+    // 本地改动：传送门区（岛内侧偏移的胶囊）—— 按住 0.5 秒触发开门 + 中等震动（类似稀有掉落）；
+    // 只有岛所在的那一侧有这块区域（读界面方向），另一侧没有。这一根手指被吞掉，不会走位/放技能。
+    // Local change: portal region (capsule offset inward from the island edge) -- hold 0.5 s to open the portal with a
+    // medium haptic; only the island's own side has it (side read from the interface orientation). The touch is
+    // swallowed, so it never walks or casts.
     if (!_navigation && !_padMode && ts.count >= 1 && _rsCover.hidden && !g_movie_cover && _islandTouch == nil) {
         UITouch *t0 = ts.anyObject; CGPoint p0 = [t0 locationInView:self];
-        UIEdgeInsets ins = self.safeAreaInsets; CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
-        BOOL band = (p0.y > h * 0.30 && p0.y < h * 0.70) &&
-                    ((ins.left > 20 && p0.x <= ins.left) || (ins.right > 20 && p0.x >= w - ins.right));
-        if (band) {
-            _islandTouch = t0; _islandP0 = p0; _islandT0 = CACurrentMediaTime();
+        if (CGRectContainsPoint(dm_island_portal_rect(self), p0)) {
+            _islandTouch = t0; _islandP0 = p0; _islandT0 = CACurrentMediaTime(); _islandFired = NO;
             if (!_swallow) _swallow = [NSHashTable weakObjectsHashTable];
             for (UITouch *t in ts) [_swallow addObject:t];
-            LOG("前端：按到灵动岛区（%.0f,%.0f；安全区左 %.0f 右 %.0f）→ 抬起即开门", p0.x, p0.y, ins.left, ins.right);
+            LOG("前端：按到传送门区（%.0f,%.0f；岛在%s，长按 0.5 秒开门）", p0.x, p0.y, dm_island_on_right(self) ? "右" : "左");
+            __weak typeof(self) weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                typeof(self) sf = weakSelf; if (!sf || sf->_islandTouch != t0 || sf->_islandFired) return;
+                CGPoint q = [t0 locationInView:sf];
+                CGFloat dx = q.x - sf->_islandP0.x, dy = q.y - sf->_islandP0.y;
+                if (dx * dx + dy * dy > 900) return;      // 移开过 = 不算长按 | moved: not a long press
+                sf->_islandFired = YES;
+                void dm_tp_request(void); dm_tp_request();
+                dm_tp_haptic();
+                LOG("前端：长按传送门区 → 开门（震动）");
+            });
             return;
         }
     }
+
     if(_pendEnd) { UITouch *pt=_pendEnd; _pendFire=YES; [self finishTouches:[NSSet setWithObject:pt] phase:"ended"]; _pendFire=NO; _pendEnd=nil; _finalAsked=NO; }   // 新手指落下前先把挂着的抬起放行 | Before a new finger lands, let the pending lift through first
     for(UITouch *t in ts) {
         int slot=-1;
@@ -687,7 +727,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         if(!_mapTouch && [self inMinimap:[t locationInView:self]]) { _mapTouch=t; _mapP0=[t locationInView:self]; _mapT0=CACurrentMediaTime(); continue; }
         for(int i=0;i<16;i++) if(!_slot[i]) {
             _slot[i]=t; CGPoint p=[t locationInView:self]; { int ex=0; _controls.belt_rows=dm_belt_rows(&ex); _controls.belt_open=ex; } dm_tc_begin_at(&_controls,i,p.x,p.y,CACurrentMediaTime()); slot=i;
-            if(!_navigation && _controls.finger[i].target==DM_TC_PORTAL) { void dm_tp_request(void); dm_tp_request(); LOG("前端：点回城钮 → 免费回城"); }   // 不要回城书 / 卷轴（宿主 dm_freetp.c） | No Tome of Town Portal / scroll needed (host dm_freetp.c)
+            if(!_navigation && _controls.finger[i].target==DM_TC_PORTAL) { void dm_weapon_swap_request(void); dm_weapon_swap_request(); _controls.skill_set=!_controls.skill_set; LOG("前端：点传送门钮 → 切换装备组（%.0f,%.0f）",p.x,p.y); }
             if(!_navigation && !_mapBackTouch && _controls.finger[i].target==DM_TC_NONE && dm_ui_map_is_full()) { _mapBackTouch=t; _mapP0=p; _mapT0=CACurrentMediaTime(); }   // 全屏地图开着、这根手指没落在任何键和摇杆区上：松手时若是点按就回小地图 | Fullscreen map open and this finger landed on no button and no stick area: if it turns out to be a tap on release, return to the minimap
             // 功能页里的指针手指：问宿主这点是不是物品区（游戏主线程下一帧作答，松手时取）
             // Pointer finger in a function page: ask the host whether this point is an item area (the game main thread answers on the next frame; fetched on release)
@@ -700,10 +740,10 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     (void)e;
-    if (_islandTouch && [ts containsObject:_islandTouch]) {   // 岛区那根手指移开超过 30 点 = 不算单击 | moved >30pt = not a tap
+    if (_islandTouch && [ts containsObject:_islandTouch] && !_islandFired) {   // 移开 30 点 = 取消长按
         CGPoint p = [_islandTouch locationInView:self];
         CGFloat dx = p.x - _islandP0.x, dy = p.y - _islandP0.y;
-        if (dx * dx + dy * dy > 900) _islandTouch = nil;
+        if (dx * dx + dy * dy > 900) { _islandTouch = nil; LOG("前端：传送门区按着移开 → 取消"); }
     }
     if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) [r removeObject:t]; if(!r.count) return; ts=r; }
@@ -751,18 +791,8 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     // 本地改动：灵动岛单击 —— 抬起时短按（≤0.45 秒）且没移开才开门，然后清掉记录。
     // Local change: Dynamic Island tap -- fire the portal on a short release (<=0.45 s) that did not move, then clear.
     if (_islandTouch && [ts containsObject:_islandTouch]) {
-        if (!strcmp(phase, "ended")) {
-            double dt = CACurrentMediaTime() - _islandT0;
-            static double last_fire;
-            if (dt <= 0.45 && CACurrentMediaTime() - last_fire > 1.5) {
-                last_fire = CACurrentMediaTime();
-                void dm_tp_request(void); dm_tp_request();
-                LOG("前端：单击灵动岛 → 开门（%.0f,%.0f，%.2f 秒）", _islandP0.x, _islandP0.y, dt);
-            } else {
-                LOG("前端：灵动岛区按下 %.2f 秒 / 移动过 → 不算单击，不开门", dt);
-            }
-        }
-        _islandTouch = nil;
+        if (!_islandFired) LOG("前端：传送门区按得不够久（%.2f 秒 < 0.5）→ 不开门", CACurrentMediaTime() - _islandT0);
+        _islandTouch = nil;   // 定时块看到 nil 就不再触发 | the timer block sees nil and will not fire
     }
     if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) { [r removeObject:t]; [_swallow removeObject:t]; } if(!r.count) return; ts=r; }   // 手柄模式下落下的那根：抬起也不交 | The touch that landed in controller mode: its lift is not passed on either

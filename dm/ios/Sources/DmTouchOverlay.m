@@ -4,6 +4,7 @@
 #include <TargetConditionals.h>
 #include "dm_touch_native_art.h"
 #include "hle.h"
+#import <CoreText/CoreText.h>
 #include "dm_input.h"
 #include "../../host/dm_i18n.h"
 
@@ -17,9 +18,25 @@ static BOOL button_held(const dm_tc_state *s, int target) {
         if(s->finger[i].active && !s->finger[i].aim_cancelled && s->finger[i].target==target) return YES;
     return NO;
 }
+// 本地改动：覆盖层写字的字体 = 游戏字体（App 内自带的汇文明朝体子集），取不到才退回系统字体。
+// Local change: text drawn by the overlay uses the game font (the bundled Huiwen subset), falling back to the system font.
+static UIFont *dm_game_font(CGFloat size) {
+    static NSString *name; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *p = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs_overlay/font/huiwen-subset.ttf"];
+        NSData *d = [NSData dataWithContentsOfFile:p];
+        if (!d) return;
+        CGDataProviderRef pr = CGDataProviderCreateWithCFData((__bridge CFDataRef)d);
+        CGFontRef f = pr ? CGFontCreateWithDataProvider(pr) : NULL;
+        if (f && CTFontManagerRegisterGraphicsFont(f, NULL)) name = (__bridge_transfer NSString *)CGFontCopyPostScriptName(f);
+        if (f) CGFontRelease(f); if (pr) CGDataProviderRelease(pr);
+    });
+    return name ? [UIFont fontWithName:name size:size] : [UIFont systemFontOfSize:size];
+}
+
 static void caption(NSString *s, CGRect rect, CGFloat size, CGFloat alpha) {
     NSMutableParagraphStyle *p = [NSMutableParagraphStyle new]; p.alignment = NSTextAlignmentCenter;
-    UIFont *f = [UIFont fontWithName:@"Palatino" size:size];
+    UIFont *f = dm_game_font(size);
     [s drawInRect:rect withAttributes:@{NSFontAttributeName:f ?: [UIFont systemFontOfSize:size],
         NSForegroundColorAttributeName:[UIColor colorWithRed:.85 green:.79 blue:.65 alpha:alpha],NSParagraphStyleAttributeName:p}];
 }
@@ -218,37 +235,30 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     if (k <= 0) return;
     CGContextRef c = UIGraphicsGetCurrentContext();
 
-    // ===== 本地改动（临时诊断）：绿框标出「灵动岛单击区」= 左右安全区内的边缘带（竖向 30%–70%）=====
-    // 横屏时灵动岛正好占住左右安全区；点这条绿色带（短按）就会开门（免费回城）。只画，不改变命中判定。
-    // Local change (temporary diagnostic): green band = the Dynamic-Island tap zone (inside the left/right safe-area
-    // inset, vertical 30%-70%). A short tap there opens the town portal. Purely visual -- the hit test is unchanged.
+    // ===== 本地改动（临时诊断）：绿色胶囊 = 传送门区（岛内侧偏移 12 点的胶囊，只有岛所在那侧有）=====
+    // Local change (temporary diagnostic): green capsule = the portal region (offset 12pt inward from the island edge,
+    // only on the island's own side).
     {
-        CGRect bd = self.bounds;
-        UIEdgeInsets ins = self.safeAreaInsets;
+        CGRect bd = self.bounds; UIEdgeInsets ins = self.safeAreaInsets;
         if (ins.left <= 0 && ins.right <= 0 && self.superview) ins = self.superview.safeAreaInsets;
-        if (ins.left <= 0 && ins.right <= 0) ins = UIEdgeInsetsMake(0, 62, 0, 62);   // 兜底：17 Pro 系列横屏实测 62 点
-        CGFloat gy0 = bd.origin.y + bd.size.height * 0.30, gh = bd.size.height * 0.40;
-        CGContextSaveGState(c);
-        for (int side = 0; side < 2; side++) {
-            CGFloat gw = side ? ins.right : ins.left;
-            if (gw <= 0) continue;
-            CGRect gr = CGRectMake(side ? bd.origin.x + bd.size.width - gw : bd.origin.x, gy0, gw, gh);
-            CGContextSetFillColorWithColor(c, [UIColor colorWithRed:0.1 green:0.85 blue:0.25 alpha:0.18].CGColor);
-            CGContextFillRect(c, gr);
-            CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:0.1 green:0.95 blue:0.3 alpha:0.95].CGColor);
-            CGContextSetLineWidth(c, 2);
-            CGContextStrokeRect(c, gr);
-        }
-        CGContextRestoreGState(c);
+        BOOL right = NO; UIWindowScene *ws = self.window.windowScene;
+        if (ws) right = ws.interfaceOrientation == UIInterfaceOrientationLandscapeRight;
+        CGFloat sideL = ins.left > 0 ? ins.left : 62, sideR = ins.right > 0 ? ins.right : 62;
+        CGFloat depth = 44, length = 125, gap = 12;
+        CGFloat gx = right ? bd.size.width - sideR - gap - depth : sideL + gap;
+        CGRect gr = CGRectMake(gx, bd.size.height * 0.5 - length * 0.5, depth, length);
+        UIBezierPath *bp = [UIBezierPath bezierPathWithRoundedRect:gr cornerRadius:depth * 0.5];
+        [[UIColor colorWithRed:0.1 green:0.85 blue:0.25 alpha:0.20] setFill]; [bp fill];
+        [[UIColor colorWithRed:0.1 green:0.95 blue:0.3 alpha:0.95] setStroke]; bp.lineWidth = 2; [bp stroke];
     }
-    // ===== 本地改动（临时诊断）：红框标出双指缩放的命中区域 = 屏幕中央 35%–65%（横纵各 30%）=====
-    // 比例与 front_ios.m 的 gestureRecognizerShouldBegin 一致（35%–65%），改一边要同步改另一边。外框 = 命中边界，内框 = 建议落指区。
+    // ===== 本地改动（临时诊断）：红框标出双指缩放的命中区域 = 屏幕中央 30%–70%（横纵各 30%）=====
+    // 比例与 front_ios.m 的 gestureRecognizerShouldBegin 一致（30%–70%），改一边要同步改另一边。外框 = 命中边界，内框 = 建议落指区。
     // Local change (temporary diagnostic): red box marking the pinch-zoom hit area = centre 40%-60% on both axes
     // (30% of width/height). Same fractions as gestureRecognizerShouldBegin in front_ios.m; keep them in sync.
     {
         CGRect bd = self.bounds;
-        CGFloat zx0 = bd.origin.x + bd.size.width * 0.35, zx1 = bd.origin.x + bd.size.width * 0.65;
-        CGFloat zy0 = bd.origin.y + bd.size.height * 0.35, zy1 = bd.origin.y + bd.size.height * 0.65;
+        CGFloat zx0 = bd.origin.x + bd.size.width * 0.30, zx1 = bd.origin.x + bd.size.width * 0.70;
+        CGFloat zy0 = bd.origin.y + bd.size.height * 0.30, zy1 = bd.origin.y + bd.size.height * 0.70;
         CGRect zr = CGRectMake(zx0, zy0, zx1 - zx0, zy1 - zy0);
         CGContextSaveGState(c);
         CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:1 green:0.15 blue:0.15 alpha:0.95].CGColor);
@@ -263,6 +273,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     // 圆钮上可能写出来的字一律走中英表（dm/i18n/ui_text.tsv），跟游戏语言：技能钮画图标 / 键位图、不写字；腰带 / 十字由底栏画（下面整个跳过），这几格不会写字
     // Any text that could be written on round buttons always goes through the bilingual table (dm/i18n/ui_text.tsv) and follows the game language: skill buttons draw icons / key glyphs and no text; the belt / cross are drawn by the bottom bar (skipped entirely below), so these cells never get text
     NSString *labels[DM_TC_COUNT] = {@"",@"",@"",@"",@"",@"",@"",@"",@"",@"",@"",@(dm_ui("dmTcMap"))};
+    { extern int dm_swapskill_wset(void); labels[DM_TC_PORTAL] = dm_swapskill_wset() ? @"\u2161" : @"\u2160"; }
     if (self.navigationMode) { labels[0]=@(dm_ui("dmTcNavConfirm")); labels[1]=@(dm_ui("dmTcNavBack")); labels[2]=@(dm_ui("dmTcNavAction")); labels[3]=@(dm_ui("dmTcNavBind")); labels[4]=@(dm_ui("dmTcNavNext")); }   // 底栏十字位置的「关闭」已去：关闭入口只留外框右上角那一个（dm_tc_nav_mask） | The 「关闭」(Close) at the bottom bar cross position has been removed: the only close entry left is the one at the top-right corner of the outer frame (dm_tc_nav_mask)
     for (int i=0;i<DM_TC_COUNT;i++) {
         if (!(s->enabled_targets & (1u<<i))) continue;
@@ -290,7 +301,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             icon=[self skillImage:g held:held];
             showCaption=g.status!=DM_TA_EMPTY && !icon;
         } else if(!self.navigationMode && i==DM_TC_PORTAL) {
-            icon=[self skillImage:dm_ta_skill(359) held:held]; // 原版回城技能图（技能描述表 Town Portal：通用技能页第 18 格，219 / 220 / 411 同一张），不显示次数 | the original game's town portal skill image (skill description table Town Portal: cell 18 of the generic skill page, 219 / 220 / 411 share one image), count not shown
+            icon=nil; showCaption=YES;   // 本地改动：传送门钮改成换装键，画当前装备组 Ⅰ/Ⅱ | local: portal button = weapon-set switch, label I/II
         } else if(!self.navigationMode && (i==DM_TC_MENU || i==DM_TC_MAP)) {
             icon=[self frameImage:i==DM_TC_MAP?_map:_menu key:[NSString stringWithFormat:@"fixed:%d:%d",i,held] rect:CGRectMake(held?36:0,0,36,36)];
         }
@@ -329,15 +340,9 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             CGRect glyph=CGRectMake(t->x-intrinsic.width*fit/2,t->y-intrinsic.height*fit/2,intrinsic.width*fit,intrinsic.height*fit);
             [icon drawInRect:glyph blendMode:kCGBlendModeNormal alpha:held?1:.82];showCaption=NO;
         }
-        CGFloat textSize = (i==DM_TC_MAIN ? 13 : 10)*k;
-        if(showCaption) caption(labels[i],CGRectMake(b.origin.x,t->y-textSize*.6,b.size.width,textSize*1.6),textSize,held ? 1 : .84);
+        CGFloat textSize = (i==DM_TC_MAIN ? 13 : i==DM_TC_PORTAL ? 20 : 10)*k;
+        if(showCaption) caption(labels[i],CGRectMake(b.origin.x,t->y-textSize*.72,b.size.width,textSize*1.6),textSize,held ? 1 : .84);
         if (i>=DM_TC_BELT1 && i<=DM_TC_BELT4) caption([NSString stringWithFormat:@"%d",i-DM_TC_BELT1+1],CGRectMake(t->x-10*k,t->y+8*k,20*k,12*k),8*k,.65);
-    }
-    if (!self.navigationMode && l->swap.r > 0) {   // 技能组切换键：显示当前第几套 | skill set switch button: shows which set is current
-        CGRect b=dm_button_rect(l->swap.x,l->swap.y,l->swap.r);
-        BOOL sheld=button_held(s,DM_TC_SWAP);
-        [self drawButton:b held:sheld empty:NO primary:NO];
-        CGFloat ts=12*k; caption(s->skill_set ? @"Ⅱ" : @"Ⅰ",CGRectMake(b.origin.x,l->swap.y-ts*.65,b.size.width,ts*1.6),ts,sheld?1:.86);
     }
     [self drawV4:c];   // 底栏：它自己按面板栈 / 死亡判显隐（dm_hud_bar_visible）。原先放在摇杆之后，被下面「面板开着就不画摇杆」的提前返回一起跳过—— | Bottom bar: it decides its own visibility from the panel stack / death (dm_hud_bar_visible). It used to come after the joystick and was skipped along with the early return below for "don't draw the joystick while a panel is open" —
                        // 只开着 NPC 对话菜单 / 说话框时（设计上底栏照常显示）UIKit 底栏不画，露出游戏层那份：没有数值和经验条、难度格空、十字位写着「功能」
