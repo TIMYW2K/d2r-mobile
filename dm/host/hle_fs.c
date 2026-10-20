@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdatomic.h>
+#include <ctype.h>
 #include <sys/clonefile.h>
 #include <sys/xattr.h>
 
