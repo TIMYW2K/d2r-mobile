@@ -211,6 +211,7 @@ static void dm_tp_haptic(void) {
 static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTAL].button = 0; s->layout.swap.r = 0; }
 
 @implementation DmMetalView {
+    UILabel *_verLabel;   // 左下角版本号（只显示版本，不带构建号） | bottom-left version label (version only)
     UITouch *_slot[16];   // 强引用（真机 SIGSEGV：原先不保留，某条路径没清槽时手指对象已释放，下次 pushFrom 读它就崩）。所有结束 / 取消路径都要清槽 | Strong references (real-device SIGSEGV: previously not retained, so when some path failed to clear the slot the finger object was already released and the next pushFrom crashed reading it). All end / cancel paths must clear the slot
     dm_tc_state _controls;
     DmTouchOverlay *_overlay;
@@ -245,6 +246,20 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     _rsCover=[[DmSwallowView alloc] initWithFrame:self.bounds]; _rsCover.backgroundColor=UIColor.blackColor; _rsCover.hidden=YES; _rsCover.userInteractionEnabled=YES;   // 开的时候挂到窗口上（restartCover） | Attached to the window when turned on (restartCover)
     { extern void (*g_dm_restart_cover_hook)(int); g_dm_restart_cover_hook=restart_cover_hook; }
     _navigation=0; [self navigationMode:atomic_load(&g_touch_navigation)];
+    {   // 本地改动：左下角版本号 —— 主界面 / 局内都显示，小字半透明，不接收触摸。
+        // Local change: version label at the bottom-left, visible on every screen, small and faint, not touchable.
+        NSString *v = [[NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] description] copy];
+        _verLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _verLabel.text = v.length ? [@"v" stringByAppendingString:v] : @"";
+        _verLabel.font = [UIFont systemFontOfSize:10 weight:UIFontWeightRegular];
+        _verLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.5];
+        _verLabel.backgroundColor = UIColor.clearColor;
+        _verLabel.userInteractionEnabled = NO;
+        _verLabel.hidden = NO;
+        [self addSubview:_verLabel];
+        [self bringSubviewToFront:_verLabel];
+    }
+
     _pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
     _pinch.delegate = self;
     _pinch.cancelsTouchesInView = NO;
@@ -254,6 +269,11 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    if (_verLabel) {   // 左下角，避开安全区 | bottom-left, clear of the safe area
+        UIEdgeInsets si = self.safeAreaInsets;
+        CGSize vs = [_verLabel sizeThatFits:CGSizeMake(200, 40)];
+        _verLabel.frame = CGRectMake(si.left + 6, self.bounds.size.height - si.bottom - vs.height - 4, vs.width + 2, vs.height);
+    }
     apply_touch_overrides(&_controls);
     CAMetalLayer *l=(CAMetalLayer *)self.layer;
     if(l==g_layer) l.drawableSize=CGSizeMake(self.bounds.size.width*l.contentsScale,self.bounds.size.height*l.contentsScale);   // 真全屏（iPad）时出图层挂在外层容器上，不是这一层 | In true fullscreen (iPad) the present layer hangs on the outer container, not this layer
@@ -792,6 +812,17 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         if(ph==2) _uiFinger=nil;
     }
 }
+    // 本地改动：面板开着时，单击松手 = 把游戏光标放到落点（游戏据此刷新悬停/焦点 → 说明框出现）；
+    // 点别处光标跟过去、说明框随之消失 —— 等于把 PC 的「悬停显示」改成「单击显示」。
+    // Local change: with a panel open, releasing a tap puts the game cursor on that point (the game then refreshes its
+    // hover/focus -> the tooltip appears); tapping elsewhere moves the cursor and the tooltip follows, i.e. the PC
+    // "hover to show" becomes "tap to show".
+    if (!strcmp(phase, "ended") && _controls.navigation_mode && self.bounds.size.width > 0 && self.bounds.size.height > 0) {
+        extern void dm_ui_hover_norm(float nx, float ny);
+        for (UITouch *ht in ts) { CGPoint hp = [ht locationInView:self];
+            dm_ui_hover_norm((float)(hp.x / self.bounds.size.width), (float)(hp.y / self.bounds.size.height)); break; }
+    }
+
 - (void)finishTouches:(NSSet<UITouch *> *)ts phase:(const char *)phase {
     // 本地改动：灵动岛单击 —— 抬起时短按（≤0.45 秒）且没移开才开门，然后清掉记录。
     // Local change: Dynamic Island tap -- fire the portal on a short release (<=0.45 s) that did not move, then clear.

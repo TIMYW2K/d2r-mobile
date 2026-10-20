@@ -2832,6 +2832,16 @@ static int ui_touch_mode(void) { int dm_padmode_current(void), dm_padmode_busy(v
 #define UI_MOUSE_ITEM_PUMPS(pm, proot, pw, phh) do { } while (0)
 #endif
 
+// 本地改动：把出图画面归一化坐标换算成界面坐标，交给「立即刷新悬停」那条路（说明框常驻 / 装备对比都读它）。
+// Local change: convert normalized frame coordinates to UI coordinates and go through the immediate hover refresh.
+void dm_ui_hover_norm(float nx, float ny) {
+    module_t *m = main_module(); if (!m) return;
+    int32_t W = *(int32_t *)(m->base + 0x211da38), H = *(int32_t *)(m->base + 0x211da3c);
+    if (W <= 0 || H <= 0) return;
+    int x = (int)(nx * W), y = (int)(ny * H);
+    int dm_ui_hover_now(int x, int y); dm_ui_hover_now(x, y);
+}
+
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
