@@ -235,39 +235,29 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     if (k <= 0) return;
     CGContextRef c = UIGraphicsGetCurrentContext();
 
-    // ===== 本地改动（临时诊断）：绿色胶囊 = 传送门区（岛内侧偏移 12 点的胶囊，只有岛所在那侧有）=====
-    // Local change (temporary diagnostic): green capsule = the portal region (offset 12pt inward from the island edge,
-    // only on the island's own side).
+    // ===== 本地改动（临时诊断）：绿色 = 灵动岛 + 周围 +12 点的回城区（只有岛所在那侧/位置有）=====
+    // Local change (temporary diagnostic): green = the Dynamic Island and the +12pt portal ring around it.
     {
-        CGRect bd = self.bounds; UIEdgeInsets ins = self.safeAreaInsets;
-        if (ins.left <= 0 && ins.right <= 0 && self.superview) ins = self.superview.safeAreaInsets;
-        BOOL right = NO; UIWindowScene *ws = self.window.windowScene;
-        if (ws) right = ws.interfaceOrientation == UIInterfaceOrientationLandscapeRight;
-        CGFloat sideL = ins.left > 0 ? ins.left : 62, sideR = ins.right > 0 ? ins.right : 62;
-        CGFloat depth = 44, length = 125, gap = 12;
-        CGFloat gx = right ? bd.size.width - sideR - gap - depth : sideL + gap;
-        CGRect gr = CGRectMake(gx, bd.size.height * 0.5 - length * 0.5, depth, length);
-        UIBezierPath *bp = [UIBezierPath bezierPathWithRoundedRect:gr cornerRadius:depth * 0.5];
-        [[UIColor colorWithRed:0.1 green:0.85 blue:0.25 alpha:0.20] setFill]; [bp fill];
-        [[UIColor colorWithRed:0.1 green:0.95 blue:0.3 alpha:0.95] setStroke]; bp.lineWidth = 2; [bp stroke];
-    }
-    // ===== 本地改动（临时诊断）：红框标出双指缩放的命中区域 = 屏幕中央 30%–70%（横纵各 30%）=====
-    // 比例与 front_ios.m 的 gestureRecognizerShouldBegin 一致（30%–70%），改一边要同步改另一边。外框 = 命中边界，内框 = 建议落指区。
-    // Local change (temporary diagnostic): red box marking the pinch-zoom hit area = centre 40%-60% on both axes
-    // (30% of width/height). Same fractions as gestureRecognizerShouldBegin in front_ios.m; keep them in sync.
-    {
-        CGRect bd = self.bounds;
-        CGFloat zx0 = bd.origin.x + bd.size.width * 0.30, zx1 = bd.origin.x + bd.size.width * 0.70;
-        CGFloat zy0 = bd.origin.y + bd.size.height * 0.30, zy1 = bd.origin.y + bd.size.height * 0.70;
-        CGRect zr = CGRectMake(zx0, zy0, zx1 - zx0, zy1 - zy0);
-        CGContextSaveGState(c);
-        CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:1 green:0.15 blue:0.15 alpha:0.95].CGColor);
-        CGContextSetLineWidth(c, 3);
-        CGContextStrokeRect(c, zr);
-        CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:1 green:0.15 blue:0.15 alpha:0.5].CGColor);
-        CGContextSetLineWidth(c, 2);
-        CGContextStrokeRect(c, CGRectInset(zr, 8, 8));
-        CGContextRestoreGState(c);
+        CGRect bd = self.bounds; CGFloat W = bd.size.width, H = bd.size.height;
+        const CGFloat inset = 11, pillW = 125, pillH = 37, ring = 12;
+        UIInterfaceOrientation o = UIInterfaceOrientationUnknown;
+        UIWindowScene *ws = self.window.windowScene;
+        if (ws) { if (@available(iOS 26.0, *)) o = ws.effectiveGeometry.interfaceOrientation; else o = ws.interfaceOrientation; }
+        BOOL landscape = UIInterfaceOrientationIsLandscape(o);
+        BOOL onRight = (o != UIInterfaceOrientationLandscapeRight);
+        CGRect isl;
+        if (landscape) {
+            CGFloat x = onRight ? W - inset - pillH : inset;
+            isl = CGRectMake(x, (H - pillW) * 0.5, pillH, pillW);
+        } else {
+            isl = CGRectMake((W - pillW) * 0.5, inset, pillW, pillH);
+        }
+        CGRect zone = CGRectInset(isl, -ring, -ring);
+        UIBezierPath *zp = [UIBezierPath bezierPathWithRoundedRect:zone cornerRadius:MIN(zone.size.width, zone.size.height) * 0.5];
+        [[UIColor colorWithRed:0.1 green:0.85 blue:0.25 alpha:0.16] setFill]; [zp fill];
+        [[UIColor colorWithRed:0.1 green:0.95 blue:0.3 alpha:0.95] setStroke]; zp.lineWidth = 2; [zp stroke];
+        UIBezierPath *ip = [UIBezierPath bezierPathWithRoundedRect:isl cornerRadius:MIN(isl.size.width, isl.size.height) * 0.5];
+        [[UIColor colorWithRed:1 green:0.2 blue:0.2 alpha:0.85] setStroke]; ip.lineWidth = 1.5; [ip stroke];
     }
     uint64_t hostNow=now_ns(); dm_tg_snapshot native=self.nativeMapping;
     // 圆钮上可能写出来的字一律走中英表（dm/i18n/ui_text.tsv），跟游戏语言：技能钮画图标 / 键位图、不写字；腰带 / 十字由底栏画（下面整个跳过），这几格不会写字
@@ -286,7 +276,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         if(!self.navigationMode && i==DM_TC_MAP && s->map_cancel_active) {
             CGContextSetFillColorWithColor(c,[UIColor colorWithRed:.55 green:.05 blue:.04 alpha:.36].CGColor); CGContextFillRect(c,b); labels[i]=@(dm_ui("dmTcCancel"));
         }
-        BOOL skillKey=!self.navigationMode && (i<=DM_TC_SKILL4 || i==DM_TC_PORTAL);   // 回城钮（圆形、和技能图标一样） | Town portal button (round, same as the skill icons)
+        BOOL skillKey=!self.navigationMode && (i<=DM_TC_SKILL4);   // 回城钮不在这里：它画圆底 + Ⅰ/Ⅱ，不画 F5 键名 | portal is drawn separately below
         if (skillKey) {
             b=dm_button_rect(t->x,t->y,t->r);
         } else if (_circle) [_circle drawInRect:b blendMode:kCGBlendModeNormal alpha:opacity];
@@ -308,6 +298,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         if(!self.navigationMode && i==DM_TC_MAP && s->map_cancel_active) {icon=nil;showCaption=YES;}
         BOOL emptySkill=skillKey && !icon && (!showCaption || i==DM_TC_MAIN);
         if(skillKey) [self drawButton:b held:held empty:emptySkill primary:i==DM_TC_MAIN];
+        if(!self.navigationMode && i==DM_TC_PORTAL) [self drawButton:b held:held empty:NO primary:NO];   // 回城钮圆底 | portal circle
         if(emptySkill) continue;   // 空槽保留绑定入口，细边框和刻印由背景绘制 | Empty slots keep their binding entry; the background draws their thin rim and engraving
         if(skillKey) {   // 技能美术居中；无图的未知槽保留原标签回退 | Center skill artwork; unknown slots with no image keep the existing label fallback
             BOOL bare=icon!=nil;   // 有图标的技能钮不写字（最大的钮是「主技能 / 交互」、可绑任意技能，钮上只画所绑技能的图标，不写「攻击」）：图标放大并居中。取不到图标时主钮仍落回「攻击」字样 | skill buttons that have an icon carry no text (the largest button is "main skill / interact" and can be bound to any skill, so the button draws only the bound skill's icon and does not say 「攻击」(Attack)): the icon is enlarged and centered. When no icon can be obtained the main button still falls back to the 「攻击」(Attack) text | skill buttons that have an icon carry no text (the largest button is "main skill / interact" and can be bound to any skill, so it draws only the bound skill's icon and no Attack label): the icon is enlarged and centered. When no icon can be obtained the main button still falls back to the Attack label

@@ -171,19 +171,34 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
 // Local change: Dynamic Island geometry and haptics -- in landscape the island sits on the left or right edge (side is
 // read from the interface orientation); the portal region is a capsule offset 12pt inward, 44pt deep (minimum touch
 // size), 125pt long (island length), vertically centred. Long-press 0.5 s fires it with a medium haptic.
-static BOOL dm_island_on_right(UIView *v) {
+// 本地改动：回城键 = 灵动岛周围 +12 点的一圈（不是从安全区往内推）。岛的真实位置按机型度量：
+// 竖屏 = 顶部中央 125×37、距顶 11 点；横屏 = 贴左右边缘（深 37、长 125）、距边 11 点、竖向居中。
+// 岛在哪一侧由界面方向决定（iOS 26 用 effectiveGeometry，避免旧接口在旋转后读不到）。
+// Local change: the town-portal key is a ring of +12pt around the ACTUAL Dynamic Island (not an inset from the safe
+// area). Island metrics: portrait 125x37, 11pt from the top; landscape 37 deep x 125 long, 11pt from the left/right
+// edge, vertically centred. The side comes from the interface orientation (iOS 26 effectiveGeometry).
+static UIInterfaceOrientation dm_scene_orientation(UIView *v) {
     UIWindowScene *ws = v.window.windowScene;
-    if (!ws) return NO;
-    return ws.interfaceOrientation == UIInterfaceOrientationLandscapeRight;   // 竖屏/未知按左侧 | portrait/unknown: left
+    if (!ws) return UIInterfaceOrientationUnknown;
+    if (@available(iOS 26.0, *)) return ws.effectiveGeometry.interfaceOrientation;
+    return ws.interfaceOrientation;
 }
-static CGRect dm_island_portal_rect(UIView *v) {
-    CGRect bd = v.bounds; UIEdgeInsets ins = v.safeAreaInsets;
-    if (ins.left <= 0 && ins.right <= 0 && v.superview) ins = v.superview.safeAreaInsets;
-    CGFloat sideL = ins.left > 0 ? ins.left : 62, sideR = ins.right > 0 ? ins.right : 62;
-    CGFloat depth = 44, length = 125, gap = 12;
-    CGFloat x = dm_island_on_right(v) ? bd.size.width - sideR - gap - depth : sideL + gap;
-    return CGRectMake(x, bd.size.height * 0.5 - length * 0.5, depth, length);
+static BOOL dm_island_on_right(UIView *v) {
+    UIInterfaceOrientation o = dm_scene_orientation(v);
+    return o != UIInterfaceOrientationLandscapeRight;   // landscapeLeft/竖屏 → 岛在右/上，这里只用于横屏 | only meaningful in landscape
 }
+static CGRect dm_island_rect(UIView *v) {
+    CGRect bd = v.bounds; CGFloat W = bd.size.width, H = bd.size.height;
+    const CGFloat inset = 11, pillW = 125, pillH = 37;
+    UIInterfaceOrientation o = dm_scene_orientation(v);
+    BOOL landscape = UIInterfaceOrientationIsLandscape(o);
+    if (!landscape) return CGRectMake((W - pillW) * 0.5, inset, pillW, pillH);
+    CGFloat x = dm_island_on_right(v) ? W - inset - pillH : inset;
+    return CGRectMake(x, (H - pillW) * 0.5, pillH, pillW);
+}
+static CGFloat const DM_ISLAND_RING = 12;            // 岛周围一圈的范围（点） | ring width around the island
+static CGRect dm_island_zone_rect(UIView *v) { return CGRectInset(dm_island_rect(v), -DM_ISLAND_RING, -DM_ISLAND_RING); }
+
 static void dm_tp_haptic(void) {
     static UIImpactFeedbackGenerator *g;
     if (!g) g = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
@@ -315,16 +330,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
         } else {
             in_box = !(pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1);
         }
-        if (!in_box) {
-            // 本地改动：中心 30%–70% 之外不缩放，并记一行，便于确认"外部不生效" | Local: outside the centre
-            // 30%-70% box nothing happens; the line proves it from the log.
-            static int out_n; out_n++;
-            if (out_n <= 10 || out_n % 25 == 0)
-                LOG("前端：双指在中心区域外，不缩放（x %.0f%%，y %.0f%%，第 %d 次）",
-                    100.0 * (pt.x - bd.origin.x) / bd.size.width, 100.0 * (pt.y - bd.origin.y) / bd.size.height, out_n);
-            return NO;
-        }
-    }
+        if (!in_box) return NO;   // 区域外静默拒绝（缩放已定稿，不再记日志） | outside: silent reject
     return YES;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
@@ -691,20 +697,21 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
       if(wasPad || dm_padmode_busy()) { if(!_swallow) _swallow=[NSHashTable weakObjectsHashTable]; for(UITouch *t in ts) [_swallow addObject:t]; if(wasPad) LOG("前端：手柄模式下碰屏 → 只切回触屏模式，这一下不执行"); return; } }   // 切换事务进行中落下的手指同样整根不执行（控件层还没露出来） | Fingers that land while a switch transaction is in progress are likewise ignored for their whole lifetime (the control layer has not been revealed yet)
     if(atomic_load(&g_touch_frontend)) { [self uiTouch:ts phase:0]; return; }
     [self refreshPortalBinding];
-    // 本地改动：传送门区（岛内侧偏移的胶囊）—— 按住 0.5 秒触发开门 + 中等震动（类似稀有掉落）；
-    // 只有岛所在的那一侧有这块区域（读界面方向），另一侧没有。这一根手指被吞掉，不会走位/放技能。
-    // Local change: portal region (capsule offset inward from the island edge) -- hold 0.5 s to open the portal with a
-    // medium haptic; only the island's own side has it (side read from the interface orientation). The touch is
+    // 本地改动：回城键 = 灵动岛周围 +12 点的一圈。按住 0.35–0.4 秒触发开门 + 中等震动；落在触屏按钮上的点
+    // 优先给按钮（不再和别的按键抢），只有空处才进这里。这一根手指被吞掉，不会走位/放技能。
+    // Local change: the portal key is a +12pt ring around the Dynamic Island. Hold 0.35-0.4 s to open the portal with a
+    // medium haptic. Points that hit a touch control go to that control; only empty space reaches this ring. The touch is
     // swallowed, so it never walks or casts.
     if (!_navigation && !_padMode && ts.count >= 1 && _rsCover.hidden && !g_movie_cover && _islandTouch == nil) {
         UITouch *t0 = ts.anyObject; CGPoint p0 = [t0 locationInView:self];
-        if (CGRectContainsPoint(dm_island_portal_rect(self), p0)) {
+        if (dm_tc_hit(&_controls, p0.x, p0.y) == DM_TC_NONE && CGRectContainsPoint(dm_island_zone_rect(self), p0)) {
             _islandTouch = t0; _islandP0 = p0; _islandT0 = CACurrentMediaTime(); _islandFired = NO;
             if (!_swallow) _swallow = [NSHashTable weakObjectsHashTable];
             for (UITouch *t in ts) [_swallow addObject:t];
-            LOG("前端：按到传送门区（%.0f,%.0f；岛在%s，长按 0.5 秒开门）", p0.x, p0.y, dm_island_on_right(self) ? "右" : "左");
+            LOG("前端：按到灵动岛回城区（%.0f,%.0f；方向 %ld，岛在%s，长按 0.38 秒开门）", p0.x, p0.y,
+                (long)dm_scene_orientation(self), dm_island_on_right(self) ? "右" : "左");
             __weak typeof(self) weakSelf = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.38 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 typeof(self) sf = weakSelf; if (!sf || sf->_islandTouch != t0 || sf->_islandFired) return;
                 CGPoint q = [t0 locationInView:sf];
                 CGFloat dx = q.x - sf->_islandP0.x, dy = q.y - sf->_islandP0.y;
@@ -712,7 +719,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
                 sf->_islandFired = YES;
                 void dm_tp_request(void); dm_tp_request();
                 dm_tp_haptic();
-                LOG("前端：长按传送门区 → 开门（震动）");
+                LOG("前端：长按灵动岛回城区 → 开门（震动）");
             });
             return;
         }
