@@ -256,8 +256,12 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
         CGPoint pt = [gestureRecognizer locationInView:self];
         CGRect bd = self.bounds;
         if (bd.size.width <= 0 || bd.size.height <= 0) return NO;
-        CGFloat x0 = bd.origin.x + bd.size.width / 3.0, x1 = bd.origin.x + bd.size.width * 2.0 / 3.0;
-        CGFloat y0 = bd.origin.y + bd.size.height / 3.0, y1 = bd.origin.y + bd.size.height * 2.0 / 3.0;
+        // 本地改动：按玩家在截图里标出的游戏画面区域收窄（横向 30–70%，纵向 35–75%），
+        // 避开左下摇杆、右下技能区与底栏，双指操作不再和走位/放技能打架。
+        // Local change: narrowed to the play area the player marked (x 30-70%, y 35-75%), clear of the
+        // joystick, the skill buttons and the bottom bar.
+        CGFloat x0 = bd.origin.x + bd.size.width * 0.30, x1 = bd.origin.x + bd.size.width * 0.70;
+        CGFloat y0 = bd.origin.y + bd.size.height * 0.35, y1 = bd.origin.y + bd.size.height * 0.75;
         if (pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1) return NO;   // 只有中间 1/3
     }
     return YES;
@@ -267,11 +271,12 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
 }
 - (void)handlePinch:(UIPinchGestureRecognizer *)pinch {
     if (_feMode || _navigation) { _pinching = NO; return; }
-    // 本地改动：这个手势只负责「连续改变视野」；选项 zoom 只决定「是否允许双指缩放」（缺省允许）。
-    // 初始状态是最远视野 1.00。两指分开 = 放大（视野变小，最小 0.80）；两指捏合 = 缩小（视野变大，回到 1.00）。
-    // Local change: the gesture only changes the view extent continuously; the zoom option only gates whether pinch
-    // is allowed (default on). The initial state is the widest view (1.00). Spreading fingers zooms in (extent down to
-    // 0.80); pinching them together zooms back out (extent up to 1.00).
+    // 本地改动：双指缩放只有两个镜头大小，没有中间过渡 ——
+    //   两指分开（scale > 1）= 放大到近景（视野 0.80）；两指捏合（scale < 1）= 回到远景（视野 1.00）。
+    //   拖动过程中不改视野，松手才切换一次，所以不会有"半拉近"的过渡比例。
+    // Local change: exactly two camera levels, no intermediate ratios. Spreading the fingers switches to the close
+    // view (extent 0.80); pinching them together switches back to the far view (extent 1.00). Nothing changes while
+    // the fingers move -- the switch happens once, on release.
     if (!dm_custom_get("zoom")) {
         if (_pinching) { _pinching = NO; LOG("前端：双指缩放被选项关闭，本次手势忽略"); }
         return;
@@ -280,21 +285,23 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
         _pinchStartExtent = (CGFloat)dm_cam_zoom_factor();
         _pinching = YES;
         [self cancelControlsFrom:"pinch_began"];
-        LOG("前端：双指缩放开始（当前视野 %.2f）", (double)_pinchStartExtent);
-    } else if (pinch.state == UIGestureRecognizerStateChanged) {
-        CGFloat s2 = pinch.scale;
-        if (s2 > 0.001) {
-            CGFloat cur = _pinchStartExtent / s2;          // 分开(s>1) ⇒ 视野变小 ⇒ 放大
-            if (cur < 0.80) cur = 0.80;
-            if (cur > 1.0) cur = 1.0;
-            dm_cam_zoom_set((float)cur);
-        }
+        LOG("前端：双指缩放开始（当前视野 %.2f，松手后切到%s）", (double)_pinchStartExtent,
+            _pinchStartExtent > 0.90 ? "近景 0.80" : "远景 1.00");
     } else if (pinch.state == UIGestureRecognizerStateEnded ||
                pinch.state == UIGestureRecognizerStateCancelled ||
                pinch.state == UIGestureRecognizerStateFailed) {
         _pinching = NO;
+        if (pinch.state != UIGestureRecognizerStateEnded) return;      // 被打断就不切
         float cur = dm_cam_zoom_factor();
-        LOG("前端：双指缩放结束 → 视野 %.2f（画面放大 %.2fx）", (double)cur, (double)(1.0f / cur));
+        float target = cur;
+        if (pinch.scale > 1.02) target = 0.80f;                        // 分开 ⇒ 近景
+        else if (pinch.scale < 0.98) target = 1.00f;                   // 捏合 ⇒ 远景
+        if (target != cur) {
+            dm_cam_zoom_set(target);
+            LOG("前端：双指缩放 → 视野 %.2f（画面放大 %.2fx，两档之一）", (double)target, (double)(1.0f / target));
+        } else {
+            LOG("前端：双指缩放幅度太小（scale %.2f），保持视野 %.2f", (double)pinch.scale, (double)cur);
+        }
     }
 }
 // 掉落物名字默认常显：设置缺省已是「显示物品 = 开关式」（hle_fs.c settings_seed），开关式下进程启动后初始是关，
