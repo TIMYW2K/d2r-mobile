@@ -518,10 +518,10 @@ static void test_bindtbl(uint8_t *b, uint64_t pl) {
 // Local change (one-off probe): while the item tooltip panel is visible, dump its child widget names and the raw ints at
 // +0x40..+0x78, to locate the equipped-item box rect (next build draws the #332925 1pt border from it). At most once/120 ticks.
 static void dm_tooltip_probe(void) {
-    static uint32_t last_tick; uint32_t tq = (uint32_t)cur_tick(); if (tq - last_tick < 120) return;
+    static uint32_t last_tick; uint32_t tq = (uint32_t)dm_cur_tick(); if (tq - last_tick < 120) return;
     uint8_t *b = ab(); if (!b) return;
     uint64_t root = *(uint64_t *)(b + 0x2f05458); if (!root) return;
-    uint64_t tp = ui_panel(root, "TooltipsPanel"); if (!tp || !*(uint8_t *)(tp + 0x50)) return;   // 不可见就不打 | invisible: skip
+    uint64_t tp = a_panel(root, "TooltipsPanel"); if (!tp || !*(uint8_t *)(tp + 0x50)) return;   // 不可见就不打 | invisible: skip
     last_tick = tq;
     uint64_t ch = *(uint64_t *)(tp + 0x58), n = *(uint64_t *)(tp + 0x60); if (!ch || n > 64) return;
     LOG("探针：TooltipsPanel 子控件 %llu 个", (unsigned long long)n);
