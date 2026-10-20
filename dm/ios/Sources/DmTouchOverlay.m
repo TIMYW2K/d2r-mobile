@@ -234,6 +234,28 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     CGFloat k = l->joy_radius / 60;
     if (k <= 0) return;
     CGContextRef c = UIGraphicsGetCurrentContext();
+    // 本地改动：物品对比时，给「当前已装备」的说明框描 1pt #332925 细边（矩形每帧从游戏界面读取，跟着框走）。
+    // Local change: 1pt #332925 border around the currently equipped item's description box while comparing
+    // (the rect is read from the game UI every frame, so it follows the box).
+    {
+        extern int dm_ui_tooltip_rect(float out[4]);
+        extern void dm_ui_rect(int *x, int *y, int *w, int *h);
+        float r[4]; int ux = 0, uy = 0, uw = 0, uh = 0;
+        if (dm_ui_tooltip_rect(r)) {
+            dm_ui_rect(&ux, &uy, &uw, &uh);
+            CGFloat sc = self.window.screen.scale; if (sc <= 0) sc = UIScreen.mainScreen.scale; if (sc <= 0) sc = 3;
+            if (uw > 0 && uh > 0) {
+                CGRect tr = CGRectMake((ux + r[0] * uw) / sc, (uy + r[1] * uh) / sc,
+                                       (r[2] - r[0]) * uw / sc, (r[3] - r[1]) * uh / sc);
+                CGContextSaveGState(c);
+                CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:0x33 / 255.0 green:0x29 / 255.0 blue:0x25 / 255.0 alpha:1.0].CGColor);
+                CGContextSetLineWidth(c, 1.0);
+                CGContextStrokeRect(c, CGRectInset(tr, 0.5, 0.5));
+                CGContextRestoreGState(c);
+            }
+        }
+    }
+
 
     uint64_t hostNow=now_ns(); dm_tg_snapshot native=self.nativeMapping;
     // 圆钮上可能写出来的字一律走中英表（dm/i18n/ui_text.tsv），跟游戏语言：技能钮画图标 / 键位图、不写字；腰带 / 十字由底栏画（下面整个跳过），这几格不会写字
