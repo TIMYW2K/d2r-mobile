@@ -563,11 +563,11 @@ ssize_t dm_data_pread(int fd, void *buf, size_t n, off_t off) {   // 语义同 p
     }
     return (ssize_t)done;
 }
-// 本地改动：中文字体替换 —— 游戏打开任何一款 CJK 界面字体时，改成打开 App 自带的子集字体（汇文明朝体）。
-// 只换字形，路径/布局/其它字体都不动；每次替换记一行日志，用来确认游戏实际用的是哪一款字体。
-// Local change: when the game opens any CJK UI font, serve the bundled Huiwen Mincho subset instead. Only
-// glyphs change -- paths, layout and every other font are untouched. Each redirect logs the font name the
-// game asked for, which is how we learn which font it actually uses.
+// 本地改动：中文字体替换 —— 游戏打开任何一款 CJK 界面字体时，改成打开 App 自带的子集字体（汇文明朝体）。
+// 只换字形，路径/布局/其它字体都不动；每次替换记一行日志，用来确认游戏实际用的是哪一款字体。
+// Local change: when the game opens any CJK UI font, serve the bundled Huiwen Mincho subset instead. Only
+// glyphs change -- paths, layout and every other font are untouched. Each redirect logs the font name the
+// game asked for, which is how we learn which font it actually uses.
 static const char *font_subset_override(const char *path) {
     const char *base = strrchr(path, '/'); base = base ? base + 1 : path;
     // 本地改动：诊断 —— 游戏打开任何"像字体"的文件都记一行（每个名字只记一次，最多 24 条），
@@ -597,6 +597,7 @@ static const char *font_subset_override(const char *path) {
     return NULL;
 }
 HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
+    { static int nx; if (nx < 40 && strstr(path, "excel") && (strstr(path, ".bin") || strstr(path, ".txt") || strstr(path, ".json"))) { nx++; LOG("FS excel: %s", path); } }   // 临时：看游戏到底读哪张表 | temporary: which table files the game opens
     HP(path);
     {   // 本地改动：字体替换（见 font_subset_override）| Local change: font redirect, see font_subset_override
         const char *font_sub = font_subset_override(path);

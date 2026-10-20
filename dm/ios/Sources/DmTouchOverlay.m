@@ -237,41 +237,43 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
 - (void)drawRect:(CGRect)rect {
     (void)rect;
     CGContextRef c = UIGraphicsGetCurrentContext();
-    // 本地改动：生命/法力球数字金色 + 左上角佣兵/傀儡名字按血量四档色（覆盖层画，游戏字体）。
-    // Local change: gold life/mana numbers and 4-band HP hireling name, drawn over the game UI with the game font.
+    // 本地改动：生命/法力球数字金色 + 左上角佣兵/傀儡名字按血量四档色。
+    // 宿主已把游戏原文字清空，这里只画一份，所以不会出现两份。
+    // The host cleared the game's own text, so there is exactly one copy drawn here.
     {
-        extern int dm_hud_overlay(float life[4], float mana[4], float merc[4], int *lv, int *lmax, int *mv, int *mmax, int *mhp, char *name);
+        extern int dm_hud_overlay(float rects[12], char txt[3][64], int lens[3], int *flags, int *stat4, int *mhp);
         extern void dm_ui_rect(int *x, int *y, int *w, int *h);
-        float life[4], mana[4], merc[4]; int lv = 0, lmax = 0, mv = 0, mmax = 0, mhp = -1; char name[64];
-        if (dm_hud_overlay(life, mana, merc, &lv, &lmax, &mv, &mmax, &mhp, name)) {
+        float rects[12]; char txt[3][64]; int lens[3] = {0, 0, 0}, flags = 0, stat4[4] = {0, 0, 0, 0}, mhp = -1;
+        if (dm_hud_overlay(rects, txt, lens, &flags, stat4, &mhp)) {
             int ux = 0, uy = 0, uw = 0, uh = 0; dm_ui_rect(&ux, &uy, &uw, &uh);
             CGFloat sc = self.window.screen.scale; if (sc <= 0) sc = UIScreen.mainScreen.scale; if (sc <= 0) sc = 3;
             if (uw > 0 && uh > 0) {
-                UIColor *gold = [UIColor colorWithRed:0.85 green:0.79 blue:0.65 alpha:0.95];
                 NSMutableParagraphStyle *pp = [NSMutableParagraphStyle new]; pp.alignment = NSTextAlignmentCenter;
-                if (lmax > 0) {
-                    CGRect lr = CGRectMake((ux + life[0] * uw) / sc, (uy + life[1] * uh) / sc, (life[2] - life[0]) * uw / sc, (life[3] - life[1]) * uh / sc);
-                    UIFont *f = dm_game_font(10); if (!f) f = [UIFont systemFontOfSize:10];
-                    [[NSString stringWithFormat:@"%d / %d", lv, lmax] drawInRect:lr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:gold, NSParagraphStyleAttributeName:pp}];
-                }
-                if (mmax > 0) {
-                    CGRect mr = CGRectMake((ux + mana[0] * uw) / sc, (uy + mana[1] * uh) / sc, (mana[2] - mana[0]) * uw / sc, (mana[3] - mana[1]) * uh / sc);
-                    UIFont *f = dm_game_font(10); if (!f) f = [UIFont systemFontOfSize:10];
-                    [[NSString stringWithFormat:@"%d / %d", mv, mmax] drawInRect:mr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:gold, NSParagraphStyleAttributeName:pp}];
-                }
-                if (name[0]) {
-                    UIColor *hc = mhp >= 75 ? [UIColor colorWithRed:.25 green:.85 blue:.35 alpha:.95]
-                                : mhp >= 50 ? [UIColor colorWithRed:.95 green:.85 blue:.2 alpha:.95]
-                                : mhp >= 25 ? [UIColor colorWithRed:.95 green:.55 blue:.15 alpha:.95]
-                                : mhp >= 0  ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:.95]
-                                            : [UIColor whiteColor];
-                    CGRect ir = CGRectMake((ux + merc[0] * uw) / sc, (uy + merc[1] * uh) / sc, (merc[2] - merc[0]) * uw / sc, (merc[3] - merc[1]) * uh / sc);
-                    UIFont *f = dm_game_font(11); if (!f) f = [UIFont systemFontOfSize:11];
-                    [[NSString stringWithUTF8String:name] drawInRect:ir withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:hc, NSParagraphStyleAttributeName:pp}];
+                for (int k = 0; k < 3; k++) {
+                    if (!(flags & (1 << k)) || lens[k] <= 0) continue;
+                    float *r = &rects[k * 4];
+                    if (r[2] <= r[0] || r[3] <= r[1]) continue;
+                    CGRect rr = CGRectMake((ux + r[0] * uw) / sc, (uy + r[1] * uh) / sc, (r[2] - r[0]) * uw / sc, (r[3] - r[1]) * uh / sc);
+                    UIColor *col = nil; CGFloat fs = 12;
+                    if (k == 2) {   // 佣兵名字：按血量四档 | hireling name: 4 HP bands
+                        fs = MAX(9, MIN(18, rr.size.height * 0.9));
+                        col = mhp >= 75 ? [UIColor colorWithRed:.25 green:.85 blue:.35 alpha:.98]
+                            : mhp >= 50 ? [UIColor colorWithRed:.95 green:.85 blue:.2 alpha:.98]
+                            : mhp >= 25 ? [UIColor colorWithRed:.95 green:.55 blue:.15 alpha:.98]
+                            : mhp >= 0  ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:.98]
+                                        : [UIColor whiteColor];
+                    } else {        // 生命/法力数字：金色 | life/mana numbers: gold
+                        fs = MAX(9, MIN(18, rr.size.height * 0.9));
+                        col = [UIColor colorWithRed:0.85 green:0.79 blue:0.65 alpha:0.98];
+                    }
+                    UIFont *f = dm_game_font(fs); if (!f) f = [UIFont systemFontOfSize:fs];
+                    NSString *s = [NSString stringWithUTF8String:txt[k]];
+                    if (s.length) [s drawInRect:rr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:col, NSParagraphStyleAttributeName:pp}];
                 }
             }
         }
     }
+
 
 
     const dm_tc_state *s = self.controls; if (!s) return;

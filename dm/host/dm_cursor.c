@@ -2926,9 +2926,9 @@ static void dm_ui_text_tint(void) {
     (void)init;
 }
 
-// 本地改动：生命/法力球数字改金色、左上角佣兵/傀儡名字按血量四档着色 —— 都靠覆盖层画，不是改游戏文字控件。
-// 命中函数 = 虚表 +0x48（参数 xy 打包成 64 位，界面虚拟坐标 vw×vh）；矩形用二分四条边得到。
-// Local change: draw the life/mana numbers gold and the hireling name in the HP colour from the overlay.
+// 本地改动：生命/法力球数字金色 + 左上角佣兵/傀儡名字按血量四档色。
+// 做法：把游戏自己那份文字的「矩形 + 内容」读出来，然后把游戏文字清空（避免重复显示），只在覆盖层重画一份。
+// Local change: capture the game's own HUD text (rect + string), clear it, and redraw it in the overlay.
 static void dm_widget_rect(uint64_t w, int32_t vw, int32_t vh, float out[4]) {
     uint64_t f = *(uint64_t *)(*(uint64_t *)w + 0x48);
     int (*hit)(uint64_t, uint64_t) = (int (*)(uint64_t, uint64_t))f;
@@ -2956,48 +2956,54 @@ static uint64_t dm_child_named(uint64_t w, const char *nm) {
         if (cn && !strcmp(cn, nm)) return c; }
     return 0;
 }
-static _Atomic float g_hud_life[4], g_hud_mana[4], g_hud_merc[4];
-static _Atomic int g_hud_lv, g_hud_lmax, g_hud_mv, g_hud_mmax, g_hud_mhp, g_hud_has;
-static char g_hud_name[64]; static _Atomic int g_hud_name_len;
+typedef struct { float r[4]; char txt[64]; int len, has, rect_ok; } hud_slot;
+static hud_slot g_hs[3];   // 0=生命 1=法力 2=佣兵名字 | 0=life 1=mana 2=hireling
+static _Atomic int g_hud_ready;      // 采集完成 | captured
+static _Atomic int g_hud_stat[4];    // 生命当前/上限/法力当前/上限（备用）| life/max/mana/max
+static _Atomic int g_hud_mhp;        // 友方血量百分比 | friendly HP %
+// 采集并清空游戏文字：pcell = HealthBall/ManaBall/Icon
+static void hud_capture(hud_slot *h, uint64_t pcell, int32_t vw, int32_t vh) {
+    if (!pcell) { h->has = 0; return; }
+    uint64_t t = dm_txt_widget(pcell, 1);
+    if (!t) { h->has = 0; return; }
+    uint64_t tp = *(uint64_t *)(t + 0x88), tl = *(uint64_t *)(t + 0x90);
+    if (!tp) { h->has = 0; return; }
+    if (!h->rect_ok) { dm_widget_rect(t, vw, vh, h->r); h->rect_ok = 1; }
+    if (tl > 0 && tl < 63) { int n = (int)tl; for (int i = 0; i < n; i++) h->txt[i] = *(char *)(tp + i); h->txt[n] = 0; h->len = n; h->has = 1; }
+    if (h->len > 0) { *(char *)tp = 0; *(uint64_t *)(t + 0x90) = 0; }   // 清空游戏原文字（只留覆盖层那份）| hide the game copy
+}
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
     int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
-    uint64_t hud = ui_panel(root, "HUDPanel");
-    uint64_t hb = hud ? dm_child_named(hud, "HealthBall") : 0, mb = hud ? dm_child_named(hud, "ManaBall") : 0;
-    float r[4] = {0, 0, 0, 0};
-    if (hb) { dm_widget_rect(hb, vw, vh, r); for (int i = 0; i < 4; i++) atomic_store(&g_hud_life[i], r[i]); }
-    if (mb) { dm_widget_rect(mb, vw, vh, r); for (int i = 0; i < 4; i++) atomic_store(&g_hud_mana[i], r[i]); }
-    uint64_t hire = ui_panel(root, "HireablesPanel"), ic = 0;
+    uint64_t hud = ui_panel(root, "HUDPanel"), hire = ui_panel(root, "HireablesPanel");
+    hud_capture(&g_hs[0], hud ? dm_child_named(hud, "HealthBall") : 0, vw, vh);
+    hud_capture(&g_hs[1], hud ? dm_child_named(hud, "ManaBall") : 0, vw, vh);
+    uint64_t ic = 0;
     if (hire) { uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
         for (uint64_t i = 0; i < n && ch && n < 256 && !ic; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (c && *(uint8_t *)(c + 0x50)) ic = c; } }
-    if (ic) { dm_widget_rect(ic, vw, vh, r); for (int i = 0; i < 4; i++) atomic_store(&g_hud_merc[i], r[i]);
-        uint64_t tw = dm_txt_widget(ic, 1); int nl = 0;
-        if (tw) { uint64_t tp = *(uint64_t *)(tw + 0x88), tl = *(uint64_t *)(tw + 0x90);
-            if (tp && tl > 0 && tl < 64) { nl = (int)tl; for (uint64_t k = 0; k < tl; k++) g_hud_name[k] = *(char *)(tp + k); g_hud_name[tl] = 0; } }
-        atomic_store(&g_hud_name_len, nl); }
-    // 数值：玩家生命/法力 + 友方单位血量百分比
+    hud_capture(&g_hs[2], ic, vw, vh);
     int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(m->base + 0x5b9290);
     uint64_t dm_player_unit(void); int dm_friendly_hp_pct(void); uint64_t pl = dm_player_unit();
-    if (pl) { atomic_store(&g_hud_lv, get(pl, 6, 0) >> 8); atomic_store(&g_hud_lmax, get(pl, 7, 0) >> 8);
-               atomic_store(&g_hud_mv, get(pl, 8, 0) >> 8); atomic_store(&g_hud_mmax, get(pl, 9, 0) >> 8); }
+    if (pl) { atomic_store(&g_hud_stat[0], get(pl, 6, 0) >> 8); atomic_store(&g_hud_stat[1], get(pl, 7, 0) >> 8);
+              atomic_store(&g_hud_stat[2], get(pl, 8, 0) >> 8); atomic_store(&g_hud_stat[3], get(pl, 9, 0) >> 8); }
     atomic_store(&g_hud_mhp, dm_friendly_hp_pct());
-    atomic_store(&g_hud_has, 1);
+    atomic_store(&g_hud_ready, (g_hs[0].has | (g_hs[1].has << 1) | (g_hs[2].has << 2)));
 }
-int dm_hud_overlay(float life[4], float mana[4], float merc[4], int *lv, int *lmax, int *mv, int *mmax, int *mhp, char *name) {
-    if (!atomic_load(&g_hud_has)) return 0;
-    for (int i = 0; i < 4; i++) { life[i] = atomic_load(&g_hud_life[i]); mana[i] = atomic_load(&g_hud_mana[i]); merc[i] = atomic_load(&g_hud_merc[i]); }
-    *lv = atomic_load(&g_hud_lv); *lmax = atomic_load(&g_hud_lmax);
-    *mv = atomic_load(&g_hud_mv); *mmax = atomic_load(&g_hud_mmax);
+int dm_hud_overlay(float rects[12], char txt[3][64], int lens[3], int *flags, int *stat4, int *mhp) {
+    int f = atomic_load(&g_hud_ready); if (!f) return 0;
+    for (int k = 0; k < 3; k++) { for (int i = 0; i < 4; i++) rects[k * 4 + i] = g_hs[k].r[i];
+        int n = g_hs[k].len; if (n > 63) n = 63; for (int i = 0; i < n; i++) txt[k][i] = g_hs[k].txt[i]; txt[k][n] = 0; lens[k] = n; }
+    *flags = f; for (int i = 0; i < 4; i++) stat4[i] = atomic_load(&g_hud_stat[i]);
     *mhp = atomic_load(&g_hud_mhp);
-    int nl = atomic_load(&g_hud_name_len); if (nl > 0 && nl < 64) { memcpy(name, g_hud_name, nl); name[nl] = 0; } else name[0] = 0;
     return 1;
 }
+
 
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
-    { static unsigned hu; if ((hu++ % 6) == 0) dm_ui_hud_pump(); }   // HUD 数值/矩形发布 | publish HUD values + rects
+    dm_ui_hud_pump();   // 每帧采集 HUD 文字（清掉游戏原文字、只留覆盖层）| capture HUD text every frame
     { static unsigned tnt; if ((tnt++ % 15) == 0) dm_ui_text_tint(); }
     { static int done; if (!done && fr > 300) { done = 1; dm_probe_ui_text(); } }   // 临时探针：跑起来 5 秒后打一次 | one-shot locator probe
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
