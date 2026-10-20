@@ -246,28 +246,33 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         if (dm_hud_overlay(life, mana, merc, &lv, &lmax, &mv, &mmax, &mhp, name)) {
             int ux = 0, uy = 0, uw = 0, uh = 0; dm_ui_rect(&ux, &uy, &uw, &uh);
             CGFloat sc = self.window.screen.scale; if (sc <= 0) sc = UIScreen.mainScreen.scale; if (sc <= 0) sc = 3;
-            if (uw <= 0 || uh <= 0) return;
-            CGSize bz = self.bounds.size;
-            CGRect map(float q[4]) { return CGRectMake((ux + q[0]*uw)/sc, (uy + q[1]*uh)/sc, (q[2]-q[0])*uw/sc, (q[3]-q[1])*uh/sc); }
-            UIColor *gold = [UIColor colorWithRed:0.85 green:0.79 blue:0.65 alpha:0.95];
-            NSMutableParagraphStyle *pp = [NSMutableParagraphStyle new]; pp.alignment = NSTextAlignmentCenter;
-            void drawNum(CGRect r, NSString *s, CGFloat fs) {
-                UIFont *f = dm_game_font(fs); if (!f) f = [UIFont systemFontOfSize:fs];
-                [s drawInRect:r withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:gold, NSParagraphStyleAttributeName:pp}];
-            }
-            if (lmax > 0) drawNum(map(life), [NSString stringWithFormat:@"%d / %d", lv, lmax], 10);
-            if (mmax > 0) drawNum(map(mana), [NSString stringWithFormat:@"%d / %d", mv, mmax], 10);
-            if (name[0]) {
-                UIColor *hc = mhp >= 75 ? [UIColor colorWithRed:.25 green:.85 blue:.35 alpha:.95]
-                            : mhp >= 50 ? [UIColor colorWithRed:.95 green:.85 blue:.2 alpha:.95]
-                            : mhp >= 25 ? [UIColor colorWithRed:.95 green:.55 blue:.15 alpha:.95]
-                            : mhp >= 0  ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:.95]
-                                        : [UIColor whiteColor];
-                CGRect mr = map(merc); UIFont *f = dm_game_font(11); if (!f) f = [UIFont systemFontOfSize:11];
-                [@(name) drawInRect:mr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:hc, NSParagraphStyleAttributeName:pp}];
+            if (uw > 0 && uh > 0) {
+                UIColor *gold = [UIColor colorWithRed:0.85 green:0.79 blue:0.65 alpha:0.95];
+                NSMutableParagraphStyle *pp = [NSMutableParagraphStyle new]; pp.alignment = NSTextAlignmentCenter;
+                if (lmax > 0) {
+                    CGRect lr = CGRectMake((ux + life[0] * uw) / sc, (uy + life[1] * uh) / sc, (life[2] - life[0]) * uw / sc, (life[3] - life[1]) * uh / sc);
+                    UIFont *f = dm_game_font(10); if (!f) f = [UIFont systemFontOfSize:10];
+                    [[NSString stringWithFormat:@"%d / %d", lv, lmax] drawInRect:lr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:gold, NSParagraphStyleAttributeName:pp}];
+                }
+                if (mmax > 0) {
+                    CGRect mr = CGRectMake((ux + mana[0] * uw) / sc, (uy + mana[1] * uh) / sc, (mana[2] - mana[0]) * uw / sc, (mana[3] - mana[1]) * uh / sc);
+                    UIFont *f = dm_game_font(10); if (!f) f = [UIFont systemFontOfSize:10];
+                    [[NSString stringWithFormat:@"%d / %d", mv, mmax] drawInRect:mr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:gold, NSParagraphStyleAttributeName:pp}];
+                }
+                if (name[0]) {
+                    UIColor *hc = mhp >= 75 ? [UIColor colorWithRed:.25 green:.85 blue:.35 alpha:.95]
+                                : mhp >= 50 ? [UIColor colorWithRed:.95 green:.85 blue:.2 alpha:.95]
+                                : mhp >= 25 ? [UIColor colorWithRed:.95 green:.55 blue:.15 alpha:.95]
+                                : mhp >= 0  ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:.95]
+                                            : [UIColor whiteColor];
+                    CGRect ir = CGRectMake((ux + merc[0] * uw) / sc, (uy + merc[1] * uh) / sc, (merc[2] - merc[0]) * uw / sc, (merc[3] - merc[1]) * uh / sc);
+                    UIFont *f = dm_game_font(11); if (!f) f = [UIFont systemFontOfSize:11];
+                    [[NSString stringWithUTF8String:name] drawInRect:ir withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:hc, NSParagraphStyleAttributeName:pp}];
+                }
             }
         }
     }
+
 
     const dm_tc_state *s = self.controls; if (!s) return;
     const dm_tc_layout *l = &s->layout;

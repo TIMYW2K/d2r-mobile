@@ -2978,7 +2978,7 @@ static void dm_ui_hud_pump(void) {
         atomic_store(&g_hud_name_len, nl); }
     // 数值：玩家生命/法力 + 友方单位血量百分比
     int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(m->base + 0x5b9290);
-    uint64_t pl = dm_player_unit();
+    uint64_t dm_player_unit(void); int dm_friendly_hp_pct(void); uint64_t pl = dm_player_unit();
     if (pl) { atomic_store(&g_hud_lv, get(pl, 6, 0) >> 8); atomic_store(&g_hud_lmax, get(pl, 7, 0) >> 8);
                atomic_store(&g_hud_mv, get(pl, 8, 0) >> 8); atomic_store(&g_hud_mmax, get(pl, 9, 0) >> 8); }
     atomic_store(&g_hud_mhp, dm_friendly_hp_pct());
