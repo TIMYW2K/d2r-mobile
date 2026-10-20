@@ -364,15 +364,37 @@ static void monres_on_setinfo(const uint64_t *regs, uint64_t payload) {
 // Local change: tint the health-bar name only for friendly units (hireling / minions): enemy monsters are untouched.
 // Friendliness uses the game's own alignment (unit +0x88 stat table +0x1c bit 31, then stat 0xac the same way dm_rift.c
 // unit_align reads it: 0 = hostile, 2 = player side). The text palette only has green/yellow/gold/orange/red, so 5 bands.
+// 友方判定：与 dm_rift.c 的 unit_align 同一条路（单位 +0x88 状态表 +0x1c 位 31；节点 0x69 的属性 0xac，
+// 由游戏自己的 main+0x5bc810 读取）。0 = 敌对，2 = 玩家这一方。
+static int unit_friendly_hp(module_t *mm, uint64_t unit) {
+    uint64_t sl = 0; vm_size_t got = 0;
+    if (vm_read_overwrite(mach_task_self(), unit + 0x88, 8, (vm_address_t)&sl, &got) || !sl) return 0;
+    uint32_t fl = 0;
+    if (vm_read_overwrite(mach_task_self(), sl + 0x1c, 4, (vm_address_t)&fl, &got) || !(fl & 0x80000000u)) return 0;
+    for (int pass = 0; pass < 2; pass++) {
+        uint64_t n = 0;
+        if (vm_read_overwrite(mach_task_self(), sl + (pass ? 0xd8 : 0xd0), 8, (vm_address_t)&n, &got) || !n) continue;
+        for (int k = 0; n && k < 512; k++) {
+            uint32_t sid = 0;
+            if (vm_read_overwrite(mach_task_self(), n + 0x20, 4, (vm_address_t)&sid, &got)) return 0;
+            if (sid == 0x69) { uint8_t b1bd = 0;
+                if (vm_read_overwrite(mach_task_self(), unit + 0x1bd, 1, (vm_address_t)&b1bd, &got)) return 0;
+                int (*gs)(int, uint64_t, int, int) = (int (*)(int, uint64_t, int, int))(mm->base + 0x5bc810);
+                return gs(b1bd, n, 0xac, 0); }
+            uint64_t nx = 0;
+            if (vm_read_overwrite(mach_task_self(), n + 0x68, 8, (vm_address_t)&nx, &got)) return 0;
+            n = nx;
+        }
+    }
+    return 0;
+}
 static void monhp_tint(const uint64_t *regs, uint64_t payload) {
     module_t *mm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) mm = &g_mod[i];
     uint64_t unit = regs[19], name = 0; uint32_t type = 0; vm_size_t got = 0;
     if (!mm || !unit) return;
     if (vm_read_overwrite(mach_task_self(), unit, 4, (vm_address_t)&type, &got) || type != 1) return;   // 只认怪物类单位
-    { uint64_t sl = 0; if (vm_read_overwrite(mach_task_self(), unit + 0x88, 8, (vm_address_t)&sl, &got) || !sl) return;
-      uint32_t fl = 0; if (vm_read_overwrite(mach_task_self(), sl + 0x1c, 4, (vm_address_t)&fl, &got) || !(fl & 0x80000000u)) return; }
+    if (!unit_friendly_hp(mm, unit)) return;                              // 只给友方（佣兵/召唤物）着色 | friendly only
     int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(mm->base + 0x5b9290);
-    if (get(unit, 0xac, 0) == 0) return;                                  // 敌对 = 不动 | hostile: leave alone
     if (vm_read_overwrite(mach_task_self(), payload, 8, (vm_address_t)&name, &got) || !name) return;
     int hp = get(unit, 6, 0) >> 8, mx = get(unit, 7, 0) >> 8;
     if (hp <= 0 || mx <= 0) return;

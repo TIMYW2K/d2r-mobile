@@ -233,6 +233,17 @@ with tempfile.TemporaryDirectory() as t:
         print('掉落表：已替换 TreasureClassEx.txt（回城/鉴定卷轴概率 0）')
     else:
         print('掉落表：没找到 %s，按原版掉落' % _tc)
+    # 本地改动：游戏读的是编译表 TreasureClassEx.bin（NSO 里是 "%s.bin"），所以直接改 bin：把 tsc/isc 的物品格
+    # 与概率清零（行结构不动），随覆盖层替换。
+    # Local change: the game loads the compiled TreasureClassEx.bin ("%s.bin" in the NSO), so patch the bin directly:
+    # the tsc/isc item slots and their probabilities are zeroed (row layout untouched) and shipped via the overlay.
+    _tcb=os.path.join(HERE,'..','..','data','game','treasureclassex.bin')
+    if os.path.isfile(_tcb):
+        _nb='tc_treasureclassex.bin'; shutil.copyfile(_tcb,os.path.join(t,_nb))
+        REPL['data/global/excel/treasureclassex.bin']=_nb
+        print('掉落表：已替换 TreasureClassEx.bin（回城/鉴定卷轴清零）')
+    else:
+        print('掉落表：没找到 %s' % _tcb)
     n0,z0=emit(REPL,out,'')
     # 本地改动：把中文字体子集放进覆盖层目录（App 只带这一份；宿主 hle_fs.c 在 OpenFile 里替换 CJK 字体）
     # Local change: put the Chinese font subset into the overlay directory (single copy in the app; the host
