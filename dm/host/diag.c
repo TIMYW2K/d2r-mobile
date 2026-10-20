@@ -1320,8 +1320,8 @@ int dm_merc_hp_pct(void) {
             uint32_t ty = 0, cls = 0, mode = 0;
             if (tk_rd(u, &ty, 4) && tk_rd(u + 4, &cls, 4) && tk_rd(u + 0xc, &mode, 4) && ty == 1 &&
                 (cls == 271 || cls == 338 || cls == 359 || cls == 560 || cls == 561) && mode != 0 && mode != 12) {
-                int hp = get(u, 6, 0) >> 8, mx = get(u, 7, 0) >> 8;
-                if (hp > 0 && mx > 0) return hp * 100 / mx;
+                int64_t hp = get(u, 6, 0), mx = get(u, 7, 0);   // 原始值同为 8 位定点，比例相除可保留精度 | Both use 8-bit fixed point; dividing the raw values preserves precision
+                if (hp >= 0 && mx > 0) { int64_t pct = hp * 100 / mx; return pct > 100 ? 100 : (int)pct; }
             }
             if (!tk_rd(u + 0x158, &u, 8)) break;
         }

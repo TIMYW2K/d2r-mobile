@@ -986,10 +986,10 @@ static struct { uint64_t G; int have, den; uint8_t umin, umax; } g_reg[140];
 static int32_t *region_of(uint64_t G, int lv, uint8_t **umin, uint8_t **umax) { uint64_t r = lv > 0 && lv < 140 ? rd(G + 0x1d0 + 8ull * lv) : 0; if (!r) return 0;
     if (g_reg[lv].G != G || !g_reg[lv].have) { g_reg[lv].G = G; g_reg[lv].have = 1; g_reg[lv].den = *(int32_t *)(uintptr_t)(r + 0x2c4); g_reg[lv].umin = *(uint8_t *)(uintptr_t)(r + 0x2c8); g_reg[lv].umax = *(uint8_t *)(uintptr_t)(r + 0x2c9); }
     *umin = (uint8_t *)(uintptr_t)(r + 0x2c8); *umax = (uint8_t *)(uintptr_t)(r + 0x2c9); return (int32_t *)(uintptr_t)(r + 0x2c4); }
-// 难度档 = 怪物密度：按人数档线性放大本关的刷怪密度（1 档 = 原版；8 档 = ×2，即 +100%）。
+// 难度档 = 怪物密度：按人数档线性放大本关的刷怪密度（1 档 = 原版；8 档 = ×4，即 +300%）。
 // 游戏在刷怪时自己会把密度夹到 10000，这里也照夹；秘境局里密度由秘境自己管，这里不动。
 // Difficulty = monster density: scale this level's spawn density linearly with the players setting
-// (1 = original, 8 = x2 i.e. +100%). The game itself clamps density to 10000 when spawning; do the same here.
+// (1 = original, 8 = x4 i.e. +300%). The game itself clamps density to 10000 when spawning; do the same here.
 // Rift runs manage their own density and are left alone.
 int dm_diff_den_apply(uint64_t G, int lv, int players) {
     if (!G || lv <= 0 || lv >= 140 || players < 1 || players > 8) return 0;
@@ -998,13 +998,13 @@ int dm_diff_den_apply(uint64_t G, int lv, int players) {
     if (!den) return 0;
     int base = g_reg[lv].den;
     if (base <= 0) return 0;
-    int target = (int)((long long)base * (players + 6) / 7);    // 1档=base，8档=2×base | 1 = base, 8 = 2x base
+    int target = (int)((int64_t)base * (7 + 3 * (players - 1)) / 7);  // 1档=base，8档=4×base | 1 = base, 8 = 4x base
     if (target > 10000) target = 10000;
     if (*den != target) {
         *den = target;
         static int llv = -1, lp = -1;
         if (lv != llv || players != lp) { llv = lv; lp = players;
-            LOG("难度密度：关卡 %d 怪物密度 %d → %d（难度档 %d，+%d%%）", lv, base, target, players, (players - 1) * 100 / 7); }
+            LOG("难度密度：关卡 %d 怪物密度 %d → %d（难度档 %d，+%d%%）", lv, base, target, players, (players - 1) * 300 / 7); }
     }
     return 1;
 }

@@ -67,6 +67,10 @@ void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t 
 void dm_input_cancel_pending_press(uint64_t buttons) {
     atomic_fetch_and(&g_press_latch, ~buttons);
 }
+void dm_input_release_buttons(uint64_t buttons) {
+    atomic_fetch_and(&g_in.buttons, ~buttons);
+    atomic_fetch_and(&g_press_latch, ~buttons);
+}
 // 测试开关 DM_UI_TAPS="帧:x,y[:动作];…"（x / y = 画面千分比）。动作缺省 = 点一下（走 dm_ui_touch：按下、隔 6 帧抬起）；其余走 dm_ui_ptr（探查 / 界面用例用）：
 //   k 点页签 / 对话菜单项（宿主按键切过去）；t<帧数> 手指按住这么多帧再抬（走 dm_ui_touch）；h<帧数> 悬停；p<帧数> 左键按住这么多帧再抬；r 右键；l 左键（指针路）；d<x2>,<y2> 按住拖到另一点（20 帧走完）；g<x2>,<y2> 连续手势（dm_ui_drag_*：按起止方向定型为滚动 / 滑块，60 帧走完）；W 点游戏世界（dm_world_tap）；N<值> 数量框设值（dm_num_set）；A<号> 买卖 / 加点入口（dm_actions.c）；w<量> 滚轮（120 一格，负 = 向下）；m<0|1> 地图切回小地图 / 切全屏（dm_ui_map_full）；前缀 s / c = 按着 Shift / Ctrl（VK 0x10 / 0x11）
 // Test switch DM_UI_TAPS="frame:x,y[:action];..." (x / y = per-mille of the picture). Default action = one tap (via dm_ui_touch: press, lift 6 frames later); the others go through dm_ui_ptr (for probing / UI cases):

@@ -873,7 +873,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         }
         for(int i=0;i<16;i++) if(_slot[i]==t) {
             dm_tc_finger *released = &_controls.finger[i];
-            if (released->active && released->target >= DM_TC_SKILL1 && released->target <= DM_TC_SKILL4)
+            if (released->active && released->target >= DM_TC_MAIN && released->target <= DM_TC_SKILL4)
                 released_skill_buttons |= _controls.layout.target[released->target].button;
             // 系统取消触摸（通知横幅、系统手势）不当松手：拖着的物品放回原处、货架 / 成叠格拖出不买不取，别的手指只放掉按着的东西，不补脉冲、不点世界、不点界面
             // A system-cancelled touch (notification banner, system gesture) is not treated as a release: the dragged item is put back, a drag out of the shelf / stacked cell neither buys nor withdraws, and other fingers only release what they hold, with no make-up pulse, no world tap and no UI tap
@@ -921,10 +921,11 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         [self recordTouch:t slot:slot phase:phase];
     }
     [self pushFrom:"uitouch" phase:phase];
-    // A skill that had been held gets no make-up press after its finger lifts. Keep the latch for a quick tap pulse,
-    // or when another finger is still holding the same mapped skill button.
-    uint64_t released_unheld = released_skill_buttons & ~_controls.buttons;
-    if (released_unheld) dm_input_cancel_pending_press(released_unheld);
+    // A held skill is released in both the live input and edge latch. Preserve a short-tap pulse,
+    // a delayed second-set pulse, or a same-button touch that is still held elsewhere.
+    uint64_t cast_in_flight = _controls.pulse_button | _controls.defer_button;
+    uint64_t released_unheld = released_skill_buttons & ~_controls.buttons & ~cast_in_flight;
+    if (released_unheld) dm_input_release_buttons(released_unheld);
     [self armPulseEnd];
 }
 // 脉冲按键（副技能松手施放 / 功能页里点格、拖放的拿起与放下）：原版按一次即放一次，前端按下后要自己收回。

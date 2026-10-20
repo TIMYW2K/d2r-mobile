@@ -227,7 +227,7 @@ with tempfile.TemporaryDirectory() as t:
     # 概率清零（行结构不动）随覆盖层替换；base/ 那份是经典模式用的表，同样清。手改的 bin 进不了仓库（dm/.gitignore
     # 的 *.bin 把它挡了，29.1 因此没带上），所以改成每次从原版现算——包里的游戏版本换了也自动跟上。
     # 表结构（3.3.94012 实测，root 1358 行 / base 1138 行，行宽都是 772）：头 u32 = 行数，首行偏移 4；物品码在
-    # row+72 起 10 槽 × 64 字节（内联字符串 32 字节）；概率 u16×10 在 row+712。两份各 94 个卷轴槽。
+    # row+72 起 10 槽 × 64 字节（内联字符串 32 字节）；概率 u32×10 在 row+712。两份各 94 个卷轴槽。
     # Local change: no town-portal / identify scrolls from monsters -- what the game loads at run time is the compiled
     # TreasureClassEx.bin (the .txt in the original package is only a reference for mods; build 29.1 shipped the .txt
     # only and scrolls still dropped on the device, which is the evidence). So derive a patched bin from the original
@@ -236,8 +236,8 @@ with tempfile.TemporaryDirectory() as t:
     # repository (dm/.gitignore has *.bin, which is why 29.1 did not carry it), so compute it from the original on every
     # build -- it also follows the game version automatically.
     # Row structure (measured on 3.3.94012; root 1358 rows / base 1138 rows, row width 772 for both): u32 row count,
-    # first row at offset 4; item codes from row+72, ten slots of 64 bytes (inline string, 32 bytes); the ten u16
-    # probabilities at row+712. Both tables have 94 scroll slots.
+    # first row at offset 4; item codes from row+72, ten slots of 64 bytes (inline string, 32 bytes); ten u32 probabilities at row+712.
+    # Both tables have 94 scroll slots.
     _tc=os.path.join(HERE,'..','..','data','game','treasureclassex.txt')
     if os.path.isfile(_tc):
         _n='tc_treasureclassex.txt'; shutil.copyfile(_tc,os.path.join(t,_n))
@@ -250,15 +250,32 @@ with tempfile.TemporaryDirectory() as t:
     def _tc_noscroll(rel):
         b=bytearray(dmx.get(rel)); N=struct.unpack_from('<I',b,0)[0]; ROW=(len(b)-4)//N
         assert N>0 and 4+N*ROW==len(b), (rel,len(b),N,ROW)
-        n=0
+        n=0; rows={}
         for i in range(N):
             off=4+i*ROW
+            row_name=bytes(b[off:off+32]).split(b'\x00')[0]
+            if row_name: rows[row_name]=off
             for k in range(10):
                 so=off+72+64*k
                 if bytes(b[so:so+32]).split(b'\x00')[0] in (b'tsc',b'isc'):
                     b[so:so+32]=b'\x00'*32                       # 清掉物品码 | clear the item code
-                    struct.pack_into('<H',b,off+712+2*k,0)       # 概率也清 0 | probability 0 as well
+                    struct.pack_into('<I',b,off+712+4*k,0)       # 每槽是 u32 概率；按槽宽清 0 | u32 probability per slot; clear at the matching slot stride
                     n+=1
+        # Ensure ordinary Act II Duriel still routes into its normal and quest base tables,
+        # and those base tables retain at least one weighted non-scroll item after patching.
+        for root, child in ((b'Duriel',b'Duriel - Base'),(b'Durielq',b'Durielq - Base')):
+            ro=rows.get(root); co=rows.get(child)
+            route=ro is not None and co is not None and any(
+                bytes(b[ro+72+64*k:ro+72+64*k+32]).split(b'\x00')[0]==child and struct.unpack_from('<I',b,ro+712+4*k)[0]>0
+                for k in range(10))
+            output=False
+            if co is not None:
+                for k in range(10):
+                    code=bytes(b[co+72+64*k:co+72+64*k+32]).split(b'\x00')[0]
+                    if code not in (b'',b'tsc',b'isc') and struct.unpack_from('<I',b,co+712+4*k)[0]>0:
+                        output=True; break
+            if not route or not output:
+                raise ValueError('%s compiled treasure-class route has no weighted item output' % root.decode())
         return bytes(b),n,N,ROW
     _tcstats=[]
     for _rel,_fn in (('data/global/excel/TreasureClassEx.bin','tc_treasureclassex.bin'),

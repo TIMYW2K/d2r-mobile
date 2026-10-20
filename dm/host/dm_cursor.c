@@ -2872,8 +2872,7 @@ static uint64_t dm_widget_named_text(module_t *m, uint64_t w, const char *name, 
 
 static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
     if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return;
-    const char *nm = (const char *)*(uint64_t *)(w + 8);
-    if (nm && !strcmp(nm, "AttackDamageTitle") && dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
+    if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
         static const uint8_t attack[] = {0xe6,0x94,0xbb,0xe5,0x87,0xbb};     // 攻击
         static const uint8_t damage[] = {0xe4,0xbc,0xa4,0xe5,0xae,0xb3};     // 伤害
         uint8_t *s = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t len = *(uint64_t *)(w + 0x90);
@@ -2885,6 +2884,7 @@ static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
                 uint8_t compact[256]; uint64_t compact_len = len - skip;
                 memcpy(compact, s, (size_t)nl);
                 memcpy(compact + nl, s + nl + skip, (size_t)(len - nl - skip));
+                compact[compact_len] = 0;
                 ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, (const char *)compact, compact_len);
                 ((void (*)(uint64_t))(m->base + 0xadc434))(w); break;  // 用原版字符串与排版入口移除换行，不动字号 | Use the game's string and layout APIs to remove the newline without changing font size
             }
@@ -2902,16 +2902,44 @@ static void dm_text_rgb(module_t *m, uint64_t w, const int rgb[3]) {
     ((void (*)(uint64_t))(m->base + 0xadc434))(w);  // 字色改动后走原版重排入口 | Re-layout through the game's text-widget entry after changing its color
 }
 
+static int dm_widget_has_text(module_t *m, uint64_t w) {
+    if (!m || !w || !dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) return 0;
+    const char *s = (const char *)*(uint64_t *)(w + 0x88); uint64_t len = *(uint64_t *)(w + 0x90);
+    return s && len > 0 && len < 256 && s[0];
+}
+
+static int dm_widget_name_role(const char *nm) {
+    if (!nm) return 0;
+    for (const char *p = nm; *p; p++) if ((p[0] == 'N' || p[0] == 'n') &&
+        (p[1] == 'a' || p[1] == 'A') && (p[2] == 'm' || p[2] == 'M') && (p[3] == 'e' || p[3] == 'E')) return 1;
+    return 0;
+}
+
+static uint64_t dm_widget_text_walk(module_t *m, uint64_t w, int dep, int name_only) {
+    if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return 0;
+    const char *nm = (const char *)*(uint64_t *)(w + 8);
+    if (dm_widget_has_text(m, w) && (!name_only || dm_widget_name_role(nm))) return w;
+    uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60);
+    if (!ch || n > 256) return 0;
+    for (uint64_t i = 0; i < n; i++) { uint64_t found = dm_widget_text_walk(m, *(uint64_t *)(ch + 8 * i), dep + 1, name_only); if (found) return found; }
+    return 0;
+}
+
 static void dm_merc_name_tint(module_t *m, uint64_t root) {
     static dm_wref cached_name;
     static int original_rgb[3], have_original;
     uint64_t hire = ui_panel(root, "HireablesPanel"), name = 0;
     if (hire && *(uint8_t *)(hire + 0x50)) {
         uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
-        if (ch && n <= 256) for (uint64_t i = 0; i < n && !name; i++) {
-            uint64_t entry = *(uint64_t *)(ch + 8 * i);
-            if (entry) name = dm_widget_named_text(m, entry, "Name", 1);
+        if (ch && n <= 256) {
+            // Prefer the game's exact Name field, then a name-labelled text widget. The portrait template has
+            // changed widget names between builds, so only then fall back to its first visible text leaf.
+            for (uint64_t i = 0; i < n && !name; i++) { uint64_t entry = *(uint64_t *)(ch + 8 * i); if (entry) name = dm_widget_named_text(m, entry, "Name", 1); }
+            for (uint64_t i = 0; i < n && !name; i++) { uint64_t entry = *(uint64_t *)(ch + 8 * i); if (entry) name = dm_widget_text_walk(m, entry, 1, 1); }
+            for (uint64_t i = 0; i < n && !name; i++) { uint64_t entry = *(uint64_t *)(ch + 8 * i); if (entry) name = dm_widget_text_walk(m, entry, 1, 0); }
         }
+        if (!name) name = dm_widget_text_walk(m, hire, 0, 1);
+        if (!name) name = dm_widget_text_walk(m, hire, 0, 0);
     }
     if (!name || !dm_widget_is((const uint8_t *)m->base, name, DM_VT_TEXT)) {
         uint64_t old = dm_wref_get(&cached_name);
@@ -2938,6 +2966,7 @@ static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
     if (dm_ui_unstable()) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
+    // Search the active character panel by localized title text, since the row's widget name is not stable across layouts.
     uint64_t cs = ui_panel(root, "CharacterStatsPanel");
     if (cs && *(uint8_t *)(cs + 0x50)) dm_char_damage_titles_walk(m, cs, 0);
     dm_merc_name_tint(m, root);

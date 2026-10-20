@@ -127,7 +127,7 @@ json.dump(j,open(f'{OUT}/hud.json','w'),ensure_ascii=False,indent=1)
 from PIL import ImageDraw, ImageFont
 UI=os.path.join(OUT,'hud_v4_ui'); os.makedirs(UI,exist_ok=True)
 for f in os.listdir(UI): os.remove(os.path.join(UI,f))
-font=g['num'](g['BADGE'])
+font=g['num'](g['BADGE'])   # 角标（药瓶 / 卷轴数量）继续用原有 26px | Badges (belt / scroll counts) keep their existing 26px size
 def glyphs(tag,fill,font=font,chars='0123456789Lv·% '):     # 与效果图 shadow_text 同一字效：右下 2px 黑影（α170）+ 1px 深描边；每字一张，记字距与基线偏移 | Same text effect as the mockup's shadow_text: lower-right 2px black shadow (α170) + 1px dark outline; one image per character, recording advance and baseline offset
     m={}
     for ch in chars:
@@ -138,23 +138,24 @@ def glyphs(tag,fill,font=font,chars='0123456789Lv·% '):     # 与效果图 shad
         if bb: im.crop(bb).save(os.path.join(UI,name))
         m[ch]={'file':name if bb else None,'dx':(bb[0]-o[0]) if bb else 0,'dy':(bb[1]-o[1]) if bb else 0,'adv':font.getlength(ch)}
     return m
+HUD_VALUE_SIZE = 30  # 生命、法力与 Lv / 经验百分比共用字号 | Shared size for life, mana and Lv / experience percentage
+_OURFONT=os.path.join(os.path.dirname(os.path.abspath(__file__)),'fonts','huiwen-subset.ttf')
+font_hud=ImageFont.truetype(_OURFONT,HUD_VALUE_SIZE) if os.path.isfile(_OURFONT) else SRC.font('blizzardglobal-v5_81.ttf',HUD_VALUE_SIZE)
 ui={'ref':[W,H],'center_x':W/2,'slots':g['slots'],'inner':[g['IX0'],g['IY0'],g['IX1'],g['IY1']],
     'exp':{'x0':g['EX0'],'x1':g['EX1'],'y':g['EY'],'h':6,'track':[22,18,14],'edge':[70,58,40],'fill':[196,160,70],'ticks':20},
-    'lv':{'x':(g['EX0']+g['EX1'])/2,'baseline':g['EY']-6,'glyphs':glyphs('lv',(205,185,140,255))},
+    'lv':{'x':(g['EX0']+g['EX1'])/2,'baseline':g['EY']-6,'glyphs':glyphs('lv',(205,185,140,255),font_hud)},
     'badge':{'glyphs':glyphs('b',(235,235,235,255)),'dx':-3,'dy':-1},     # 右下内角锚点 = 格左上 + 内框右下 + (dx,dy)，右对齐、基线 | Lower-right inner corner anchor = slot top-left + inner frame bottom-right + (dx,dy), right-aligned, baseline
     'pick':{'center_x':1390,'pitch':120,'y':1051.5},
     'vital':{'left_x':g['LBC'][0],'right_x':g['RBC'][0],'baseline':g['YB']}}
-# 本地改动：生命 / 法力数值也用汇文明朝体烤（预渲染字形）| Local change: life / mana values are pre-rendered
-# glyph images too -- bake them with the same font.
-_OURFONT=os.path.join(os.path.dirname(os.path.abspath(__file__)),'fonts','huiwen-subset.ttf')
-font_v=ImageFont.truetype(_OURFONT,30) if os.path.isfile(_OURFONT) else SRC.font('blizzardglobal-v5_81.ttf',30)
+# 生命 / 法力字形复用上面的 HUD_VALUE_SIZE，确保和 Lv / 经验百分比同字号。
+# Life / mana glyphs reuse HUD_VALUE_SIZE above so their size matches Lv / experience percentage.
 import re, dm_i18n   # 生命 / 法力两行的字形：原有中文这一套 + 中英表 dmHudLife / dmHudMana 英文用到的字（英文版；字形不全 v4text 会空着） | glyphs for the life / mana rows: the existing Chinese set plus the characters used by the English of dmHudLife / dmHudMana in the Chinese-English string table (English version; with missing glyphs v4text would leave blanks)
 _vt={k:(z,e) for k,z,e in dm_i18n.rows()}; _vc='生命法力:/ 0123456789'
 _vc+=''.join(sorted({c for k in ('dmHudLife','dmHudMana') for c in dm_i18n.FMT.sub('',_vt[k][0]+_vt[k][1])}-set(_vc)))
 # 右上地图名使用游戏的暗金色；数值由 UIKit 贴预渲染字形（不是已移出屏幕的原生 ValueDisplay），用同一暗金色。
 # The top-right map label uses the game's dark gold; the visible values are UIKit glyphs (the native ValueDisplay is off-screen), so bake them in that same dark gold.
 MAP_LABEL_GOLD = (212,196,145,255)  # FontColorGold 的实机取色 | sampled from the in-game FontColorGold
-ui['vital']['glyphs']=glyphs('v',MAP_LABEL_GOLD,font_v,_vc)
+ui['vital']['glyphs']=glyphs('v',MAP_LABEL_GOLD,font_hud,_vc)
 g['slot'].save(os.path.join(UI,'slot.png'))
 FULL.save(os.path.join(UI,'base_full.png')); ui['base']={'x':bx0,'y':by0}
 lvlsheet=SRC.img('levelupbutton')   # 原版 LevelUpButton 两帧（亮 / 按下），整格替换第 6 格 | The original game's LevelUpButton two frames (lit / pressed), replaces slot 6 entirely
