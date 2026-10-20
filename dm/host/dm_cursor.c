@@ -2855,9 +2855,36 @@ static void dm_ui_hover_apply(void) {
     dm_ui_hover_now((int)(nx * W), (int)(ny * H));
 }
 
+// 临时探针（用于定位 2/3 的控件）：进游戏后一次性打印顶层面板与「佣兵面板 / 生命法力球相关面板」里的文字控件。
+static void dm_probe_ui_text(void) {
+    module_t *m = main_module(); if (!m) return;
+    uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
+    uint64_t ch = *(uint64_t *)(root + 0x58), n = *(uint64_t *)(root + 0x60);
+    if (!ch || n > 256) return;
+    LOG("探针：顶层面板共 %llu 个", (unsigned long long)n);
+    for (uint64_t i = 0; i < n; i++) {
+        uint64_t p = *(uint64_t *)(ch + 8 * i); if (!p || !*(uint8_t *)(p + 0x50)) continue;
+        const char *pn = (const char *)*(uint64_t *)(p + 8);
+        int interesting = pn && (strstr(pn, "Hireable") || strstr(pn, "Orb") || strstr(pn, "Life") || strstr(pn, "Mana") || strstr(pn, "Globe") || strstr(pn, "Hud") || strstr(pn, "Belt") || strstr(pn, "Panel"));
+        if (!interesting) continue;
+        uint64_t c2 = *(uint64_t *)(p + 0x58), n2 = *(uint64_t *)(p + 0x60);
+        LOG("探针：面板 %s 子控件 %llu", pn ? pn : "?", (unsigned long long)n2);
+        if (!c2 || n2 > 64) continue;
+        for (uint64_t j = 0; j < n2; j++) {
+            uint64_t w = *(uint64_t *)(c2 + 8 * j); if (!w) continue;
+            const char *wn = (const char *)*(uint64_t *)(w + 8);
+            uint64_t tp = *(uint64_t *)(w + 0x88); uint64_t tl = *(uint64_t *)(w + 0x90);
+            char txt[64]; txt[0] = 0;
+            if (tp && tl > 0 && tl < 128) { size_t k2 = 0; for (; k2 < tl && k2 < 32; k2++) { uint8_t ch2 = *(uint8_t *)(tp + k2); txt[k2] = (ch2 >= 32 && ch2 < 127) ? (char)ch2 : '?'; } txt[k2] = 0; }
+            LOG("探针：  子 %s 可见 %d 文本 \"%s\"", wn ? wn : "?", *(uint8_t *)(w + 0x50) ? 1 : 0, txt);
+        }
+    }
+}
+
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
+    { static int done; if (!done && fr > 300) { done = 1; dm_probe_ui_text(); } }   // 临时探针：跑起来 5 秒后打一次 | one-shot locator probe
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame
     ui_watch_pump();
