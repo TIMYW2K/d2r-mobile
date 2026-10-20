@@ -1058,8 +1058,6 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
     if (memcmp(&ha, &hb, sizeof ha) && logged < 200) { logged++;   // 只在变化时记一行（前 200 次）：真机 / Mac 核对读数 | Log a line only on change (first 200 times): readout for cross-checking real device / Mac
         LOG("dm_hud：区域 %d (%d,%d) Lv %d 经验 %d‰ 生命 %d/%d 法力 %d/%d 腰带 %d/%d/%d/%d 回城 %d 人数档 %d 点数 %d 新任务 %d%s%s", h.area, h.x, h.y, h.level, h.exp_permille, h.hp, h.hp_max, h.mp, h.mp_max, h.belt[0], h.belt[1], h.belt[2], h.belt[3], h.portal, h.players, h.points, h.quest_unread, h.dead ? " 已死亡" : "", h.valid ? "" : "（未读到玩家）"); }
     g_hud = h; dm_hud_publish(&h);
-    // 难度验证：每见一只新怪记一行（类号 / stat100 人数档 / 最大生命 / 当前人数设置），确认 /players 对新生成的怪生效
-    // Difficulty verification: for every newly seen monster log class / stat100 (players count) / max life / current players setting
     { static uint32_t sseen[96]; static int ns, nlog;
       for (int b = 0; b < 128 && nlog < 24; b++) { uint64_t u = 0; if (!tk_rd(G + 0x2630 + 8 * b, &u, 8)) continue;
         for (int k = 0; u && k < 4096 && nlog < 24; k++) {
@@ -1803,7 +1801,8 @@ static void freeze_tick(uint64_t G) {   // 拍入口：定这一拍冻不冻，�
     else if (!want && frozen) { int nm = 0, hp = 0; uint32_t h = frz_snapshot(G, &nm, &hp); atomic_store(&g_dm_frozen, 0); frozen = 0; if (mtl_world_frozen) mtl_world_frozen(0); LOG("面板冻结：拍 %u 解冻（冻了 %u 次拍入口）；怪 %d 只 校验 %08x 玩家生命 %d", t, calls, nm, h, hp); }
     if (frozen) { calls++; uint32_t t1 = t - 1; memcpy((void *)(uintptr_t)(G + 0x170), &t1, 4); }
 }
-static void tick_gate_product(const uint64_t *regs) { g_lastG = regs[0]; players_apply(); hud_tick(regs[0]); freeze_tick(regs[0]); }   // 产品缺省的拍入口：只落地难度档、发布 HUD 数字 | The product default tick entry: only applies the difficulty level and publishes the HUD numbers
+int dm_diff_den_apply(uint64_t G, int lv, int players);
+static void tick_gate_product(const uint64_t *regs)
 static void tick_gate(const uint64_t *regs) {         // 拍入口：先注入本拍命令包，再取状态哈希 | Tick entry: first inject this tick's command packets, then take the state hash
     {   // 拍入口只在一条客体线程上跑：state_dump / ticks_hash 的 static 缓冲靠这一点不竞争。换线程即中止，别让输出悄悄写乱 | The tick entry runs on only one guest thread: the static buffers of state_dump / ticks_hash rely on this to be race-free. Abort if the thread changes, do not let the output silently get garbled
         static _Atomic uintptr_t owner; uintptr_t me = (uintptr_t)pthread_self(), exp = 0;
@@ -1811,7 +1810,7 @@ static void tick_gate(const uint64_t *regs) {         // 拍入口：先注入�
     }
     g_lastG = regs[0];
     players_apply();
-    hud_tick(regs[0]);
+hud_tick(regs[0]); { extern int dm_diff_den_apply(uint64_t, int, int); dm_diff_den_apply(regs[0], g_hud.area, g_hud.players); }
     crash_watch_progress(cur_tick(), "拍入口");
     if (getenv("DM_TEST_LEAK")) {
         static void **leaks; static size_t nleaks;
