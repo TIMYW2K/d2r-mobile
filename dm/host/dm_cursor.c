@@ -3137,6 +3137,64 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
     }
 }
 
+// 本地改动：左上角佣兵/傀儡/骷髅名字 —— 每个可见 Icon 一份，隐藏游戏原文，用原版小字号画在头像下方。
+// 菜单打开（navigation）时整体不画，避免浮在界面上。| Local change: names under every visible portrait icon
+// (merc / golem / skeletons), the game's own text is hidden and ours is drawn with the original small HUD font size;
+// skipped entirely while a menu is open.
+#define DM_HUD_NAME_MAX 4
+static struct { float r[4]; char txt[40]; int len; int band; _Atomic int has; } g_hud_names[DM_HUD_NAME_MAX];
+static _Atomic int g_hud_names_n;
+static int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
+    if (k < 0 || k >= DM_HUD_NAME_MAX) return 0;
+    int has = atomic_load(&g_hud_names[k].has); if (!has) return 0;
+    for (int i = 0; i < 4; i++) r[i] = g_hud_names[k].r[i];
+    int n = g_hud_names[k].len; if (n > 39) n = 39;
+    for (int i = 0; i < n; i++) txt[i] = g_hud_names[k].txt[i]; txt[n] = 0;
+    *len = n; *band = g_hud_names[k].band; return 1;
+}
+static int dm_hud_names_count(void) { return atomic_load(&g_hud_names_n); }
+static void dm_hud_names_pump(module_t *m, uint64_t root) {
+    extern int dm_front_navigation(void);
+    if (!m || !root) return;
+    static int done_log;
+    if (dm_front_navigation()) { if (atomic_exchange(&g_hud_names_n, 0) != 0) {} for (int k = 0; k < DM_HUD_NAME_MAX; k++) atomic_store(&g_hud_names[k].has, 0); return; }
+    uint64_t hire = ui_panel(root, "HireablesPanel");
+    if (!hire || !*(uint8_t *)(hire + 0x50)) { atomic_store(&g_hud_names_n, 0); for (int k = 0; k < DM_HUD_NAME_MAX; k++) atomic_store(&g_hud_names[k].has, 0); return; }
+    module_t *mm = m; int32_t vw = *(int32_t *)(mm->base + 0x211da38), vh = *(int32_t *)(mm->base + 0x211da3c);
+    int32_t hp_merc = dm_merc_hp_pct(); int32_t hp_fr = dm_friendly_hp_pct();
+    int slot = 0;
+    uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
+    if (!ch || n > 256) return;
+    for (uint64_t i = 0; i < n && slot < DM_HUD_NAME_MAX; i++) {
+        uint64_t ic = *(uint64_t *)(ch + 8 * i);
+        if (!ic || !*(uint8_t *)(ic + 0x50)) continue;                 // 只处理可见的槽位 | visible icons only
+        const char *cn = (const char *)*(uint64_t *)(ic + 8);
+        if (!cn || strcmp(cn, "Icon")) continue;
+        /* Icon 本身可能又不可见（兄弟槽位切换）| the Icon can be hidden even when its parent is visible */
+        if (!*(uint8_t *)(ic + 0x50)) continue;
+        float ir[4]; dm_widget_rect_ui(ic, vw, vh, ir);
+        if (!(ir[2] > ir[0] && ir[3] > ir[1])) continue;
+        uint64_t nm = dm_widget_named_text(m, ic, "Name", 0);
+        if (!nm) continue;
+        uint8_t *ts = (uint8_t *)(uintptr_t)*(uint64_t *)(nm + 0x88); uint64_t tl = *(uint64_t *)(nm + 0x90);
+        if (!ts || tl == 0 || tl > 39) continue;
+        char buf[40]; memcpy(buf, ts, (size_t)tl); buf[tl] = 0;
+        int band;
+        if (slot == 0) band = hp_merc >= 75 ? 3 : hp_merc >= 50 ? 2 : hp_merc >= 25 ? 1 : hp_merc >= 0 ? 0 : -1;
+        else           band = hp_fr   >= 75 ? 3 : hp_fr   >= 50 ? 2 : hp_fr   >= 25 ? 1 : hp_fr   >= 0 ? 0 : -1;
+        /* 名字放在头像正下方、与头像同宽居中；字号 = 头像高度的 11%（贴近原版小字） | under the portrait, centred, ~11% of its height */
+        float h = ir[3] - ir[1];
+        g_hud_names[slot].r[0] = ir[0]; g_hud_names[slot].r[1] = ir[3] + h * 0.03f;
+        g_hud_names[slot].r[2] = ir[2]; g_hud_names[slot].r[3] = ir[3] + h * 0.03f + h * 0.14f;
+        memcpy(g_hud_names[slot].txt, buf, (size_t)tl + 1); g_hud_names[slot].len = (int)tl; g_hud_names[slot].band = band;
+        atomic_store(&g_hud_names[slot].has, 1);
+        ts[0] = 0; *(uint64_t *)(nm + 0x90) = 0;                        // 隐藏游戏原文，只留我们这份 | hide the game's copy
+        slot++;
+    }
+    atomic_store(&g_hud_names_n, slot);
+    if (!done_log++) LOG("界面名字：可见槽位 %d 个（佣兵 %d%% / 友方 %d%%）", slot, hp_merc, hp_fr);
+}
+
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
@@ -3152,8 +3210,7 @@ static void dm_ui_hud_pump(void) {
     // Search the active character panel by localized title text, since the row's widget name is not stable across layouts.
     uint64_t cs = ui_panel(root, "CharacterStatsPanel");
     if (cs && *(uint8_t *)(cs + 0x50)) dm_char_damage_titles_walk(m, cs, 0);
-    // 本地改动：暂停佣兵名字重画（死亡时会撞到已销毁控件导致菜单弹出/卡住）；恢复前先改成隐藏原文字+同字号同位置的安全做法
-    (void)root;
+    dm_hud_names_pump(m, root);   // 佣兵/傀儡/骷髅名字（多槽位、原版小字号、菜单打开不画）
 }
 
 

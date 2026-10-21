@@ -258,21 +258,29 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
 
     // 本地改动：左上角佣兵名字由这里按血量档重画（宿主已清空游戏原文，所以只有这一份）。
     // Local change: draw the mercenary name here in the HP colour (the host cleared the game's copy).
+    // 本地改动：左上角佣兵/傀儡/骷髅名字，按血量四档着色（宿主已隐藏游戏原文，仅此一份；菜单打开时宿主不发布，自然消隐）。
+    // Local change: draw the mercenary/minion names in the 4 HP colours (the host hides the game's copies; nothing is
+    // published while a menu is open, so the names disappear with the UI).
     {
-        extern int dm_merc_overlay(float r[4], char *txt, int *len, int *band);
+        extern int dm_hud_names_count(void);
+        extern int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band);
         extern void dm_ui_rect(int *x, int *y, int *w, int *h);
-        float r[4]; char t[64]; int len = 0, band = -1;
-        if (dm_merc_overlay(r, t, &len, &band) && len > 0 && r[2] > r[0] && r[3] > r[1]) {
+        int nx = dm_hud_names_count();
+        if (nx > 0) {
             int ux = 0, uy = 0, uw = 0, uh = 0; dm_ui_rect(&ux, &uy, &uw, &uh);
             CGFloat sc = self.window.screen.scale; if (sc <= 0) sc = UIScreen.mainScreen.scale; if (sc <= 0) sc = 3;
-            if (uw > 0 && uh > 0) {
+            for (int k = 0; k < nx && k < 4; k++) {
+                float r[4]; char t[64]; int len = 0, band = -1;
+                if (!dm_hud_names_get(k, r, t, &len, &band) || len <= 0 || !(r[2] > r[0] && r[3] > r[1])) continue;
+                if (uw <= 0 || uh <= 0) continue;
                 CGRect rr = CGRectMake((ux + r[0] * uw) / sc, (uy + r[1] * uh) / sc, (r[2] - r[0]) * uw / sc, (r[3] - r[1]) * uh / sc);
                 UIColor *col = band == 3 ? [UIColor colorWithRed:.25 green:.85 blue:.35 alpha:1]
                               : band == 2 ? [UIColor colorWithRed:.95 green:.85 blue:.2 alpha:1]
                               : band == 1 ? [UIColor colorWithRed:.95 green:.55 blue:.15 alpha:1]
-                                          : [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:1];
-                UIFont *f = dm_game_font(MAX(9, MIN(20, rr.size.height * 0.9))); if (!f) f = [UIFont systemFontOfSize:12];
-                NSMutableParagraphStyle *pp = [NSMutableParagraphStyle new]; pp.alignment = NSTextAlignmentLeft;
+                              : band == 0 ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:1]
+                                          : [UIColor whiteColor];
+                UIFont *f = dm_game_font(MAX(8, MIN(16, rr.size.height * 0.85))); if (!f) f = [UIFont systemFontOfSize:11];
+                NSMutableParagraphStyle *pp = [NSMutableParagraphStyle new]; pp.alignment = NSTextAlignmentCenter;
                 [[NSString stringWithUTF8String:t] drawInRect:rr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:col, NSParagraphStyleAttributeName:pp}];
             }
         }
