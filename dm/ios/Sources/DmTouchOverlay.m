@@ -263,6 +263,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     // published while a menu is open, so the names disappear with the UI).
     {
         extern int dm_hud_names_count(void);
+        extern int dm_hud_names_dim(void);
         extern int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band);
         extern void dm_ui_rect(int *x, int *y, int *w, int *h);
         int nx = dm_hud_names_count();
@@ -279,6 +280,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                               : band == 1 ? [UIColor colorWithRed:.95 green:.55 blue:.15 alpha:1]
                               : band == 0 ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:1]
                                           : [UIColor whiteColor];
+                if (dm_hud_names_dim()) col = [col colorWithAlphaComponent:0.45];   // 菜单打开时变暗 | dimmed under menus
                 UIFont *f = dm_game_font(MAX(8, MIN(16, rr.size.height * 0.85))); if (!f) f = [UIFont systemFontOfSize:11];
                 NSMutableParagraphStyle *pp = [NSMutableParagraphStyle new]; pp.alignment = NSTextAlignmentCenter;
                 [[NSString stringWithUTF8String:t] drawInRect:rr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:col, NSParagraphStyleAttributeName:pp}];

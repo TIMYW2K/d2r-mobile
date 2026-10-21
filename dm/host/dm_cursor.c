@@ -3154,11 +3154,14 @@ int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
     *len = n; *band = g_hud_names[k].band; return 1;
 }
 int dm_hud_names_count(void) { return atomic_load(&g_hud_names_n); }
+static _Atomic int g_hud_names_dim;
+int dm_hud_names_dim(void) { return atomic_load(&g_hud_names_dim); }   // 1 = 菜单打开中，覆盖层画暗一点 | 1 = menu open, draw dimmed
 static void dm_hud_names_pump(module_t *m, uint64_t root) {
     extern int dm_front_navigation(void);
     if (!m || !root) return;
     static int done_log;
-    if (dm_front_navigation()) { if (atomic_exchange(&g_hud_names_n, 0) != 0) {} for (int k = 0; k < DM_HUD_NAME_MAX; k++) atomic_store(&g_hud_names[k].has, 0); return; }
+    if (dm_front_navigation()) { atomic_store(&g_hud_names_dim, 1); return; }   // 菜单打开：名字保留在原位、只画暗 | menu open: keep the names in place and draw them dimmed
+    atomic_store(&g_hud_names_dim, 0);
     uint64_t hire = ui_panel(root, "HireablesPanel");
     if (!hire || !*(uint8_t *)(hire + 0x50)) { atomic_store(&g_hud_names_n, 0); for (int k = 0; k < DM_HUD_NAME_MAX; k++) atomic_store(&g_hud_names[k].has, 0); return; }
     module_t *mm = m; int32_t vw = *(int32_t *)(mm->base + 0x211da38), vh = *(int32_t *)(mm->base + 0x211da3c);
