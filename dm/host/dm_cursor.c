@@ -3106,6 +3106,16 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
         float rr[4] = {0, 0, 0, 0};
         module_t *mm = main_module(); int32_t vw = mm ? *(int32_t *)(mm->base + 0x211da38) : 0, vh = mm ? *(int32_t *)(mm->base + 0x211da3c) : 0;
         dm_widget_rect_ui(name, vw, vh, rr);
+        // icon rect fallback: Name 控件自身矩形是 0×0（诊断实测），用可见 Icon 的矩形在头像下方放名字
+        if (!(rr[2] > rr[0] && rr[3] > rr[1]) && hire) {
+            uint64_t ich = 0, ch2 = *(uint64_t *)(hire + 0x58), n2 = *(uint64_t *)(hire + 0x60);
+            for (uint64_t i2 = 0; i2 < n2 && i2 < 256 && !ich; i2++) { uint64_t c2 = *(uint64_t *)(ch2 + 8 * i2);
+                if (!c2 || !*(uint8_t *)(c2 + 0x50)) continue;
+                const char *cn2 = (const char *)*(uint64_t *)(c2 + 8); if (cn2 && !strcmp(cn2, "Icon")) ich = c2; }
+            if (ich) { float ir[4] = {0, 0, 0, 0}; dm_widget_rect_ui(ich, vw, vh, ir);
+                if (ir[2] > ir[0] && ir[3] > ir[1]) {
+                    float h = ir[3] - ir[1], w = ir[2] - ir[0];
+                    rr[0] = ir[0]; rr[2] = ir[2]; rr[1] = ir[3] + h * 0.02f; rr[3] = ir[3] + h * 0.22f; } } }
         const char *ts = (const char *)*(uint64_t *)(name + 0x88); uint64_t tl = *(uint64_t *)(name + 0x90);
         if (rr[2] > rr[0] && rr[3] > rr[1] && ts && tl > 0 && tl < 63) {
             char buf[64]; memcpy(buf, ts, (size_t)tl); buf[tl] = 0;
