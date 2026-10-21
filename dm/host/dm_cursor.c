@@ -2875,6 +2875,27 @@ static uint64_t dm_widget_named_text(module_t *m, uint64_t w, const char *name, 
 static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
     if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return;
     if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
+    if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
+        // 英文界面：把 "Attack\nDamage" / "Attack\nRating" 的换行去掉（中文那条下面照旧处理）
+        {
+            uint8_t *es = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t elen = *(uint64_t *)(w + 0x90);
+            if (es && elen > 8 && elen < 96) {
+                uint64_t nl = UINT64_MAX;
+                for (uint64_t q = 0; q + 6 <= elen && q < 24; q++) if (!memcmp(es + q, "Attack", 6)) {
+                    uint64_t r2 = q + 6; if (r2 < elen && (es[r2] == '\n' || es[r2] == '\r')) { nl = r2; break; } break; }
+                if (nl != UINT64_MAX) {
+                    size_t skip = (nl + 1 < elen && es[nl] == '\r' && es[nl + 1] == '\n') ? 2 : 1;
+                    uint8_t eb[128]; uint64_t en = elen - skip;
+                    memcpy(eb, es, (size_t)nl); memcpy(eb + nl, es + nl + skip, (size_t)(elen - nl - skip)); eb[en] = 0;
+                    ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, (const char *)eb, en);
+                    ((void (*)(uint64_t))(m->base + 0xadc434))(w);
+                    int32_t *er = (int32_t *)(uintptr_t)(w + 0x70);
+                    if (er[2] < 420) { er[2] = 420; ((void (*)(uint64_t))(m->base + 0xadc434))(w); }
+                    static int elog; if (elog++ < 6) LOG("角色属性栏：英文 Attack 标题的换行已去掉，宽度放到 %d", er[2]);
+                }
+            }
+        }
+
         static const uint8_t attack[] = {0xe6,0x94,0xbb,0xe5,0x87,0xbb};     // 攻击
         static const uint8_t damage[] = {0xe4,0xbc,0xa4,0xe5,0xae,0xb3};     // 伤害
         uint8_t *s = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t len = *(uint64_t *)(w + 0x90);
@@ -2991,6 +3012,35 @@ static uint64_t dm_widget_best_merc_name(module_t *m, uint64_t w, int dep, int *
     return found;
 }
 
+// 本地改动：左上角佣兵名字改由覆盖层重画（宿主负责把游戏原文清空，避免出现两份）。
+// Local change: the mercenary name is redrawn by the overlay; the host clears the game's own copy so only one shows.
+static _Atomic float g_merc_rect[4];
+static char g_merc_txt[64]; static _Atomic int g_merc_len, g_merc_band = -1;
+int dm_merc_overlay(float r[4], char *txt2, int *len, int *band) {
+    int b = atomic_load(&g_merc_band); if (b < 0) return 0;
+    for (int i = 0; i < 4; i++) r[i] = atomic_load(&g_merc_rect[i]);
+    int n = atomic_load(&g_merc_len); if (n < 0) n = 0; if (n > 63) n = 63;
+    for (int i = 0; i < n; i++) txt2[i] = g_merc_txt[i]; txt2[n] = 0;
+    *len = n; *band = b; return 1;
+}
+int dm_merc_overlay_band(void) { return atomic_load(&g_merc_band); }
+static void dm_widget_rect_ui(uint64_t w, int32_t vw, int32_t vh, float out[4]) {
+    uint64_t f = *(uint64_t *)(*(uint64_t *)w + 0x48);
+    int (*hit)(uint64_t, uint64_t) = (int (*)(uint64_t, uint64_t))f;
+    if (!hit || vw <= 0 || vh <= 0) return;
+    int sx = -1, sy = -1;
+    for (int gy = 1; gy < 40 && sy < 0; gy++)
+        for (int gx = 1; gx < 40; gx++) { int x = vw * gx / 40, y = vh * gy / 40;
+            if (hit(w, (uint32_t)x | ((uint64_t)(uint32_t)y << 32)) & 1) { sx = x; sy = y; break; } }
+    if (sx < 0) return;
+    int x0 = 0, x1 = vw - 1, y0 = 0, y1 = vh - 1;
+    { int lo = 0, hi = sx; while (lo < hi) { int m = (lo + hi) / 2; if (hit(w, (uint32_t)m | ((uint64_t)(uint32_t)sy << 32)) & 1) hi = m; else lo = m + 1; } x0 = lo; }
+    { int lo = sx, hi = vw - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hit(w, (uint32_t)m | ((uint64_t)(uint32_t)sy << 32)) & 1) lo = m; else hi = m - 1; } x1 = lo; }
+    { int lo = 0, hi = sy; while (lo < hi) { int m = (lo + hi) / 2; if (hit(w, (uint32_t)sx | ((uint64_t)(uint32_t)m << 32)) & 1) hi = m; else lo = m + 1; } y0 = lo; }
+    { int lo = sy, hi = vh - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hit(w, (uint32_t)sx | ((uint64_t)(uint32_t)m << 32)) & 1) lo = m; else hi = m - 1; } y1 = lo; }
+    out[0] = (float)x0 / vw; out[1] = (float)y0 / vh; out[2] = (float)x1 / vw; out[3] = (float)y1 / vh;
+}
+
 static void dm_merc_name_tint(module_t *m, uint64_t root) {
     static dm_wref cached_name;
     static int original_rgb[3], have_original;
@@ -3033,21 +3083,20 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
         dm_wref_set(&cached_name, name);
         int32_t *c = (int32_t *)(uintptr_t)(name + 0xbc); for (int i = 0; i < 3; i++) original_rgb[i] = c[i]; have_original = 1;
     }
-    static int cached_hp_pct = -1; static uint64_t next_hp_read;
-    uint64_t frame = dm_guest_frame();
-    if (frame >= next_hp_read) { int dm_merc_hp_pct(void); cached_hp_pct = dm_merc_hp_pct(); next_hp_read = frame + 4; }
-    int color[3], bucket;
-    if (cached_hp_pct < 0) memcpy(color, original_rgb, sizeof color);
-    if (cached_hp_pct >= 75) { bucket = 3; color[0] = 64; color[1] = 217; color[2] = 89; }
-    else if (cached_hp_pct >= 50) { bucket = 2; color[0] = 242; color[1] = 217; color[2] = 51; }
-    else if (cached_hp_pct >= 25) { bucket = 1; color[0] = 242; color[1] = 140; color[2] = 38; }
-    else if (cached_hp_pct >= 0) { bucket = 0; color[0] = 230; color[1] = 51; color[2] = 38; }
-    else { bucket = -1; memcpy(color, original_rgb, sizeof color); }
-    int32_t *live_rgb = (int32_t *)(uintptr_t)(name + 0xbc); int before_rgb[3] = {live_rgb[0],live_rgb[1],live_rgb[2]};
-    dm_text_rgb(m, name, color);
-    { static uint64_t next_color_trace; if (frame >= next_color_trace) { next_color_trace = frame + 300; live_rgb = (int32_t *)(uintptr_t)(name + 0xbc);
-        LOG("佣兵控件追踪：名字控件=%p 血量=%d%% RGB 写前=%d,%d,%d 目标=%d,%d,%d 写后=%d,%d,%d",
-            (void *)(uintptr_t)name, cached_hp_pct, before_rgb[0], before_rgb[1], before_rgb[2], color[0], color[1], color[2], live_rgb[0], live_rgb[1], live_rgb[2]); } }
+    // 采集名字文本与矩形 → 清空游戏原文 → 覆盖层按血量档重画（只留一份）
+    {
+        float rr[4] = {0, 0, 0, 0};
+        module_t *mm = main_module(); int32_t vw = mm ? *(int32_t *)(mm->base + 0x211da38) : 0, vh = mm ? *(int32_t *)(mm->base + 0x211da3c) : 0;
+        dm_widget_rect_ui(name, vw, vh, rr);
+        const char *ts = (const char *)*(uint64_t *)(name + 0x88); uint64_t tl = *(uint64_t *)(name + 0x90);
+        if (rr[2] > rr[0] && rr[3] > rr[1] && ts && tl > 0 && tl < 63) {
+            char buf[64]; memcpy(buf, ts, (size_t)tl); buf[tl] = 0;
+            for (int i = 0; i < 4; i++) atomic_store(&g_merc_rect[i], rr[i]);
+            memcpy(g_merc_txt, buf, (size_t)tl + 1); atomic_store(&g_merc_len, (int)tl);
+            atomic_store(&g_merc_band, cached_hp_pct >= 75 ? 3 : cached_hp_pct >= 50 ? 2 : cached_hp_pct >= 25 ? 1 : cached_hp_pct >= 0 ? 0 : -1);
+            char *w2 = (char *)(uintptr_t)*(uint64_t *)(name + 0x88); if (w2) { w2[0] = 0; *(uint64_t *)(name + 0x90) = 0; }   // 清空游戏原文 | hide the game copy
+        } else atomic_store(&g_merc_band, -1);
+    }
     static uint64_t last_logged_name; static int last_logged_bucket = -2;
     if (last_logged_name != name || last_logged_bucket != bucket) {
         last_logged_name = name; last_logged_bucket = bucket;

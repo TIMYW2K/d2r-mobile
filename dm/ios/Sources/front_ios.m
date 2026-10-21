@@ -521,6 +521,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
         dm_tc_resize(&_controls,self.bounds.size.width,self.bounds.size.height);[_overlay setNeedsDisplay];
     }
     hud_stack_watch();
+    { extern int dm_merc_overlay_band(void); static int last=-2; int b=dm_merc_overlay_band(); if(b!=last){ last=b; [_overlay setNeedsDisplay]; } }   // 佣兵名字血量档变化时重画 | repaint when the merc HP band changes
     { dm_hud_info h, o=_overlay.hud; dm_hud_get(&h); h.x=h.y=0; if (memcmp(&h,&o,sizeof h)) { _overlay.hud=h; [_overlay setNeedsDisplay]; } }   // 覆盖层不画玩家坐标：不清掉的话走路时每个逻辑拍都判「变了」、整层全屏重画一遍 | The overlay does not draw player coordinates: without clearing them, every logic tick while walking would be judged "changed" and redraw the whole layer fullscreen
     dm_tg_snapshot snapshot={0};
     dm_touch_game_snapshot(&snapshot);
