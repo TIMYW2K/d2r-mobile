@@ -3145,7 +3145,7 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
 #define DM_HUD_NAME_MAX 4
 static struct { float r[4]; char txt[40]; int len; int band; _Atomic int has; } g_hud_names[DM_HUD_NAME_MAX];
 static _Atomic int g_hud_names_n;
-static int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
+int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
     if (k < 0 || k >= DM_HUD_NAME_MAX) return 0;
     int has = atomic_load(&g_hud_names[k].has); if (!has) return 0;
     for (int i = 0; i < 4; i++) r[i] = g_hud_names[k].r[i];
@@ -3153,7 +3153,7 @@ static int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
     for (int i = 0; i < n; i++) txt[i] = g_hud_names[k].txt[i]; txt[n] = 0;
     *len = n; *band = g_hud_names[k].band; return 1;
 }
-static int dm_hud_names_count(void) { return atomic_load(&g_hud_names_n); }
+int dm_hud_names_count(void) { return atomic_load(&g_hud_names_n); }
 static void dm_hud_names_pump(module_t *m, uint64_t root) {
     extern int dm_front_navigation(void);
     if (!m || !root) return;
