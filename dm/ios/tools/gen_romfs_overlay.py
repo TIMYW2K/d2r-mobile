@@ -250,11 +250,17 @@ with tempfile.TemporaryDirectory() as t:
     def _tc_noscroll(rel):
         b=bytearray(dmx.get(rel)); N=struct.unpack_from('<I',b,0)[0]; ROW=(len(b)-4)//N
         assert N>0 and 4+N*ROW==len(b), (rel,len(b),N,ROW)
-        n=0; rows={}
+        n=0; rows={}; duriel_nodrop=0
         for i in range(N):
             off=4+i*ROW
             row_name=bytes(b[off:off+32]).split(b'\x00')[0]
             if row_name: rows[row_name]=off
+            # Keep Duriel's original treasure-class graph and item selection, but
+            # remove empty-pick weight from the normal and quest repeat-kill paths.
+            # The game reads the compiled .bin; +68 is its NoDrop u32 (Item1 starts at +72).
+            if row_name in (b'Duriel - Base',b'Durielq - Base'):
+                struct.pack_into('<I',b,off+68,0)
+                duriel_nodrop+=1
             for k in range(10):
                 so=off+72+64*k
                 if bytes(b[so:so+32]).split(b'\x00')[0] in (b'tsc',b'isc'):
@@ -276,21 +282,23 @@ with tempfile.TemporaryDirectory() as t:
                         output=True; break
             if not route or not output:
                 raise ValueError('%s compiled treasure-class route has no weighted item output' % root.decode())
-        return bytes(b),n,N,ROW
+        if duriel_nodrop != 2:
+            raise ValueError('normal Act II Duriel compiled treasure classes not found: %d/2' % duriel_nodrop)
+        return bytes(b),n,N,ROW,duriel_nodrop
     _tcstats=[]
     for _rel,_fn in (('data/global/excel/TreasureClassEx.bin','tc_treasureclassex.bin'),
                      ('data/global/excel/base/TreasureClassEx.bin','tc_base_treasureclassex.bin')):
-        try: _raw,_n,_N,_ROW=_tc_noscroll(_rel)
+        try: _raw,_n,_N,_ROW,_duriel=_tc_noscroll(_rel)
         except Exception as _e: raise SystemExit('掉落表：取不到原版 %s（%s）；覆盖层没生成，不能按旧包出包' % (_rel,_e))
         open(os.path.join(t,_fn),'wb').write(_raw)
         REPL[_rel.lower()]=_fn
-        _tcstats.append((_rel,_N,_n,len(_raw)))
-        print('掉落表：%s 清零 %d 个 tsc/isc 槽（%d 行，行宽 %d，%d 字节）' % (_rel,_n,_N,_ROW,len(_raw)))
+        _tcstats.append((_rel,_N,_n,len(_raw),_duriel))
+        print('掉落表：%s 清零 %d 个 tsc/isc 槽、督瑞尔普通/任务 NoDrop 清零 %d 行（%d 行，行宽 %d，%d 字节）' % (_rel,_n,_duriel,_N,_ROW,len(_raw)))
     n0,z0=emit(REPL,out,'')
     # 出包核对标记：本包确实从原版 RomFS 现算了卷轴表（两张表的行数与清零槽数），只做记录、宿主不读。
     # Mark of what was shipped: this package indeed derived the scroll tables from the original RomFS (row counts and zeroed
     # slot counts of the two tables); it is a record only and the host does not read it.
-    open(os.path.join(out,'tc_noscroll'),'w').write(''.join('%s rows=%d slots_tsc_isc_zeroed=%d bytes=%d\n' % s for s in _tcstats))
+    open(os.path.join(out,'tc_noscroll'),'w').write(''.join('%s rows=%d slots_tsc_isc_zeroed=%d duriel_nodrop_zeroed=%d bytes=%d\n' % s for s in _tcstats))
     # 本地改动：把中文字体子集放进覆盖层目录（App 只带这一份；宿主 hle_fs.c 在 OpenFile 里替换 CJK 字体）
     # Local change: put the Chinese font subset into the overlay directory (single copy in the app; the host
     # hle_fs.c redirects CJK font opens to it).

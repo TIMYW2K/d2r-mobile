@@ -986,11 +986,64 @@ static struct { uint64_t G; int have, den; uint8_t umin, umax; } g_reg[140];
 static int32_t *region_of(uint64_t G, int lv, uint8_t **umin, uint8_t **umax) { uint64_t r = lv > 0 && lv < 140 ? rd(G + 0x1d0 + 8ull * lv) : 0; if (!r) return 0;
     if (g_reg[lv].G != G || !g_reg[lv].have) { g_reg[lv].G = G; g_reg[lv].have = 1; g_reg[lv].den = *(int32_t *)(uintptr_t)(r + 0x2c4); g_reg[lv].umin = *(uint8_t *)(uintptr_t)(r + 0x2c8); g_reg[lv].umax = *(uint8_t *)(uintptr_t)(r + 0x2c9); }
     *umin = (uint8_t *)(uintptr_t)(r + 0x2c8); *umax = (uint8_t *)(uintptr_t)(r + 0x2c9); return (int32_t *)(uintptr_t)(r + 0x2c4); }
-// 难度档 = 怪物密度：按人数档线性放大本关的刷怪密度（1 档 = 原版；8 档 = ×4，即 +300%）。
+// 难度档 = 怪物密度：按人数档线性放大本关的刷怪密度（1 档 = 原版；8 档 = ×5，即 +400%）。
 // 游戏在刷怪时自己会把密度夹到 10000，这里也照夹；秘境局里密度由秘境自己管，这里不动。
 // Difficulty = monster density: scale this level's spawn density linearly with the players setting
-// (1 = original, 8 = x4 i.e. +300%). The game itself clamps density to 10000 when spawning; do the same here.
+// (1 = original, 8 = x5 i.e. +400%). The game itself clamps density to 10000 when spawning; do the same here.
 // Rift runs manage their own density and are left alone.
+// Difficulty adds health on top of the game's native /players scaling: tier 1 = unchanged,
+// tier 8 = 2x the native max life. Keep each monster's unscaled base stat so a setting change
+// recalculates from that value rather than compounding once per tick.
+#define DIFF_HP_SLOTS 8192
+typedef struct { uint32_t id, seen; int base, written; } diff_hp_entry;
+static diff_hp_entry g_diff_hp[DIFF_HP_SLOTS];
+static uint64_t g_diff_hp_game;
+static uint32_t g_diff_hp_tick;
+static int g_diff_hp_logged_tier = -1, g_diff_hp_logged;
+int dm_diff_mon_hp_apply(uint64_t G, int players) {
+    if (!G || !B || players < 1 || players > 8 || atomic_load(&K.st) == ST_RUN) return 0;
+    uint32_t t = tick_of(G);
+    if (G != g_diff_hp_game || t < g_diff_hp_tick) {
+        memset(g_diff_hp, 0, sizeof g_diff_hp); g_diff_hp_game = G; g_diff_hp_logged_tier = -1; g_diff_hp_logged = 0;
+    }
+    g_diff_hp_tick = t;
+    if (g_diff_hp_logged_tier != players) { g_diff_hp_logged_tier = players; g_diff_hp_logged = 0; }
+    const int mul = 1000 + (players - 1) * 1000 / 7;  // 1.00× at tier 1, 2.00× at tier 8
+    int changed = 0;
+    for (int b = 0; b < 128; b++) {
+        for (uint64_t u = rd(G + 0x2630 + 8 * b), steps = 0; u && steps++ < 4096; u = rd(u + 0x158)) {
+            if (*(uint32_t *)(uintptr_t)u != 1) continue;
+            uint32_t id = *(uint32_t *)(uintptr_t)(u + 8), mode = *(uint32_t *)(uintptr_t)(u + 0xc);
+            if (!id || mode == 0 || mode == 12 || unit_align(u) != 0) continue;
+            uint32_t slot = id & (DIFF_HP_SLOTS - 1); diff_hp_entry *e = NULL;
+            for (uint32_t probe = 0; probe < DIFF_HP_SLOTS; probe++) {
+                diff_hp_entry *q = &g_diff_hp[(slot + probe) & (DIFF_HP_SLOTS - 1)];
+                if (q->id == id) { e = q; break; }
+                if (!q->id) { if (players > 1) { e = q; e->id = id; e->base = gsb(u, 7); e->written = e->base; } break; }
+                if (players > 1 && t - q->seen > 600) { e = q; e->id = id; e->base = gsb(u, 7); e->written = e->base; break; }
+            }
+            if (!e) continue;
+            e->seen = t;
+            int base_now = gsb(u, 7);
+            if (base_now <= 0) continue;
+            if (base_now != e->written) e->base = base_now;  // game-side stat change; use it as the new baseline
+            int64_t wanted64 = (int64_t)e->base * mul / 1000;
+            if (wanted64 > INT32_MAX) wanted64 = INT32_MAX;
+            int wanted = (int)wanted64;
+            if (wanted == base_now) { e->written = base_now; continue; }
+            int old_max = base_now, old_hp = gsb(u, 6);
+            if (old_max <= 0 || old_hp <= 0) continue;
+            ss(u, 7, wanted);
+            int64_t new_hp = (int64_t)old_hp * wanted / old_max;
+            if (new_hp > wanted) new_hp = wanted;
+            ss(u, 6, (int)new_hp);
+            e->written = gsb(u, 7); changed++;
+            if (g_diff_hp_logged++ < 8) LOG("难度生命：怪 id %u 类号 %u 基础生命 %d → %d（难度档 %d，额外 ×%.2f；原版人数档生命倍率仍保留）", id, *(uint32_t *)(uintptr_t)(u + 4), e->base >> 8, e->written >> 8, players, (double)mul / 1000.0);
+        }
+    }
+    return changed;
+}
+
 int dm_diff_den_apply(uint64_t G, int lv, int players) {
     if (!G || lv <= 0 || lv >= 140 || players < 1 || players > 8) return 0;
     if (atomic_load(&K.st) == ST_RUN) return 0;                 // 秘境进行中：密度归秘境管 | Rift run: density belongs to the Rift
@@ -998,13 +1051,13 @@ int dm_diff_den_apply(uint64_t G, int lv, int players) {
     if (!den) return 0;
     int base = g_reg[lv].den;
     if (base <= 0) return 0;
-    int target = (int)((int64_t)base * (7 + 3 * (players - 1)) / 7);  // 1档=base，8档=4×base | 1 = base, 8 = 4x base
-    if (target > 10000) target = 10000;
+    int64_t target64 = (int64_t)base * (7 + 4 * (players - 1)) / 7;
+    int target = target64 > 10000 ? 10000 : (int)target64;  // 1档=base，8档=5×base | 1 = base, 8 = 5x base
     if (*den != target) {
         *den = target;
         static int llv = -1, lp = -1;
         if (lv != llv || players != lp) { llv = lv; lp = players;
-            LOG("难度密度：关卡 %d 怪物密度 %d → %d（难度档 %d，+%d%%）", lv, base, target, players, (players - 1) * 300 / 7); }
+            LOG("难度密度：关卡 %d 怪物密度 %d → %d（难度档 %d，+%d%%）", lv, base, target, players, (players - 1) * 400 / 7); }
     }
     return 1;
 }

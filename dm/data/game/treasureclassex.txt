@@ -807,7 +807,7 @@ Andarielq (H) Desecrated E	20	87	-1					0	Andarielq Item (H) Desecrated E	1					
 Andarielq (H) Desecrated F	20	90	-1					0	Andarielq Item (H) Desecrated F	1																												0
 Andarielq (H) Desecrated G	20	93	-1					0	Andarielq Item (H) Desecrated G	1																												0
 Andarielq (H) Desecrated H	20	96	-1					0	Andarielq Item (H) Desecrated H	1																												0
-Duriel - Base			7	983	983	983	1024	19	"gld,mul=1280"	11	Act 3 Equip A	19	Act 3 Junk	15	Act 3 Good	3																						0
+Duriel - Base			7	983	983	983	1024	0	"gld,mul=1280"	11	Act 3 Equip A	19	Act 3 Junk	15	Act 3 Good	3																						0
 Duriel - Base Desecrated A			7	983	983	983	1024	19	"gld,mul=1280"	11	Act 3 Equip B	19	Act 3 Junk	15	Act 3 Good	3																						0
 Duriel - Base Desecrated B			7	983	983	983	1024	19	"gld,mul=1280"	11	Act 5 Equip B	19	Act 5 Junk	15	Act 5 Good	3																						0
 Duriel - Base Desecrated C			7	983	983	983	1024	19	"gld,mul=1280"	11	Act 3 (N) Equip A	19	Act 3 (N) Junk	15	Act 3 (N) Good	3																						0
@@ -820,7 +820,7 @@ Duriel (H) - Base Desecrated A			7	983	983	983	1024	49	"gld,mul=2048"	27	Act 4 (
 Duriel (H) - Base Desecrated B			7	983	983	983	1024	49	"gld,mul=2048"	27	Act 5 (H) Equip A	49	Act 5 (H) Junk	40	Act 5 (H) Good	8	tes	7	Ancient Statue 2	2																		0
 Duriel (H) - Base Desecrated C			7	983	983	983	1024	49	"gld,mul=2048"	27	Act 5 (H) Equip B	49	Act 5 (H) Junk	40	Act 5 (H) Good	8	tes	7	Ancient Statue 2	2																		0
 Duriel (H) - Base Desecrated D			7	983	983	983	1024	49	"gld,mul=2048"	27	Act 5 (H) Equip C	49	Act 5 (H) Junk	40	Act 5 (H) Good	8	tes	7	Ancient Statue 2	2																		0
-Durielq - Base			7	993	993	1024	1024	19	Act 3 Equip A	19	Act 3 Good	3																										0
+Durielq - Base			7	993	993	1024	1024	0	Act 3 Equip A	19	Act 3 Good	3																										0
 Durielq (N) - Base			7	993	993	1024	1024	19	Act 3 (N) Equip A	19	Act 3 (N) Good	3																										0
 Durielq (H) - Base			7	993	993	1024	1024	19	Act 3 (H) Equip A	19	Act 3 (H) Good	3	tes	2																								0
 Radament			5	900	900	900	1024	19	"gld,mul=1280"	11	Act 3 Equip B	19	Act 3 Junk	15	Act 3 Good	3																						0

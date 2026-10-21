@@ -18,6 +18,8 @@
 #include <stdatomic.h>
 #include <math.h>
 
+int dm_merc_hp_pct(void);
+
 static module_t *main_module(void) {
     for (int i = 0; i < g_nmod; ++i)
         if (!strcmp(g_mod[i].name, "main")) return &g_mod[i];
@@ -2876,17 +2878,27 @@ static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
         static const uint8_t attack[] = {0xe6,0x94,0xbb,0xe5,0x87,0xbb};     // 攻击
         static const uint8_t damage[] = {0xe4,0xbc,0xa4,0xe5,0xae,0xb3};     // 伤害
         uint8_t *s = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t len = *(uint64_t *)(w + 0x90);
-        if (s && len >= sizeof attack + 1 + sizeof damage && len < 256) {
-            for (uint64_t i = 0; i + sizeof attack + 1 + sizeof damage <= len; i++) {
-                if (memcmp(s + i, attack, sizeof attack)) continue;
-                uint64_t nl = i + sizeof attack; size_t skip = s[nl] == '\r' && nl + 1 < len && s[nl + 1] == '\n' ? 2 : s[nl] == '\n' || s[nl] == '\r' ? 1 : 0;
-                if (!skip || nl + skip + sizeof damage > len || memcmp(s + nl + skip, damage, sizeof damage)) continue;
-                uint8_t compact[256]; uint64_t compact_len = len - skip;
-                memcpy(compact, s, (size_t)nl);
-                memcpy(compact + nl, s + nl + skip, (size_t)(len - nl - skip));
-                compact[compact_len] = 0;
-                ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, (const char *)compact, compact_len);
-                ((void (*)(uint64_t))(m->base + 0xadc434))(w); break;  // 用原版字符串与排版入口移除换行，不动字号 | Use the game's string and layout APIs to remove the newline without changing font size
+        if (s && len >= sizeof attack + sizeof damage && len < 256) {
+            uint64_t ai = UINT64_MAX, di = UINT64_MAX;
+            for (uint64_t i = 0; i + sizeof attack <= len; i++) if (!memcmp(s + i, attack, sizeof attack)) { ai = i; break; }
+            for (uint64_t i = 0; i + sizeof damage <= len; i++) if (!memcmp(s + i, damage, sizeof damage)) { di = i; break; }
+            if (ai != UINT64_MAX && di != UINT64_MAX) {
+                uint64_t nl = ai + sizeof attack;
+                size_t skip = nl < len && s[nl] == '\r' && nl + 1 < len && s[nl + 1] == '\n' ? 2 : nl < len && (s[nl] == '\n' || s[nl] == '\r') ? 1 : 0;
+                if (skip && di == nl + skip) {
+                    uint8_t compact[256]; uint64_t compact_len = len - skip;
+                    memcpy(compact, s, (size_t)nl);
+                    memcpy(compact + nl, s + nl + skip, (size_t)(len - nl - skip));
+                    compact[compact_len] = 0;
+                    ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, (const char *)compact, compact_len);
+                    s = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); len = *(uint64_t *)(w + 0x90);
+                    ((void (*)(uint64_t))(m->base + 0xadc434))(w);
+                    static int newline_log; if (newline_log++ < 4) LOG("角色属性栏：攻击伤害标题的显式换行已移除，字号不变");
+                }
+                // Give the four-character title enough room on one line; leave the font and numeric value untouched.
+                int32_t *rect = (int32_t *)(uintptr_t)(w + 0x70);
+                if (rect[2] < 320) { int oldw = rect[2]; rect[2] = 320; ((void (*)(uint64_t))(m->base + 0xadc434))(w);
+                    static int width_log; if (width_log++ < 4) LOG("角色属性栏：攻击伤害标题文本框宽度 %d → %d；沿用原字体样式", oldw, rect[2]); }
             }
         }
     }
@@ -2915,33 +2927,104 @@ static int dm_widget_name_role(const char *nm) {
     return 0;
 }
 
-static uint64_t dm_widget_text_walk(module_t *m, uint64_t w, int dep, int name_only) {
-    if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return 0;
+typedef struct { int nodes, exact_name, visible_name, text_nodes; } dm_merc_trace_stats;
+static uint64_t dm_merc_tree_signature(uint64_t w, int dep, int *budget, uint64_t h) {
+    if (!w || dep > 8 || *budget <= 0) return h;
+    (*budget)--;
     const char *nm = (const char *)*(uint64_t *)(w + 8);
-    if (dm_widget_has_text(m, w) && (!name_only || dm_widget_name_role(nm))) return w;
+    uint64_t n = *(uint64_t *)(w + 0x60), vt = *(uint64_t *)w;
+    h ^= w ^ (vt >> 4) ^ ((uint64_t)*(uint8_t *)(w + 0x50) << 48) ^ (n << 16); h *= 0x100000001b3ull;
+    if (nm) for (int i = 0; i < 64 && nm[i]; i++) { h ^= (uint8_t)nm[i]; h *= 0x100000001b3ull; }
+    uint64_t ch = *(uint64_t *)(w + 0x58);
+    if (!ch || n > 256) return h;
+    for (uint64_t i = 0; i < n && *budget > 0; i++) h = dm_merc_tree_signature(*(uint64_t *)(ch + 8 * i), dep + 1, budget, h);
+    return h;
+}
+static void dm_merc_tree_trace(module_t *m, uint64_t w, int dep, int visible_path, dm_merc_trace_stats *st) {
+    if (!m || !w || dep > 8 || st->nodes >= 96) return;
+    st->nodes++;
+    int self_visible = *(uint8_t *)(w + 0x50) != 0, path_visible = visible_path && self_visible;
+    const char *nm = (const char *)*(uint64_t *)(w + 8); if (!nm) nm = "?";
+    uint64_t vt = dm_widget_vt((const uint8_t *)m->base, w), n = *(uint64_t *)(w + 0x60), ch = *(uint64_t *)(w + 0x58);
+    int32_t *r = (int32_t *)(uintptr_t)(w + 0x70); int rgb[3] = {0,0,0}; char value[65] = "-";
+    if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
+        st->text_nodes++; int32_t *c = (int32_t *)(uintptr_t)(w + 0xbc); rgb[0] = c[0]; rgb[1] = c[1]; rgb[2] = c[2];
+        const char *s = (const char *)*(uint64_t *)(w + 0x88); uint64_t len = *(uint64_t *)(w + 0x90);
+        if (s && len) { size_t k = (size_t)(len < sizeof value - 1 ? len : sizeof value - 1); memcpy(value, s, k); value[k] = 0; }
+        if (!strcmp(nm, "Name")) { st->exact_name++; if (path_visible && value[0] != '-') st->visible_name++; }
+    }
+    LOG("佣兵控件追踪：#%d 深度%d 可见=%d/%d 虚表 main+%#llx 名称=%s 文本=%s 矩形=%d,%d,%d,%d RGB=%d,%d,%d 子项=%llu",
+        st->nodes, dep, self_visible, path_visible, (unsigned long long)vt, nm, value, r[0], r[1], r[2], r[3], rgb[0], rgb[1], rgb[2], (unsigned long long)n);
+    if (!ch || n > 256) return;
+    for (uint64_t i = 0; i < n && st->nodes < 96; i++) dm_merc_tree_trace(m, *(uint64_t *)(ch + 8 * i), dep + 1, path_visible, st);
+}
+
+static int dm_widget_merc_name_score(module_t *m, uint64_t w) {
+    if (!dm_widget_has_text(m, w)) return 0;
+    const char *nm = (const char *)*(uint64_t *)(w + 8), *s = (const char *)*(uint64_t *)(w + 0x88);
+    uint64_t len = *(uint64_t *)(w + 0x90); if (!s || len > 80) return 0;
+    if (dm_widget_name_role(nm)) return 1000;
+    char value[81]; memcpy(value, s, (size_t)len); value[len] = 0;
+    if (strstr(value, "佣兵") || strstr(value, "雇佣") || strstr(value, "等级") || strstr(value, "生命") ||
+        strstr(value, "Mercenary") || strstr(value, "Hireling") || strstr(value, "Level")) return 0;
+    for (uint64_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)value[i];
+        if ((c >= '0' && c <= '9') || c == '\n' || c == '\r' || c == '\t' || c == ' ' || c == '%') return 0;
+        if (c < 0x80 && !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' || c == '\'')) return 0;
+    }
+    int score = 100 + (int)len;
+    if (nm && (strstr(nm, "Hire") || strstr(nm, "hire") || strstr(nm, "Merc") || strstr(nm, "merc"))) score += 40;
+    return score;
+}
+
+static uint64_t dm_widget_best_merc_name(module_t *m, uint64_t w, int dep, int *best) {
+    if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return 0;
+    uint64_t found = 0; int score = dm_widget_merc_name_score(m, w);
+    if (score > *best) { *best = score; found = w; }
     uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60);
-    if (!ch || n > 256) return 0;
-    for (uint64_t i = 0; i < n; i++) { uint64_t found = dm_widget_text_walk(m, *(uint64_t *)(ch + 8 * i), dep + 1, name_only); if (found) return found; }
-    return 0;
+    if (!ch || n > 256) return found;
+    for (uint64_t i = 0; i < n; i++) {
+        uint64_t child = *(uint64_t *)(ch + 8 * i); int before = *best;
+        uint64_t candidate = dm_widget_best_merc_name(m, child, dep + 1, best);
+        if (*best > before) found = candidate;
+    }
+    return found;
 }
 
 static void dm_merc_name_tint(module_t *m, uint64_t root) {
     static dm_wref cached_name;
     static int original_rgb[3], have_original;
-    uint64_t hire = ui_panel(root, "HireablesPanel"), name = 0;
+    uint64_t hire = ui_panel(root, "HireablesPanel"), name = 0; int best_name_score = 0;
     if (hire && *(uint8_t *)(hire + 0x50)) {
         uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
-        if (ch && n <= 256) {
-            // Prefer the game's exact Name field, then a name-labelled text widget. The portrait template has
-            // changed widget names between builds, so only then fall back to its first visible text leaf.
-            for (uint64_t i = 0; i < n && !name; i++) { uint64_t entry = *(uint64_t *)(ch + 8 * i); if (entry) name = dm_widget_named_text(m, entry, "Name", 1); }
-            for (uint64_t i = 0; i < n && !name; i++) { uint64_t entry = *(uint64_t *)(ch + 8 * i); if (entry) name = dm_widget_text_walk(m, entry, 1, 1); }
-            for (uint64_t i = 0; i < n && !name; i++) { uint64_t entry = *(uint64_t *)(ch + 8 * i); if (entry) name = dm_widget_text_walk(m, entry, 1, 0); }
+        for (uint64_t i = 0; ch && i < n && i < 256 && !name; i++) name = dm_widget_named_text(m, *(uint64_t *)(ch + 8 * i), "Name", 1);
+        if (name) best_name_score = 1000;
+        if (!name) name = dm_widget_best_merc_name(m, hire, 0, &best_name_score);
+    }
+    if (hire && *(uint8_t *)(hire + 0x50)) {
+        static uint64_t last_panel, last_signature, next_signature_scan, next_missing_trace;
+        uint64_t fr = dm_guest_frame(), sig = last_signature; int scan = hire != last_panel || fr >= next_signature_scan;
+        if (scan) { int budget = 96; sig = dm_merc_tree_signature(hire, 0, &budget, 0xcbf29ce484222325ull); next_signature_scan = fr + 60; }
+        int dump = hire != last_panel || (scan && sig != last_signature) || (!name && fr >= next_missing_trace);
+        if (dump) {
+            dm_merc_trace_stats st = {0};
+            LOG("佣兵控件追踪：面板=%p 可见=%u 直接子项=%llu 选中名字=%p 命中分=%d 树签名=%016llx",
+                (void *)(uintptr_t)hire, *(uint8_t *)(hire + 0x50), (unsigned long long)*(uint64_t *)(hire + 0x60),
+                (void *)(uintptr_t)name, best_name_score, (unsigned long long)sig);
+            dm_merc_tree_trace(m, hire, 0, 1, &st);
+            LOG("佣兵控件追踪：遍历 %d 个控件，文字框 %d 个，Name 控件 %d 个，其中可见且有文本 %d 个%s",
+                st.nodes, st.text_nodes, st.exact_name, st.visible_name,
+                name ? "；已有候选" : "；没有候选，优先检查隐藏路径、空文本或控件类型不符");
+            last_panel = hire; last_signature = sig; next_missing_trace = fr + 1200;
         }
-        if (!name) name = dm_widget_text_walk(m, hire, 0, 1);
-        if (!name) name = dm_widget_text_walk(m, hire, 0, 0);
     }
     if (!name || !dm_widget_is((const uint8_t *)m->base, name, DM_VT_TEXT)) {
+        static uint64_t next_missing_log;
+        uint64_t fr = dm_guest_frame();
+        if (hire && *(uint8_t *)(hire + 0x50) && fr >= next_missing_log) {
+            next_missing_log = fr + 300;
+            LOG("佣兵名字着色：头像栏可见，但没有找到名字型文字控件（子控件 %llu 个）", (unsigned long long)*(uint64_t *)(hire + 0x60));
+        }
         uint64_t old = dm_wref_get(&cached_name);
         if (old && have_original) dm_text_rgb(m, old, original_rgb);
         dm_wref_set(&cached_name, 0); have_original = 0; return;
@@ -2953,19 +3036,42 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
     static int cached_hp_pct = -1; static uint64_t next_hp_read;
     uint64_t frame = dm_guest_frame();
     if (frame >= next_hp_read) { int dm_merc_hp_pct(void); cached_hp_pct = dm_merc_hp_pct(); next_hp_read = frame + 4; }
-    int color[3];
+    int color[3], bucket;
     if (cached_hp_pct < 0) memcpy(color, original_rgb, sizeof color);
-    else if (cached_hp_pct >= 75) { color[0] = 64; color[1] = 217; color[2] = 89; }
-    else if (cached_hp_pct >= 50) { color[0] = 242; color[1] = 217; color[2] = 51; }
-    else if (cached_hp_pct >= 25) { color[0] = 242; color[1] = 140; color[2] = 38; }
-    else { color[0] = 230; color[1] = 51; color[2] = 38; }
+    if (cached_hp_pct >= 75) { bucket = 3; color[0] = 64; color[1] = 217; color[2] = 89; }
+    else if (cached_hp_pct >= 50) { bucket = 2; color[0] = 242; color[1] = 217; color[2] = 51; }
+    else if (cached_hp_pct >= 25) { bucket = 1; color[0] = 242; color[1] = 140; color[2] = 38; }
+    else if (cached_hp_pct >= 0) { bucket = 0; color[0] = 230; color[1] = 51; color[2] = 38; }
+    else { bucket = -1; memcpy(color, original_rgb, sizeof color); }
+    int32_t *live_rgb = (int32_t *)(uintptr_t)(name + 0xbc); int before_rgb[3] = {live_rgb[0],live_rgb[1],live_rgb[2]};
     dm_text_rgb(m, name, color);
+    { static uint64_t next_color_trace; if (frame >= next_color_trace) { next_color_trace = frame + 300; live_rgb = (int32_t *)(uintptr_t)(name + 0xbc);
+        LOG("佣兵控件追踪：名字控件=%p 血量=%d%% RGB 写前=%d,%d,%d 目标=%d,%d,%d 写后=%d,%d,%d",
+            (void *)(uintptr_t)name, cached_hp_pct, before_rgb[0], before_rgb[1], before_rgb[2], color[0], color[1], color[2], live_rgb[0], live_rgb[1], live_rgb[2]); } }
+    static uint64_t last_logged_name; static int last_logged_bucket = -2;
+    if (last_logged_name != name || last_logged_bucket != bucket) {
+        last_logged_name = name; last_logged_bucket = bucket;
+        const char *s = (const char *)*(uint64_t *)(name + 0x88); uint64_t len = *(uint64_t *)(name + 0x90); char text[80] = "";
+        if (s && len < sizeof text) { memcpy(text, s, (size_t)len); text[len] = 0; }
+        int32_t *c = (int32_t *)(uintptr_t)(name + 0xbc);
+        LOG("佣兵名字着色：文字「%s」控件「%s」虚表 main+%#llx 可见=%u，服务端生命 %d%%，颜色档 %d，RGB=%d,%d,%d，命中分 %d",
+            text, (const char *)*(uint64_t *)(name + 8), (unsigned long long)dm_widget_vt((const uint8_t *)m->base, name),
+            *(uint8_t *)(name + 0x50), cached_hp_pct, bucket, c[0], c[1], c[2], best_name_score);
+    }
 }
 
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
-    if (dm_ui_unstable()) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
+    int unstable = dm_ui_unstable();
+    { static uint64_t next_trace; uint64_t fr = dm_guest_frame(); if (fr >= next_trace) {
+        next_trace = fr + 300; uint64_t hire = ui_panel(root, "HireablesPanel"); int hp = dm_merc_hp_pct();
+        if (hp >= 0 || (hire && *(uint8_t *)(hire + 0x50)))
+            LOG("佣兵控件追踪：HUD泵运行，帧=%llu UI代号=%u unstable=%d root=%p HireablesPanel=%p visible=%d 子项=%llu 服务端HP=%d%%",
+                (unsigned long long)fr, dm_ui_gen(), unstable, (void *)(uintptr_t)root, (void *)(uintptr_t)hire,
+                hire ? *(uint8_t *)(hire + 0x50) : 0, (unsigned long long)(hire ? *(uint64_t *)(hire + 0x60) : 0), hp);
+      } }
+    if (unstable) return;
     // Search the active character panel by localized title text, since the row's widget name is not stable across layouts.
     uint64_t cs = ui_panel(root, "CharacterStatsPanel");
     if (cs && *(uint8_t *)(cs + 0x50)) dm_char_damage_titles_walk(m, cs, 0);
