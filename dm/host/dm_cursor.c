@@ -3156,10 +3156,16 @@ int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
 int dm_hud_names_count(void) { return atomic_load(&g_hud_names_n); }
 static _Atomic int g_hud_names_dim;
 int dm_hud_names_dim(void) { return atomic_load(&g_hud_names_dim); }   // 1 = 菜单打开中，覆盖层画暗一点 | 1 = menu open, draw dimmed
+// 上一拍被我们隐藏掉的名字控件：这一拍先全部恢复，再按当前可见槽位重新隐藏。
+// Widgets hidden last tick: restore them first, then hide the ones needed this tick.
+static uint64_t g_hud_names_hidden[DM_HUD_NAME_MAX];
 static void dm_hud_names_pump(module_t *m, uint64_t root) {
     extern int dm_front_navigation(void);
     if (!m || !root) return;
     static int done_log;
+    for (int k = 0; k < DM_HUD_NAME_MAX; k++) { uint64_t hw = g_hud_names_hidden[k];
+        if (hw) { *(uint8_t *)(uintptr_t)(hw + 0x50) = 1; g_hud_names_hidden[k] = 0; } atomic_store(&g_hud_names[k].has, 0); }
+    atomic_store(&g_hud_names_n, 0);
     if (dm_front_navigation()) { atomic_store(&g_hud_names_dim, 1); return; }   // 菜单打开：名字保留在原位、只画暗 | menu open: keep the names in place and draw them dimmed
     atomic_store(&g_hud_names_dim, 0);
     uint64_t hire = ui_panel(root, "HireablesPanel");
@@ -3192,7 +3198,8 @@ static void dm_hud_names_pump(module_t *m, uint64_t root) {
         g_hud_names[slot].r[2] = ir[2]; g_hud_names[slot].r[3] = ir[3] + h * 0.03f + h * 0.14f;
         memcpy(g_hud_names[slot].txt, buf, (size_t)tl + 1); g_hud_names[slot].len = (int)tl; g_hud_names[slot].band = band;
         atomic_store(&g_hud_names[slot].has, 1);
-        ts[0] = 0; *(uint64_t *)(nm + 0x90) = 0;                        // 隐藏游戏原文，只留我们这份 | hide the game's copy
+        *(uint8_t *)(uintptr_t)(nm + 0x50) = 0;                              // 控件设为不可见：游戏不再画白字，只留我们这份
+        g_hud_names_hidden[slot] = nm;
         slot++;
     }
     atomic_store(&g_hud_names_n, slot);
