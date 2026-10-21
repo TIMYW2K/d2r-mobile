@@ -237,6 +237,25 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
 - (void)drawRect:(CGRect)rect {
     (void)rect;
     CGContextRef c = UIGraphicsGetCurrentContext();
+    // 本地改动：灵动岛外圈画一圈和按钮同款金属边缘纹理（局内才画，菜单页不画）。
+    // Local change: draw a ring around the Dynamic Island using the same metal-rim texture as the buttons (in-game only).
+    if (!self.navigationMode && self->_socketV[0]) {
+        extern CGRect dm_island_rect_export(UIView *v);
+        CGRect ir = dm_island_rect_export(self);
+        if (ir.size.width > 0 && ir.size.height > 0) {
+            CGFloat w = 5.0;                                     // 环宽 | ring width
+            CGRect outer = CGRectInset(ir, -w, -w);
+            CGRect inner = ir;
+            CGFloat ro = outer.size.height * 0.5, ri = inner.size.height * 0.5;
+            UIBezierPath *pp = [UIBezierPath bezierPathWithRoundedRect:outer cornerRadius:MIN(ro, outer.size.width * 0.5)];
+            UIBezierPath *pi = [UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:MIN(ri, inner.size.width * 0.5)];
+            [pp appendPath:pi];
+            CGContextSaveGState(c); [pp addClip];
+            [self->_socketV[0] drawInRect:outer];
+            CGContextRestoreGState(c);
+        }
+    }
+
     // 本地改动：左上角佣兵名字由这里按血量档重画（宿主已清空游戏原文，所以只有这一份）。
     // Local change: draw the mercenary name here in the HP colour (the host cleared the game's copy).
     {

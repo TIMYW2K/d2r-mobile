@@ -197,6 +197,7 @@ static CGRect dm_island_rect(UIView *v) {
     CGFloat x = dm_island_on_right(v) ? W - inset - pillH : inset;
     return CGRectMake(x, (H - pillW) * 0.5, pillH, pillW);
 }
+CGRect dm_island_rect_export(UIView *v) { return dm_island_rect(v); }   // 覆盖层画岛边金属环用 | for the overlay ring
 static CGFloat const DM_ISLAND_RING = 12;            // 岛周围一圈的范围（点） | ring width around the island
 static CGRect dm_island_zone_rect(UIView *v) { return CGRectInset(dm_island_rect(v), -DM_ISLAND_RING, -DM_ISLAND_RING); }
 
