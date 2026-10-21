@@ -2404,6 +2404,91 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
       if (st && !atomic_load(&g_dg_kind)) { int hx = (int)(st >> 32), hy = (int)(st & 0xffffffffu);
           wob = !wob; dm_ui_hover_now(hx + (wob ? 2 : 0), hy); } }
 }
+
+// ---------- 本地改动：页签高亮动画测量（T2，一次性诊断） ----------
+// 症状：「页签高亮一点点跳过去」。切页这一步宿主已经是一步到位（main+0x405898 直接到目标页 + main+0xad9b80 直接选中目标页签），
+// 但玩家看到高亮分几帧缓动过去；怀疑页签条自己某个字段在缓动。这里在直接切页那一帧开始，连续 45 帧对
+//   ① 页签条 +0x0..+0x1000、② 它的前 8 个直接子控件（页签图 / 文字）+0x0..+0x100、③ 功能页面板 UISwitcher +0x180..+0x2c0
+// 做 4 字节快照差分，结束时只打印「变化过的偏移 + 首值→末值 + 变化次数 + 最后变化帧 + 前 6 个值的序列」。
+// 每次进程最多 2 组；只读、不写任何游戏控件，找不到 / 面板提前关了就直接结束。日志前缀「页签动画：」。
+// Local change: one-shot measurement of the tab highlight animation (T2 diagnostic). The page switch itself is already
+// one step (main+0x405898 to the target page plus main+0xad9b80 selecting the target tab), yet the highlight visually eases
+// over several frames, so some field of the tab bar itself is suspected. Right after a direct switch, for 45 frames, take
+// 4-byte snapshots of (1) the tab bar +0x0..+0x1000, (2) its first 8 direct children +0x0..+0x100, (3) the function page
+// panel UISwitcher +0x180..+0x2c0, and at the end log only the offsets that changed, with first -> last value, change count,
+// last-change frame and the first 6 values of the sequence. At most 2 groups per process; read-only, no game widget is
+// written, and it stops early if the bar goes away. Log prefix "页签动画：".
+#define TA_FRAMES 45
+#define TA_MAIN_W 1024
+#define TA_KIDS 8
+#define TA_KID_W 64
+#define TA_SW_OFF 0x180
+#define TA_SW_W 80
+#define TA_TOTAL (TA_MAIN_W + TA_KIDS * TA_KID_W + TA_SW_W)
+#define TA_MAXLOG 16
+static struct {
+    int on, groups, nkids, tabk, page; uint64_t fr0, until; dm_wref bar, sw;
+    uint32_t snap[TA_TOTAL], first[TA_TOTAL], hist[TA_TOTAL][6], cframe[TA_TOTAL];
+    uint16_t ccount[TA_TOTAL]; uint8_t hn[TA_TOTAL];
+} g_ta;
+static int ta_read(uint32_t *out) {   // 只许游戏主线程调；0 = 页签条不在了 | game main thread only; 0 = the tab bar is gone
+    uint64_t bar = dm_wref_get(&g_ta.bar); if (!bar || !*(uint8_t *)(bar + 0x50)) return 0;
+    uint64_t ch = *(uint64_t *)(bar + 0x58), n = *(uint64_t *)(bar + 0x60);
+    int w = 0;
+    for (int i = 0; i < TA_MAIN_W; i++) out[w++] = *(uint32_t *)(bar + 4 * i);
+    for (int k = 0; k < TA_KIDS; k++) {
+        uint64_t c = (ch && n <= 256 && (uint64_t)k < n) ? *(uint64_t *)(ch + 8 * k) : 0;
+        for (int j = 0; j < TA_KID_W; j++) out[w++] = c ? *(uint32_t *)(c + 4 * j) : 0;
+    }
+    uint64_t sw = dm_wref_get(&g_ta.sw);
+    for (int j = 0; j < TA_SW_W; j++) out[w++] = sw ? *(uint32_t *)(sw + TA_SW_OFF + 4 * j) : 0;
+    return 1;
+}
+static void dm_tab_anim_begin(uint64_t fr, uint64_t bar, uint64_t sw, int tabk, int page) {   // 直接切页成功后调 | called after a successful direct switch
+    if (!bar || g_ta.on || g_ta.groups >= 2) return;
+    g_ta.on = 1; g_ta.fr0 = fr; g_ta.until = fr + TA_FRAMES; g_ta.tabk = tabk; g_ta.page = page;
+    dm_wref_set(&g_ta.bar, bar); dm_wref_set(&g_ta.sw, sw);
+    if (!ta_read(g_ta.snap)) { g_ta.on = 0; LOG("页签动画：页签条读不到，跳过这次测量"); return; }
+    for (int i = 0; i < TA_TOTAL; i++) { g_ta.first[i] = g_ta.snap[i]; g_ta.ccount[i] = 0; g_ta.hn[i] = 0; g_ta.cframe[i] = 0; }
+    g_ta.groups++;
+    { uint64_t ch = *(uint64_t *)(bar + 0x58), n = *(uint64_t *)(bar + 0x60); g_ta.nkids = (ch && n <= TA_KIDS) ? (int)n : 0; }
+    LOG("页签动画：开始测量（目标第 %d 页 / 第 %d 个页签，帧 %llu，页签条 %p 子项 %d）",
+        page, tabk, (unsigned long long)fr, (void *)(uintptr_t)bar, g_ta.nkids);
+}
+static void dm_tab_anim_finish(void) {
+    g_ta.on = 0;
+    int nchg = 0; for (int i = 0; i < TA_TOTAL; i++) if (g_ta.ccount[i]) nchg++;
+    LOG("页签动画：%d 帧测量结束（第 %d 页 / 第 %d 个页签），%d 个 4 字节字段变过，按变化次数列出前 %d 个：",
+        TA_FRAMES, g_ta.page, g_ta.tabk, nchg, TA_MAXLOG);
+    for (int n = 0; n < TA_MAXLOG; n++) {
+        int best = -1; uint32_t bc = 0;
+        for (int i = 0; i < TA_TOTAL; i++) if (g_ta.ccount[i] > bc) { bc = g_ta.ccount[i]; best = i; }
+        if (best < 0) break;
+        char where[48], seq[200]; int q = 0; for (int h = 0; h < g_ta.hn[best] && q < (int)sizeof seq - 24; h++) q += snprintf(seq + q, sizeof seq - q, "%s%d", h ? "," : "", (int32_t)g_ta.hist[best][h]);
+        if (best < TA_MAIN_W) snprintf(where, sizeof where, "页签条+0x%x", best * 4);
+        else if (best < TA_MAIN_W + TA_KIDS * TA_KID_W) { int k = (best - TA_MAIN_W) / TA_KID_W, j = (best - TA_MAIN_W) % TA_KID_W; snprintf(where, sizeof where, "子控件%d+0x%x", k, j * 4); }
+        else { int j = best - TA_MAIN_W - TA_KIDS * TA_KID_W; snprintf(where, sizeof where, "功能页+0x%x", TA_SW_OFF + j * 4); }
+        LOG("页签动画：  %s 变化 %u 次，值 %d → %d，最后变化帧 %llu，序列 [%s]",
+            where, (unsigned)bc, (int32_t)g_ta.first[best], (int32_t)g_ta.snap[best], (unsigned long long)g_ta.cframe[best], seq);
+        g_ta.ccount[best] = 0;   // 已列出，不再重复 | already listed, do not list again
+    }
+    { uint64_t bar = dm_wref_get(&g_ta.bar), sw = dm_wref_get(&g_ta.sw);
+      LOG("页签动画：末态 页签记录 +0xdc4=%d，功能页当前页=%d（目标页 %d、目标页签 %d）",
+          bar ? TAB_SEL(bar) : -999, sw ? *(int32_t *)(sw + 0x1b8) : -999, g_ta.page, g_ta.tabk); }
+}
+static void dm_tab_anim_pump(void) {   // 每出图帧（dm_ui_mouse_pump 开头）调 | called every presented frame at the top of dm_ui_mouse_pump
+    if (!g_ta.on) return;
+    uint64_t fr = dm_guest_frame(); uint32_t cur[TA_TOTAL];
+    if (!ta_read(cur)) { LOG("页签动画：页签条已不在（帧 %llu），提前结束", (unsigned long long)fr); g_ta.on = 0; return; }
+    for (int i = 0; i < TA_TOTAL; i++) if (cur[i] != g_ta.snap[i]) {
+        uint32_t old = g_ta.snap[i]; g_ta.snap[i] = cur[i];
+        if (g_ta.ccount[i] < 60000) g_ta.ccount[i]++;
+        if (!g_ta.hn[i]) g_ta.hist[i][g_ta.hn[i]++] = old;
+        if (g_ta.hn[i] < 6) g_ta.hist[i][g_ta.hn[i]++] = cur[i];
+        g_ta.cframe[i] = (uint32_t)fr;
+    }
+    if (fr >= g_ta.until) dm_tab_anim_finish();
+}
 // 小地图任务终点（dm_world.c dm_map_goals）用的地图几何：地图开没开、全屏还是微缩、每格像素。每格像素照游戏自己的算法（同 ui_map_center：0x413280–0x413298），
 // 单位是真实画面像素；地图上的世界格 (x, y) 画在 玩家所在点 + ((Δx−Δy)×1.6, (Δx+Δy)×0.8) × 每格像素（宿主峡谷 4 组墓口拟合，误差 ≤3%）。
 // 开没开看 AutoMap 控件可见位（+0x50）；全屏 / 微缩看 [main+0x2d5c748]（0 = 全屏，同 ui_map_pump）；微缩地图的玩家点在小地图框中心、缩放用另一档（+0x15ac）。主线程每帧写一次
@@ -3236,9 +3321,77 @@ static void dm_hire_probe(module_t *m, uint64_t root) {
     if (vis) budget--;
 }
 
+// ---------- 本地改动：佣兵招募面板「点条目 = 只移光标出说明」（T3） ----------
+// 招募列表 = HireMenuPanel > ListContainer（布局 Controller/HireMenuPanelHD.json），行是 ListItemWidget：
+// 点一下原来会发 DialogMessage:HireMenuSelection（选中 / 进入操作），玩家要的是「点一下先出该佣兵的说明，松手保持」。
+// 做法和物品「单击常驻说明框」同一套：只把游戏光标摆到该点（dm_ui_hover_now——游戏当场重算悬停 / 焦点，原版自己弹条目说明），
+// 落点同时记进 g_stick_px，ui_ptr_pump 每帧补一次 MouseMove 顶住悬停；这一下不发点击。明确是按钮（名字含
+// Button / Confirm / Accept / Cancel / Close）的地方照旧发点击；面板关掉 / 切走时把我们摆的保持清掉。
+// Local change: mercenary-hire panel, "tap a list row = only move the cursor so the game shows its description" (T3).
+// The hire list is HireMenuPanel > ListContainer (layout Controller/HireMenuPanelHD.json) with ListItemWidget rows:
+// a tap used to send DialogMessage:HireMenuSelection (select / act), while the player wants "one tap shows that
+// mercenary's description, kept after the finger lifts". Same mechanism as the sticky item tooltip: only place the
+// game cursor at that point (dm_ui_hover_now -- the game recomputes hover / focus on the spot and pops up its own row
+// description), record the point in g_stick_px so ui_ptr_pump sends a MouseMove every frame to keep the hover, and send
+// no click this time. Real buttons (name contains Button / Confirm / Accept / Cancel / Close) are still clicked as
+// before; our hold is dropped when the panel closes or is switched away.
+#define HIRE_PANEL_NAME "HireMenuPanel"
+static _Atomic int g_hire_tip;             // 1 = 上一次点按被改成「只移光标」 | 1 = the last tap was turned into "move the cursor only"
+static _Atomic uint64_t g_hire_tip_xy;     // 我们摆光标的点 (x<<32)|y | the point we placed the cursor at
+static _Atomic uint64_t g_hire_last_fr, g_hire_last_xy;   // 上一次「只悬停」的帧与点：同一条目 1.5 秒内再点一次就放行原点击（不能把招募弄成永远点不了） | frame/point of the last hover-only tap: a second tap on the same row within 1.5 s lets the original click through (hiring must not become impossible)
+static int hire_button_hit(uint64_t w, uint64_t xy, int dep) {   // 这一点上有没有名字像按钮的可见控件 | whether a visible button-like widget is hit at this point
+    if (!w || dep > 12 || !*(uint8_t *)(w + 0x50)) return 0;
+    const char *nm = (const char *)*(uint64_t *)(w + 8);
+    if (nm && (strstr(nm, "Button") || strstr(nm, "Confirm") || strstr(nm, "Accept") || strstr(nm, "Cancel") || strstr(nm, "Close"))) {
+        uint64_t fn = *(uint64_t *)(*(uint64_t *)w + 0x48);
+        if (((int (*)(uint64_t, uint64_t))fn)(w, xy) & 1) return 1;
+    }
+    uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60);
+    if (!ch || n > 256) return 0;
+    for (uint64_t i = 0; i < n; i++) if (hire_button_hit(*(uint64_t *)(ch + 8 * i), xy, dep + 1)) return 1;
+    return 0;
+}
+static int hire_tip_gate(module_t *m, uint64_t root, int x, int y) {   // 1 = 这一下已改成只悬停（调用方把点击丢掉） | 1 = this tap was turned into hover-only (the caller drops the click)
+    if (!m || !root) return 0;
+    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
+    if (!pn || !*(uint8_t *)(pn + 0x50) || !has_visible_leaf(pn, 1)) return 0;   // 面板没开 / 空壳（只剩矩形）不动 | panel not open / empty shell (only a rect left): do nothing
+    uint64_t lst = ui_find(pn, "ListContainer", 1), hw = lst && *(uint8_t *)(lst + 0x50) ? lst : pn;
+    uint64_t xy_hit = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32);   // 控件命中函数的打包格式：x 低 / y 高 | packed form for the widget hit-test: x low / y high
+    uint64_t xy = ((uint64_t)(uint32_t)x << 32) | (uint32_t)y;                 // 悬停保持用：x 高 / y 低，与 g_stick_px / g_ui_hover_xy 一致 | hover-hold form: x high / y low, same as g_stick_px / g_ui_hover_xy
+    if (!(((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)hw + 0x48))(hw, xy_hit) & 1)) return 0;   // 不在列表上照旧 | not on the list: as before
+    if (hire_button_hit(pn, xy_hit, 0)) return 0;   // 真按钮照旧点 | a real button is clicked as usual
+    if (!lst) { static uint64_t lg; uint64_t f2 = dm_guest_frame(); if (f2 - lg > 300) { lg = f2; LOG("招募说明：面板可见但找不到 ListContainer，退化为按面板矩形判断"); } }
+    {   // 同一条目 1.5 秒内再点一次：放行原点击（第一下出说明，第二下才选中 / 招募；否则招募流程永远点不了） | second tap on the same row within 1.5 s: let the original click through (first tap shows the description, the second selects / hires; otherwise hiring could never work)
+      uint64_t fr = dm_guest_frame(), lfr = atomic_load(&g_hire_last_fr), lxy = atomic_load(&g_hire_last_xy);
+      int32_t vh = *(int32_t *)(m->base + 0x211da3c), vw = *(int32_t *)(m->base + 0x211da38);
+      int tol = vh > 0 ? (int)(102 * (int64_t)vh / 2160) : 60, wx = vw > 0 ? vw / 2 : 600;
+      int lx = (int)(lxy >> 32), ly = (int)(lxy & 0xffffffffu);
+      if (atomic_load(&g_hire_tip) && lfr && fr - lfr <= 90 && x - lx <= wx && lx - x <= wx && y - ly <= tol && ly - y <= tol) {
+          atomic_store(&g_hire_tip, 0); LOG("招募说明：同一条目 1.5 秒内再点一次（%d,%d）→ 放行原点击（选中 / 招募）", x, y); return 0; } }
+    int ok = dm_ui_hover_now(x, y);
+    if (!ok) { static uint64_t lg2; uint64_t f2 = dm_guest_frame(); if (f2 - lg2 > 60) { lg2 = f2; LOG("招募说明：(%d,%d) 光标模式不可用，hover_now 失败 → 照原样发点击", x, y); } return 0; }
+    atomic_store(&g_hire_tip_xy, xy); atomic_store(&g_hire_tip, 1);
+    atomic_store(&g_hire_last_xy, xy); atomic_store(&g_hire_last_fr, dm_guest_frame());
+    atomic_store(&g_stick_px, xy);   // ui_ptr_pump 每帧补 MouseMove，说明框常驻 | ui_ptr_pump sends a MouseMove every frame, keeping the description up
+    { static uint64_t lg; uint64_t fr = dm_guest_frame(); if (fr - lg > 60) { lg = fr;
+        LOG("招募说明：(%d,%d) 落在招募列表 → 只移光标（hover_now=%d），不发点击、悬停保持", x, y, ok); } }
+    return 1;
+}
+static void hire_tip_pump(uint64_t root) {   // 每帧：招募面板关了 / 切走就把我们摆的保持清掉，避免说明框残留 | every frame: drop our hold when the hire panel closes, so no description lingers
+    if (!atomic_load(&g_hire_tip)) return;
+    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
+    if (pn && *(uint8_t *)(pn + 0x50) && has_visible_leaf(pn, 1)) return;
+    uint64_t xy = atomic_load(&g_hire_tip_xy);
+    if (atomic_load(&g_stick_px) == xy) atomic_store(&g_stick_px, 0);
+    { extern _Atomic uint64_t g_ui_hover_xy; if (atomic_load(&g_ui_hover_xy) == xy) atomic_store(&g_ui_hover_xy, 0); }
+    atomic_store(&g_hire_tip, 0);
+    LOG("招募说明：招募面板已关 / 切走，清掉光标悬停保持");
+}
+
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
+    hire_tip_pump(root);   // 招募说明的悬停保持：面板关了要清掉 | hire-description hover hold: clear it when the panel closes
     int unstable = dm_ui_unstable();
     { static uint64_t next_trace; uint64_t fr = dm_guest_frame(); if (fr >= next_trace) {
         next_trace = fr + 300; uint64_t hire = ui_panel(root, "HireablesPanel"); int hp = dm_merc_hp_pct();
@@ -3259,6 +3412,7 @@ static void dm_ui_hud_pump(void) {
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
+    dm_tab_anim_pump();   // 诊断：页签高亮动画测量（见上面的测量段） | diagnostic: tab highlight animation measurement (see the section above)
     dm_ui_hud_pump();   // 每帧修正角色栏文字与佣兵名字颜色 | refresh character-panel titles and mercenary name colour each frame
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame
@@ -3290,6 +3444,7 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
               if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) {
                   if (cur != to) ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, to > cur);
                   ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, to, 0); int selected = TAB_SEL(tw);
+                  dm_tab_anim_begin(fr, tw, us, g_tab_k, to);   // 诊断：从这一帧起测量高亮是什么在动 | diagnostic: from this frame on, measure what the highlight animates
                   LOG("界面页签：功能页第 %d → 第 %d 页；页签记录同步到 %d%s", cur, to, selected, selected == to ? "" : "（目标页签未选中）"); }
               else LOG("【红】界面页签：功能页目标 %d，但页签条已不在 / 不可见，这次不切", to); }
           else if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) { int was = TAB_SEL(tw);
@@ -3399,6 +3554,7 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
         else if (st0) LOG("合成钮：手上已空，按下");
         else if (!(hh.valid && hh.holding) && ui_snap(m, root, &px, &py) && !strcmp(g_click_name, "convert")) LOG("合成钮：按下（HUD 读数 %s，手上 %d）——之后应有一行「合成读数：服务端收到合成请求」，没有就是请求没进游戏服务端", hh.valid ? "有效" : "无效", hh.holding);   // #22：空手这条路原来不记 | #22: the empty-hand path was not logged before
         st0 = 0; }
+    if (ph == 2 && hire_tip_gate(m, root, x, y)) { int e = 2; atomic_compare_exchange_strong(&g_ut_phase, &e, 0); return; }   // 招募列表条目：只移光标出说明，不发点击（见 hire_tip_gate） | hire-list row: move the cursor only, no click (see hire_tip_gate)
     if (ph == 2) { ui_send_mouse(m, root, h_dn, x, y); int e = 2; atomic_compare_exchange_strong(&g_ut_phase, &e, 3); }
     else if (ph == 3) { ui_send_mouse(m, root, h_up, x, y); int e = 3; atomic_compare_exchange_strong(&g_ut_phase, &e, 0);
         DM_LAT("click %d,%d", x, y);
