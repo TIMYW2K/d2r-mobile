@@ -237,6 +237,14 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
 - (void)drawRect:(CGRect)rect {
     (void)rect;
     CGContextRef c = UIGraphicsGetCurrentContext();
+    // 本地改动：洋红细线遮边 —— 屏幕最外侧画 2pt 黑边，盖住 drawable 与绘制区域差的 1~2pt（清屏色露出）。
+    // Local change: paint a 2pt black edge over the outermost pixels to hide the 1-2 pt clear-colour sliver.
+    { CGContextSetFillColorWithColor(c, [UIColor blackColor].CGColor);
+      CGRect bb = self.bounds;
+      CGContextFillRect(c, CGRectMake(bb.size.width - 2, 0, 2, bb.size.height));
+      CGContextFillRect(c, CGRectMake(0, 0, 2, bb.size.height));
+      CGContextFillRect(c, CGRectMake(0, 0, bb.size.width, 1));
+      CGContextFillRect(c, CGRectMake(0, bb.size.height - 1, bb.size.width, 1)); }
     // 本地改动：灵动岛外圈画一圈和按钮同款金属边缘纹理（局内才画，菜单页不画）。
     // Local change: draw a ring around the Dynamic Island using the same metal-rim texture as the buttons (in-game only).
     if (!self.navigationMode && self->_socketV[0]) {

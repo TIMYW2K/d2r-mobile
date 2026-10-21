@@ -3173,7 +3173,7 @@ static void dm_hud_names_pump(module_t *m, uint64_t root) {
         uint64_t ic = *(uint64_t *)(ch + 8 * i);
         if (!ic || !*(uint8_t *)(ic + 0x50)) continue;                 // 只处理可见的槽位 | visible icons only
         const char *cn = (const char *)*(uint64_t *)(ic + 8);
-        if (!cn || strcmp(cn, "Icon")) continue;
+        if (!cn || strncmp(cn, "Icon", 4)) continue;
         /* Icon 本身可能又不可见（兄弟槽位切换）| the Icon can be hidden even when its parent is visible */
         if (!*(uint8_t *)(ic + 0x50)) continue;
         float ir[4]; dm_widget_rect_ui(ic, vw, vh, ir);
