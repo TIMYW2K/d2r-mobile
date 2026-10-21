@@ -19,6 +19,7 @@
 #include <math.h>
 
 int dm_merc_hp_pct(void);
+int dm_friendly_hp_pct(void);   // 友方受击血量（傀儡/骷髅名字用） | friendly hit HP for minion names
 
 static module_t *main_module(void) {
     for (int i = 0; i < g_nmod; ++i)
