@@ -2875,7 +2875,6 @@ static uint64_t dm_widget_named_text(module_t *m, uint64_t w, const char *name, 
 static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
     if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return;
     if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
-    if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
         // 英文界面：把 "Attack\nDamage" / "Attack\nRating" 的换行去掉（中文那条下面照旧处理）
         {
             uint8_t *es = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t elen = *(uint64_t *)(w + 0x90);
@@ -3083,6 +3082,10 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
         dm_wref_set(&cached_name, name);
         int32_t *c = (int32_t *)(uintptr_t)(name + 0xbc); for (int i = 0; i < 3; i++) original_rgb[i] = c[i]; have_original = 1;
     }
+    static int cached_hp_pct = -1; static uint64_t next_hp_read; static int bucket = -1;
+    { uint64_t frame = dm_guest_frame();
+      if (frame >= next_hp_read) { int dm_merc_hp_pct(void); cached_hp_pct = dm_merc_hp_pct(); next_hp_read = frame + 4; }
+      bucket = cached_hp_pct >= 75 ? 3 : cached_hp_pct >= 50 ? 2 : cached_hp_pct >= 25 ? 1 : cached_hp_pct >= 0 ? 0 : -1; }
     // 采集名字文本与矩形 → 清空游戏原文 → 覆盖层按血量档重画（只留一份）
     {
         float rr[4] = {0, 0, 0, 0};
@@ -3093,7 +3096,7 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
             char buf[64]; memcpy(buf, ts, (size_t)tl); buf[tl] = 0;
             for (int i = 0; i < 4; i++) atomic_store(&g_merc_rect[i], rr[i]);
             memcpy(g_merc_txt, buf, (size_t)tl + 1); atomic_store(&g_merc_len, (int)tl);
-            atomic_store(&g_merc_band, cached_hp_pct >= 75 ? 3 : cached_hp_pct >= 50 ? 2 : cached_hp_pct >= 25 ? 1 : cached_hp_pct >= 0 ? 0 : -1);
+            atomic_store(&g_merc_band, bucket);
             char *w2 = (char *)(uintptr_t)*(uint64_t *)(name + 0x88); if (w2) { w2[0] = 0; *(uint64_t *)(name + 0x90) = 0; }   // 清空游戏原文 | hide the game copy
         } else atomic_store(&g_merc_band, -1);
     }
