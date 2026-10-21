@@ -190,7 +190,7 @@ static BOOL dm_island_on_right(UIView *v) {
 }
 static CGRect dm_island_rect(UIView *v) {
     CGRect bd = v.bounds; CGFloat W = bd.size.width, H = bd.size.height;
-    const CGFloat inset = 11, pillW = 125, pillH = 37;
+    const CGFloat inset = 11, pillW = 126, pillH = 37.33;   // iPhone 16 Pro 灵动岛实测：126 x 37.33 点，距边/顶 11 点 | iPhone 16 Pro island: 126x37.33 pt, 11 pt from the edge/top
     UIInterfaceOrientation o = dm_scene_orientation(v);
     BOOL landscape = UIInterfaceOrientationIsLandscape(o);
     if (!landscape) return CGRectMake((W - pillW) * 0.5, inset, pillW, pillH);
