@@ -3195,6 +3195,36 @@ static void dm_hud_names_pump(module_t *m, uint64_t root) {
     if (!done_log++) LOG("界面名字：可见槽位 %d 个（佣兵 %d%% / 友方 %d%%）", slot, hp_merc, hp_fr);
 }
 
+// 本地改动：雇佣兵 NPC 页面诊断 —— 面板打开期间，每 2 秒打印一次可见顶层面板名；名字里带 Hire/Merc/雇佣 的面板整棵树打出来
+// Local change: hire-NPC diagnostics -- while a panel is open, every 2 s log the visible top-level panel names and the full
+// widget tree of any panel whose name looks like a hire/mercenary panel.
+static void dm_hire_probe(module_t *m, uint64_t root) {
+    static uint64_t next_at; static int budget = 30;
+    uint64_t fr = dm_guest_frame();
+    if (fr < next_at || budget <= 0) return;
+    next_at = fr + 50;
+    uint64_t ch = *(uint64_t *)(root + 0x58), n = *(uint64_t *)(root + 0x60);
+    if (!ch || n > 256) return;
+    int vis = 0, hire_hit = 0;
+    for (uint64_t i = 0; i < n && i < 256; i++) {
+        uint64_t w = *(uint64_t *)(ch + 8 * i);
+        if (!w || !*(uint8_t *)(w + 0x50)) continue;
+        const char *nm = (const char *)*(uint64_t *)(w + 8);
+        vis++;
+        if (budget <= 0) return;
+        LOG("雇佣诊断：可见顶层面板 #%llu「%s」%p 子项=%llu", (unsigned long long)i, nm ? nm : "?", (void *)(uintptr_t)w,
+            (unsigned long long)*(uint64_t *)(w + 0x60));
+        if (nm && (strstr(nm, "Hire") || strstr(nm, "Merc") || strstr(nm, "hire") || strstr(nm, "merc"))) {
+            if (hire_hit++ < 2) {
+                dm_merc_trace_stats st = {0};
+                dm_merc_tree_trace(m, w, 0, 1, &st);
+                LOG("雇佣诊断：面板「%s」树展开：%d 个控件，文字框 %d 个", nm, st.nodes, st.text_nodes);
+            }
+        }
+    }
+    if (vis) budget--;
+}
+
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
@@ -3207,6 +3237,7 @@ static void dm_ui_hud_pump(void) {
                 hire ? *(uint8_t *)(hire + 0x50) : 0, (unsigned long long)(hire ? *(uint64_t *)(hire + 0x60) : 0), hp);
       } }
     if (unstable) return;
+    dm_hire_probe(m, root);   // 雇佣兵 NPC 页面诊断 | hire-NPC diagnostics
     // Search the active character panel by localized title text, since the row's widget name is not stable across layouts.
     uint64_t cs = ui_panel(root, "CharacterStatsPanel");
     if (cs && *(uint8_t *)(cs + 0x50)) dm_char_damage_titles_walk(m, cs, 0);
