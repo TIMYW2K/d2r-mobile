@@ -2875,6 +2875,15 @@ static uint64_t dm_widget_named_text(module_t *m, uint64_t w, const char *name, 
 static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
     if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return;
     if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
+        // 英文界面：Attack Damage / Attack Rating 在窄框里会被折成两行（文本里没有换行）；这里直接把标题框加宽。
+        {
+            uint8_t *ws = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t wl = *(uint64_t *)(w + 0x90);
+            if (ws && wl >= 6 && wl < 96 && !memcmp(ws, "Attack", 6)) {
+                int32_t *wr = (int32_t *)(uintptr_t)(w + 0x70);
+                if (wr[2] < 460) { int ow = wr[2]; wr[2] = 460; ((void (*)(uint64_t))(m->base + 0xadc434))(w);
+                    static int wlog; if (wlog++ < 6) LOG("角色属性栏：英文 Attack 标题框宽 %d → %d（避免折成两行）", ow, wr[2]); }
+            }
+        }
         // 英文界面：把 "Attack\nDamage" / "Attack\nRating" 的换行去掉（中文那条下面照旧处理）
         {
             uint8_t *es = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t elen = *(uint64_t *)(w + 0x90);
@@ -3078,6 +3087,12 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
         if (old && have_original) dm_text_rgb(m, old, original_rgb);
         dm_wref_set(&cached_name, 0); have_original = 0; return;
     }
+    { static uint64_t dumped; static uint64_t next_dump; uint64_t fr2 = dm_guest_frame();
+      if (name != dumped || fr2 >= next_dump) { dumped = name; next_dump = fr2 + 1800;
+        char hex[400]; int hx = 0; for (int wq = 0; wq < 24; wq++) { unsigned v = (unsigned)*(uint32_t *)(uintptr_t)(name + 4 * wq);
+          hx += snprintf(hex + hx, sizeof hex - hx, "%08x ", v); }
+        LOG("佣兵名字字段：控件=%p 虚表 main+%#llx 文本长=%llu 前 24 个 u32: %s", (void*)(uintptr_t)name,
+            (unsigned long long)dm_widget_vt((const uint8_t *)m->base, name), (unsigned long long)*(uint64_t *)(name + 0x90), hex); } }
     if (dm_wref_get(&cached_name) != name) {
         dm_wref_set(&cached_name, name);
         int32_t *c = (int32_t *)(uintptr_t)(name + 0xbc); for (int i = 0; i < 3; i++) original_rgb[i] = c[i]; have_original = 1;

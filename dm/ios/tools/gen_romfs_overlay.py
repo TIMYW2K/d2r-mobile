@@ -261,12 +261,31 @@ with tempfile.TemporaryDirectory() as t:
             if row_name in (b'Duriel - Base',b'Durielq - Base'):
                 struct.pack_into('<I',b,off+68,0)
                 duriel_nodrop+=1
+            # 本地改动：剔除 tsc/isc 后要把剩下的（物品码, 概率）对【左移压实】。
+            # 只把空出来那一格清零不够：游戏解析物品列表时遇到第一个空物品码就停止，
+            # 而 "Duriel"/"Durielq" 这两行原本是 [tsc, "Duriel - Base"]，清掉 tsc 后首槽为空 → 整行没有物品（督瑞尔不掉宝）。
+            # Local change: after dropping tsc/isc the remaining (code, probability) pairs must be COMPACTED to the left.
+            # Zeroing the hole alone is not enough: the game stops reading the item list at the first empty item code, and
+            # the "Duriel"/"Durielq" rows were [tsc, "Duriel - Base"] -- with tsc cleared the first slot is empty, so the row
+            # has no items at all (Duriel drops nothing).
+            pairs=[]
             for k in range(10):
                 so=off+72+64*k
-                if bytes(b[so:so+32]).split(b'\x00')[0] in (b'tsc',b'isc'):
-                    b[so:so+32]=b'\x00'*32                       # 清掉物品码 | clear the item code
-                    struct.pack_into('<I',b,off+712+4*k,0)       # 每槽是 u32 概率；按槽宽清 0 | u32 probability per slot; clear at the matching slot stride
+                code=bytes(b[so:so+32]).split(b'\x00')[0]
+                if code in (b'tsc',b'isc'):
                     n+=1
+                    continue
+                if code: pairs.append((code,struct.unpack_from('<I',b,off+712+4*k)[0]))
+            removed = 10 - len(pairs) != sum(1 for k in range(10) if bytes(b[off+72+64*k:off+72+64*k+32]).split(b'\x00')[0] == b'')
+            if removed:
+                for k in range(10):
+                    so=off+72+64*k
+                    b[so:so+32]=b'\x00'*32
+                    struct.pack_into('<I',b,off+712+4*k,0)
+                for k,(code,prob) in enumerate(pairs):
+                    so=off+72+64*k
+                    b[so:so+len(code)]=code
+                    struct.pack_into('<I',b,off+712+4*k,prob)
         # Ensure ordinary Act II Duriel still routes into its normal and quest base tables,
         # and those base tables retain at least one weighted non-scroll item after patching.
         for root, child in ((b'Duriel',b'Duriel - Base'),(b'Durielq',b'Durielq - Base')):
