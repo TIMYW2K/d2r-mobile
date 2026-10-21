@@ -3152,7 +3152,8 @@ static void dm_ui_hud_pump(void) {
     // Search the active character panel by localized title text, since the row's widget name is not stable across layouts.
     uint64_t cs = ui_panel(root, "CharacterStatsPanel");
     if (cs && *(uint8_t *)(cs + 0x50)) dm_char_damage_titles_walk(m, cs, 0);
-    dm_merc_name_tint(m, root);
+    // 本地改动：暂停佣兵名字重画（死亡时会撞到已销毁控件导致菜单弹出/卡住）；恢复前先改成隐藏原文字+同字号同位置的安全做法
+    (void)root;
 }
 
 
