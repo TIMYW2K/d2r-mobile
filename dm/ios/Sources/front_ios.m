@@ -172,12 +172,15 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
 // Local change: Dynamic Island geometry and haptics -- in landscape the island sits on the left or right edge (side is
 // read from the interface orientation); the portal region is a capsule offset 12pt inward, 44pt deep (minimum touch
 // size), 125pt long (island length), vertically centred. Long-press 0.5 s fires it with a medium haptic.
-// 本地改动：回城键 = 灵动岛周围 +12 点的一圈（不是从安全区往内推）。岛的真实位置按机型度量：
-// 竖屏 = 顶部中央 125×37、距顶 11 点；横屏 = 贴左右边缘（深 37、长 125）、距边 11 点、竖向居中。
+// 本地改动：回城键 = 灵动岛周围 +12 点的一圈（不是从安全区往内推）。岛的真实位置按用户给的 SwiftUI 参数：
+// 竖屏 = 顶部中央 125×36（圆角 18 = 标准胶囊）、距顶 11 点；横屏 = 贴左右边缘（深 36、长 125）、距边 11 点、竖向居中。
+// （SwiftUI：宽 125、高 36、圆角半径 18、距顶 11、状态栏 54。）
 // 岛在哪一侧由界面方向决定（iOS 26 用 effectiveGeometry，避免旧接口在旋转后读不到）。
 // Local change: the town-portal key is a ring of +12pt around the ACTUAL Dynamic Island (not an inset from the safe
-// area). Island metrics: portrait 125x37, 11pt from the top; landscape 37 deep x 125 long, 11pt from the left/right
-// edge, vertically centred. The side comes from the interface orientation (iOS 26 effectiveGeometry).
+// area). Island metrics from the user's SwiftUI parameters: portrait 125x36 (corner radius 18 = a standard capsule),
+// 11pt from the top; landscape 36 deep x 125 long, 11pt from the left/right edge, vertically centred.
+// (SwiftUI: width 125, height 36, corner radius 18, top 11, status bar 54.) The side comes from the interface
+// orientation (iOS 26 effectiveGeometry).
 static UIInterfaceOrientation dm_scene_orientation(UIView *v) {
     UIWindowScene *ws = v.window.windowScene;
     if (!ws) return UIInterfaceOrientationUnknown;
@@ -190,7 +193,7 @@ static BOOL dm_island_on_right(UIView *v) {
 }
 static CGRect dm_island_rect(UIView *v) {
     CGRect bd = v.bounds; CGFloat W = bd.size.width, H = bd.size.height;
-    const CGFloat inset = 11, pillW = 126, pillH = 37.33;   // iPhone 16 Pro 灵动岛实测：126 x 37.33 点，距边/顶 11 点 | iPhone 16 Pro island: 126x37.33 pt, 11 pt from the edge/top
+    const CGFloat inset = 11, pillW = 125, pillH = 36;   // 用户给的 SwiftUI 参数：宽 125、高 36、圆角 18（= 胶囊）、距顶/边 11 点（状态栏 54） | user's SwiftUI params: 125 x 36, corner radius 18 (= capsule), 11 pt from the top/edge (status bar 54)
     UIInterfaceOrientation o = dm_scene_orientation(v);
     BOOL landscape = UIInterfaceOrientationIsLandscape(o);
     if (!landscape) return CGRectMake((W - pillW) * 0.5, inset, pillW, pillH);

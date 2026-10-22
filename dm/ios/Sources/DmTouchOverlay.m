@@ -246,19 +246,26 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
       CGContextFillRect(c, CGRectMake(0, 0, bb.size.width, 1));
       CGContextFillRect(c, CGRectMake(0, bb.size.height - 1, bb.size.width, 1)); }
     // 本地改动：灵动岛外圈画一圈和按钮同款金属边缘纹理（局内才画，菜单页不画）。
+    // 轮廓按用户给的 SwiftUI 参数重生成：岛 125×36、圆角 18 = 标准胶囊；金属环宽 5 点，外沿 135×46、圆角 23，
+    // 内外圆角都取各自「短边的一半」（= 胶囊半径），所以是两段半圆接直线、不会出现直线接圆角的错位。
+    // 中间挖空（内路径反向），金属纹理只出现在 5 点宽的环带里，不盖住岛本身。
     // Local change: draw a ring around the Dynamic Island using the same metal-rim texture as the buttons (in-game only).
+    // The outline follows the user's SwiftUI parameters: island 125x36, corner radius 18 = a standard capsule; the metal
+    // ring is 5 pt wide, outer 135x46 with radius 23. Both corner radii are half of their own short side (= capsule
+    // radius), so the outline is two semicircles joined by straight segments, with no straight-to-arc mismatch. The
+    // middle is cut out (inner path reversed), so the metal texture only shows in the 5 pt band and does not cover the island.
     if (!self.navigationMode && self->_socketV[0]) {
         extern CGRect dm_island_rect_export(UIView *v);
         CGRect ir = dm_island_rect_export(self);
-        if (ir.size.width > 0 && ir.size.height > 0) {
+        if (ir.size.width > 2 && ir.size.height > 2) {
             CGFloat w = 5.0;                                     // 环宽 | ring width
             CGRect outer = CGRectInset(ir, -w, -w);
-            CGRect inner = ir;
-            CGFloat ro = outer.size.height * 0.5, ri = inner.size.height * 0.5;
-            UIBezierPath *pp = [UIBezierPath bezierPathWithRoundedRect:outer cornerRadius:MIN(ro, outer.size.width * 0.5)];
-            UIBezierPath *pi = [UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:MIN(ri, inner.size.width * 0.5)];
-            [pp appendPath:pi];
-            CGContextSaveGState(c); [pp addClip];
+            CGFloat ro = MIN(outer.size.width, outer.size.height) * 0.5;   // 外胶囊半径 | outer capsule radius
+            CGFloat ri = MIN(ir.size.width, ir.size.height) * 0.5;         // 内胶囊半径 = 18（125×36） | inner capsule radius = 18 (125x36)
+            UIBezierPath *po = [UIBezierPath bezierPathWithRoundedRect:outer cornerRadius:ro];
+            UIBezierPath *pi = [UIBezierPath bezierPathWithRoundedRect:ir cornerRadius:ri];
+            [po appendPath:[pi bezierPathByReversingPath]];       // 内路径反向 → 中间成洞 | reversed inner path -> hole in the middle
+            CGContextSaveGState(c); [po addClip];
             [self->_socketV[0] drawInRect:outer];
             CGContextRestoreGState(c);
         }
@@ -296,54 +303,57 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         }
     }
 
-    // 本地改动：雇佣兵招募信息栏（T10）—— 点 HireMenuPanel 列表行时，宿主发布该行名称 / 等级 / 雇佣费，
-    // 这里在行旁画一个类似装备说明框的小信息栏（深色半透明底 + 1px 边框；右侧优先，放不下放左侧，夹在屏内）。
-    // 技能名暂时拿不到（游戏图标控件里没有文字），信息栏写「技能图标已放大」——图标放大由宿主做，见 dm_cursor.c。
-    // Local change: hire-vendor info bar (T10) -- a tap on a HireMenuPanel list row makes the host publish that row's name /
-    // level / hire cost; draw a small equipment-tooltip-style bar next to the row (dark translucent fill, 1 px border;
-    // right of the row first, left when it does not fit, clamped to the screen). Skill names are not available (the game's
-    // icon widgets carry no text), so the bar says the skill icons were enlarged -- the host does the enlargement.
+    // 本地改动：雇佣兵招募信息栏（T10 重绘）—— 点 HireMenuPanel 列表行时，宿主发布该行矩形 + 标题 + 最多 8 行文字
+    // （名称 / 等级 / 雇佣费 / 技能等，内容由宿主决定；「等级」不再重复、不再有「技能图标已放大」这类提示）。
+    // 覆盖层只画用户要求的样子：纯深色半透明矩形（无边框、无圆角），游戏字体小字号（游戏说明框那种大小），
+    // 标题略亮 + 正文若干行，行高 1.35、内边距 7 点；位置仍贴行右侧、放不下放左侧，并夹在屏内。
+    // Local change: hire-vendor info bar (T10 redraw) -- a tap on a HireMenuPanel list row makes the host publish the
+    // row rect + a title + up to 8 lines (name / level / hire cost / skills; content is the host's job, with the
+    // duplicated 「等级」 removed and no "skill icons enlarged" hint any more). The overlay draws exactly what the user
+    // asked for: a plain dark translucent rectangle (no border, no rounded corners), small game-font text (equipment-
+    // tooltip size), a slightly brighter title plus body lines, line height 1.35, 7 pt padding; still placed to the
+    // right of the row, to the left when it does not fit, clamped to the screen.
     {
-        extern int dm_hire_info_get(float r[4], char *name, char *level, char *cost);
+        extern int dm_hire_info_get(float r[4], char *title, int *nlines, char lines[8][96]);
         extern void dm_ui_rect(int *x, int *y, int *w, int *h);
-        float r[4] = {0, 0, 0, 0}; char hn[64] = "", hlv[48] = "", hcost[48] = "";
-        if (dm_hire_info_get(r, hn, hlv, hcost) && (hn[0] || hlv[0] || hcost[0])) {
+        float r[4] = {0, 0, 0, 0}; char title[128] = ""; int nlines = 0; char lines[8][96] = {{0}};
+        if (dm_hire_info_get(r, title, &nlines, lines)) {
             int ux = 0, uy = 0, uw = 0, uh = 0; dm_ui_rect(&ux, &uy, &uw, &uh);
             CGFloat sw = self.bounds.size.width, sh = self.bounds.size.height;
             if (uw > 0 && uh > 0 && sw > 0 && sh > 0 && r[2] > r[0] && r[3] > r[1]) {
                 CGFloat sc = self.window.screen.scale; if (sc <= 0) sc = UIScreen.mainScreen.scale; if (sc <= 0) sc = 3;
                 CGFloat rowX = (ux + r[0] * uw) / sc, rowY = (uy + r[1] * uh) / sc;
                 CGFloat rowW = (r[2] - r[0]) * uw / sc, rowH = (r[3] - r[1]) * uh / sc;
-                CGFloat fs = MAX(11, MIN(15, rowH * 0.30));
-                UIFont *tf = dm_game_font(fs + 1.5); if (!tf) tf = [UIFont boldSystemFontOfSize:fs + 1.5];
+                // 小字号：游戏说明框那种大小 —— 正文 = 行高的 20%，夹在 9–12 点；标题 +1 点（上限 13） | small font like the game tooltip: body = 20% of the row height clamped to 9-12 pt; title +1 (cap 13)
+                CGFloat fs = MAX(9.0, MIN(12.0, rowH * 0.20));
+                CGFloat tfs = MIN(13.0, fs + 1.0);
                 UIFont *bf = dm_game_font(fs); if (!bf) bf = [UIFont systemFontOfSize:fs];
+                UIFont *tf = dm_game_font(tfs); if (!tf) tf = [UIFont boldSystemFontOfSize:tfs];
                 NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new]; ps.lineBreakMode = NSLineBreakByTruncatingTail;
-                NSString *title = hn[0] ? [NSString stringWithUTF8String:hn] : @"佣兵";
-                NSMutableArray<NSString *> *lines = [NSMutableArray array];
-                if (hlv[0]) [lines addObject:[NSString stringWithFormat:@"等级  %@", [NSString stringWithUTF8String:hlv]]];
-                if (hcost[0]) [lines addObject:[NSString stringWithFormat:@"雇佣费  %@", [NSString stringWithUTF8String:hcost]]];
-                [lines addObject:@"技能图标已放大（见行内）"];
-                CGFloat pad = 10, lineH = fs * 1.55, titleH = (fs + 1.5) * 1.55;
-                CGFloat contentW = [title sizeWithAttributes:@{NSFontAttributeName:tf}].width;
-                for (NSString *ln in lines) { CGFloat w2 = [ln sizeWithAttributes:@{NSFontAttributeName:bf}].width; if (w2 > contentW) contentW = w2; }
-                CGFloat boxW = MIN(sw * 0.52, contentW + pad * 2 + 8);
-                CGFloat boxH = pad * 2 + titleH + lineH * (CGFloat)lines.count;
-                CGFloat bx = rowX + rowW + 10;
-                if (bx + boxW > sw - 8) bx = rowX - boxW - 10;
+                NSString *titleS = title[0] ? [NSString stringWithUTF8String:title] : @"佣兵";
+                NSMutableArray<NSString *> *body = [NSMutableArray array];
+                int nl = nlines < 0 ? 0 : (nlines > 8 ? 8 : nlines);
+                for (int i = 0; i < nl; i++) { if (!lines[i][0]) continue; NSString *s = [NSString stringWithUTF8String:lines[i]]; if (s.length) [body addObject:s]; }
+                CGFloat pad = 7, lineH = fs * 1.35, titleH = tfs * 1.35;
+                CGFloat contentW = [titleS sizeWithAttributes:@{NSFontAttributeName:tf}].width;
+                for (NSString *ln in body) { CGFloat w2 = [ln sizeWithAttributes:@{NSFontAttributeName:bf}].width; if (w2 > contentW) contentW = w2; }
+                CGFloat boxW = MIN(sw * 0.50, MAX(90.0, contentW + pad * 2 + 6));
+                CGFloat boxH = pad * 2 + titleH + lineH * (CGFloat)body.count;
+                CGFloat bx = rowX + rowW + 8;
+                if (bx + boxW > sw - 8) bx = rowX - boxW - 8;
                 if (bx < 8) bx = MAX(8.0, MIN(rowX, sw - boxW - 8));
                 CGFloat by = rowY + (rowH - boxH) / 2;
                 if (by < 8) by = 8;
                 if (by + boxH > sh - 8) by = sh - boxH - 8;
-                CGRect box = CGRectMake(bx, by, boxW, boxH);
-                UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:box cornerRadius:6];
-                [[UIColor colorWithWhite:0 alpha:0.84] setFill]; [path fill];
-                [[UIColor colorWithRed:0.62 green:0.53 blue:0.33 alpha:1] setStroke]; path.lineWidth = 1.0; [path stroke];
-                [title drawInRect:CGRectMake(bx + pad, by + pad, boxW - pad * 2, titleH)
-                   withAttributes:@{NSFontAttributeName:tf, NSForegroundColorAttributeName:[UIColor colorWithRed:0.86 green:0.79 blue:0.61 alpha:1], NSParagraphStyleAttributeName:ps}];
+                // 纯深色半透明矩形：无边框、无圆角（用户要求） | plain dark translucent rectangle: no border, no rounded corners (user request)
+                CGContextSetFillColorWithColor(c, [UIColor colorWithWhite:0 alpha:0.82].CGColor);
+                CGContextFillRect(c, CGRectMake(bx, by, boxW, boxH));
+                [titleS drawInRect:CGRectMake(bx + pad, by + pad, boxW - pad * 2, titleH)
+                    withAttributes:@{NSFontAttributeName:tf, NSForegroundColorAttributeName:[UIColor colorWithWhite:0.97 alpha:0.98], NSParagraphStyleAttributeName:ps}];
                 CGFloat ty = by + pad + titleH;
-                for (NSString *ln in lines) {
+                for (NSString *ln in body) {
                     [ln drawInRect:CGRectMake(bx + pad, ty, boxW - pad * 2, lineH)
-                    withAttributes:@{NSFontAttributeName:bf, NSForegroundColorAttributeName:[UIColor colorWithWhite:0.94 alpha:1], NSParagraphStyleAttributeName:ps}];
+                        withAttributes:@{NSFontAttributeName:bf, NSForegroundColorAttributeName:[UIColor colorWithWhite:0.90 alpha:0.96], NSParagraphStyleAttributeName:ps}];
                     ty += lineH;
                 }
             }
