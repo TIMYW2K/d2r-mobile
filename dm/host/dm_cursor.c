@@ -1052,6 +1052,7 @@ static void ui_show_ours(uint64_t w, int on) {
     if (!nm || strncmp(nm, "Touch", 5)) { static int lg; if (lg++ < 8) LOG("【红】界面：要改可见的控件「%s」不是我们的（Touch 开头），不写", nm ? nm : "?"); return; }
     if (*(uint8_t *)(w + 0x50) != (uint8_t)on || *(uint8_t *)(w + 0x51) != (uint8_t)on) { *(uint8_t *)(w + 0x50) = (uint8_t)on; *(uint8_t *)(w + 0x51) = (uint8_t)on; }
 }
+void dm_ui_show_ours(uint64_t w, int on) { ui_show_ours(w, on); }   // 给其它模块用：Touch 控件的可见位（走同一个守卫） | for other modules: visibility of our Touch widgets (same guard)
 static void ui_move_ours(uint64_t w, int x) {   // 我们自己的控件（Touch 开头）挪 x（矩形 +0x70，改完虚表 +0x10 重排）；原版控件只许走位置守卫 mv_offset | Move x of our own widgets (names starting with Touch) (rect +0x70, vtable +0x10 re-layout after changing); the original game's widgets may only go through the position guard mv_offset
     const char *nm = w ? (const char *)*(uint64_t *)(w + 8) : NULL; if (!w) return;
     if (!nm || strncmp(nm, "Touch", 5)) { static int lg; if (lg++ < 8) LOG("【红】界面：要挪的控件「%s」不是我们的，不写", nm ? nm : "?"); return; }
@@ -3190,7 +3191,7 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
 // 用户要求「在游戏本体中修改」：文字框门（观测门 14）挂在 main+0xadc434「文字变了」入口，游戏每帧改写名字时、原版重排之前触发；
 // 在那里面用游戏自己的字符串赋值 main+0x136e5c 把「颜色码 + 名字」写回控件 +0x88（走 std::string 赋值，容量由游戏分配，不手改缓冲区），
 // 并把 +0xfc 置 1——TextBoxWidget 认颜色码的那一档（pipeCharacterBehavior: handle；dm_textbox.c 用同一控件开/不开做过逐字节差分）。
-// 颜色码与 monhp_tint 同形：私用区 U+E07E + 数字（EE 81 BE '2' 绿 / '9' 黄 / '8' 橙 / '1' 红）。
+// 颜色码与 monhp_tint 同形：私用区 U+E07E + 数字（EE 81 BE '0' 白 / '9' 黄 / '8' 橙 / '1' 红）。
 // 每个槽独立判定：门确实为这个控件命中过（hits > 0）→ 游戏本体内着色生效，不再隐藏原文、也不再让覆盖层画这一份；
 // 门没命中（产物没有门 14 / 这一份不是文字框）→ 退回隐藏原文 + 覆盖层按四档色重画，并隐藏 HireablesPanel 里所有可见、
 // 文本相同的其它文字框（用户看到的「上方旧白字盖住变色名」重复就是这个来源）。
@@ -3202,7 +3203,7 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
 // rewrite +0x88 to "colour code + name" through the game's own string assignment (main+0x136e5c, capacity allocated by the
 // game -- no manual buffer writes) and set +0xfc = 1, the TextBoxWidget mode that parses colour codes (pipeCharacterBehavior:
 // handle; dm_textbox.c measured it byte-by-byte on the same widget). Colour codes have monhp_tint's shape: private-use U+E07E
-// + digit (EE 81 BE '2' green / '9' yellow / '8' orange / '1' red). Per slot: once the gate has really fired for that widget
+// + digit (EE 81 BE '0' white / '9' yellow / '8' orange / '1' red). Per slot: once the gate has really fired for that widget
 // the game's own coloured text is kept (no hiding, no overlay copy); otherwise the host hides the game text and draws this
 // copy in the overlay, and hides every other visible text box in HireablesPanel carrying the same text (that duplicate white
 // line above the portrait is what the player reported). Life source: slot 0 = mercenary server monster table; other slots =
@@ -3230,8 +3231,8 @@ static uint64_t g_hud_names_hidden[DM_HUD_NAME_MAX];   // 兜底路径被隐藏�
 static uint64_t g_hud_extra_hidden[DM_HUD_EXTRA_MAX]; static int g_hud_extra_n;   // 兜底路径隐藏的重复文字控件 | duplicate text widgets hidden on the fallback path
 static int g_hud_tb_installed;
 
-static const char *dm_hud_band_code(int band) {   // 与 monhp_tint 同一套色码 | same colour codes as monhp_tint
-    return band == 3 ? "\xee\x81\xbe" "2"     // 绿 green
+static const char *dm_hud_band_code(int band) {   // 与 monhp_tint 同一套色码；0 = 白（dm_runeword.c:71 注释「0 白 1 红 4 金 5 灰」，与游戏串里的 ÿc 色码表一致） | same colour codes as monhp_tint; 0 = white (dm_runeword.c:71 documents "0 white 1 red 4 gold 5 gray", the same ÿc table as game strings)
+    return band == 3 ? "\xee\x81\xbe" "0"     // 白 white（健康档，用户要求绿改白） | white (healthy band; green -> white per user request)
          : band == 2 ? "\xee\x81\xbe" "9"     // 黄 yellow
          : band == 1 ? "\xee\x81\xbe" "8"     // 橙 orange
          : band == 0 ? "\xee\x81\xbe" "1"     // 红 red
@@ -3463,7 +3464,7 @@ static void dm_hire_probe(module_t *m, uint64_t root) {
 // （str w2,[x0,#0x960]；w2 来自 hireling 记录 +0x90 + i*4），所以运行时直接读 +0x960；
 // 再用 dm_hire_skills.inc（离线由 tmp/gen_hire_skills.py 从本地化技能表生成）映射名称 / 短描述。表里没有的 id 不显示，不硬猜。
 // 信息栏数据接口（覆盖层按此实现）：int dm_hire_info_get(float rect[4], char *title, int *nlines, char lines[8][96]);
-//   title = HireName 原文；lines = 等级行（HireLevel 原文，不加前缀）、雇佣费行（原文不含「费/Gold」时补「雇佣费 」）、
+//   title = HireName 原文；lines = 等级行（HireLevel 原文，不加前缀）、费用行（原文不含「费/Gold」时补「费用 」）、
 //   每个技能一行（名称[：短描述]）；最多 8 行，UTF-8 按边界截到 92 字节。
 // 点行行为不变：第一次点只发布信息、不发点击、不摆光标；同一条目 1.5 秒内再点收起并补发原版点击。
 // Local change: hire-vendor info bar (60.2: skill names/descriptions, icon enlargement removed). The game stores the skill
@@ -3471,12 +3472,14 @@ static void dm_hire_probe(module_t *m, uint64_t root) {
 // hireling record's +0x90 + i*4 array), so the host reads +0x960 and maps it through dm_hire_skills.inc (generated offline
 // from the localised skill strings by tmp/gen_hire_skills.py); ids missing from the table are not shown (no guessing).
 // Data interface for the overlay: int dm_hire_info_get(float rect[4], char *title, int *nlines, char lines[8][96]);
-// title = HireName text; lines = HireLevel text as is (no prefix), hire cost (prefix only when the text has no such word),
+// title = HireName text; lines = HireLevel text as is (no prefix), fee (prefix only when the text has no such word),
 // one line per skill (name[: short description]); at most 8 lines, UTF-8 cut at 92 bytes. Tap behaviour is unchanged.
+// dm_hire_info_line_mask() returns bit i = 1 when line i is a skill line (the overlay draws those blue).
 #define HIRE_PANEL_NAME "HireMenuPanel"
 static _Atomic int g_hire_info_has;   // 1 = 信息栏要显示 | 1 = the info bar is up
-static struct { float r[4]; char title[64]; int nlines; char lines[8][96]; } g_hire_info;
-static _Atomic uint64_t g_hire_last_fr, g_hire_last_xy;   // 上一次点中的帧与点：同一条目 1.5 秒内再点放行原点击（不能把招募弄成永远点不了） | frame/point of the last row tap: a second tap on the same row within 1.5 s lets the original click through (hiring must never become impossible)
+static struct { float r[4]; char title[64]; int nlines; unsigned mask; char lines[8][96]; } g_hire_info;   // mask：位 i = 第 i 行是技能行（覆盖层画蓝色） | mask: bit i = line i is a skill line (drawn blue by the overlay)
+static _Atomic uint64_t g_hire_last_fr, g_hire_last_row;   // 上一次点中的帧与行控件：同一条目 1.5 秒内再点放行原点击（不能把招募弄成永远点不了） | frame/row widget of the last row tap: a second tap on the same row within 1.5 s lets the original click through (hiring must never become impossible)
+static char g_hire_last_name[64];   // 上一次点中行的名称（列表复用行控件时也能认出是否同一条目） | name of the last tapped row (recognises the same entry even if the list reuses row widgets)
 static _Atomic uint64_t g_hire_click_xy;   // 第二次点要补发的点击位置 | point of the deferred click for the second tap
 static int g_hire_click_step;              // 0 空闲；1..3 悬停；4 按下；5 抬起 | 0 idle; 1..3 hover; 4 press; 5 release
 int dm_hire_info_get(float r[4], char *title, int *nlines, char lines[8][96]) {   // 覆盖层查询（接口见上，ui-dev 按此实现） | queried by the overlay (interface above)
@@ -3487,6 +3490,7 @@ int dm_hire_info_get(float r[4], char *title, int *nlines, char lines[8][96]) { 
     for (int i = 0; i < n; i++) memcpy(lines[i], g_hire_info.lines[i], 96);
     return 1;
 }
+int dm_hire_info_line_mask(void) { return atomic_load(&g_hire_info_has) ? (int)g_hire_info.mask : 0; }   // 覆盖层查询：每行颜色位（bit i=1 = 技能行） | overlay query: per-line colour mask (bit i = 1 = skill line)
 static void hire_info_clear(const char *why) { if (atomic_exchange(&g_hire_info_has, 0)) LOG("招募信息：收起信息栏（%s）", why); }
 static void hire_trim(char *s) {
     size_t n = strlen(s);
@@ -3519,12 +3523,22 @@ static int hire_row_rect(module_t *m, uint64_t row, float rect[4]) {   // 行矩
     dm_widget_rect_ui(row, vw, vh, rect);
     return rect[2] > rect[0] && rect[3] > rect[1];
 }
-static uint64_t hire_row_at(module_t *m, uint64_t lst, uint64_t xy_hit) {   // 点在哪个列表行上 | which list row was hit
-    (void)m;
+static uint64_t hire_row_at(module_t *m, uint64_t lst, uint64_t xy_hit) {   // 点在哪个列表行上：先按行矩形判断（列表行控件的命中函数在滚动列表里可能对所有行都成立，那样永远只会选中第一行），矩形都不含再退回命中函数 | which list row was hit: judge by the row rect first (in a scrolling list the row hit-test may be true for every row, which would always pick the first row); fall back to the hit-test when no rect contains the point
     uint64_t ch = *(uint64_t *)(uintptr_t)(lst + 0x58), n = *(uint64_t *)(uintptr_t)(lst + 0x60);
     if (!ch || n > 256) return 0;
+    int32_t vw = m ? *(int32_t *)(m->base + 0x211da38) : 0, vh = m ? *(int32_t *)(m->base + 0x211da3c) : 0;
+    int y = (int)(xy_hit >> 32);
+    uint64_t best = 0; float best_dy = 1e30f;
+    float tol = vh > 0 ? (180.0f * (float)vh / 2160.0f) : 60.0f;   // 行距容差：T18 起选项页行高 180 单位（2160 高基准） | row pitch tolerance: option rows are 180 units tall since T18 (2160-tall base)
+    if (vw > 0 && vh > 0) for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(uintptr_t)(ch + 8 * i); if (!c || !*(uint8_t *)(uintptr_t)(c + 0x50)) continue;
+        uint64_t nw = ui_find(c, "HireName", 1); if (!nw) continue;   // Selection 等非行控件跳过 | skip non-row children (Selection image etc.)
+        float nr[4] = {0, 0, 0, 0}; dm_widget_rect_ui(nw, vw, vh, nr);   // 初始化：控件不可见（滚动到列表外）时它一个像素也不写 | initialise: it writes nothing when the widget is not visible (scrolled out of the list)   // 用名字控件的矩形中心：行控件的命中函数在滚动列表里可能对所有行都成立，名字控件是普通文字框、命中可靠 | use the name widget's rect centre: the row hit-test may be true for every row in a scrolling list, while the name is an ordinary text box with a reliable hit-test
+        if (!(nr[2] > nr[0] && nr[3] > nr[1])) continue;
+        float cy = (nr[1] + nr[3]) * 0.5f * (float)vh, dy = cy - (float)y; if (dy < 0) dy = -dy;
+        if (dy < best_dy) { best_dy = dy; best = c; } }
+    if (best && best_dy <= tol) return best;
     for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(uintptr_t)(ch + 8 * i); if (!c || !*(uint8_t *)(uintptr_t)(c + 0x50)) continue;
-        if (!ui_find(c, "HireName", 1)) continue;   // Selection 等非行控件跳过 | skip non-row children (Selection image etc.)
+        if (!ui_find(c, "HireName", 1)) continue;
         uint64_t fn = *(uint64_t *)(*(uint64_t *)c + 0x48);
         if (((int (*)(uint64_t, uint64_t))fn)(c, xy_hit) & 1) return c; }
     return 0;
@@ -3568,11 +3582,11 @@ static void hire_info_publish(module_t *m, uint64_t row) {
     float r[4] = {0, 0, 0, 0};
     if (!hire_row_rect(m, row, r)) { LOG("招募信息：行矩形读不到，这次不弹信息栏"); return; }
     int en = dm_custom_lang_explicit(); if (en < 0) en = dm_lang_zh() ? 0 : 1;   // 语言开关写了就按它，没写过按游戏当前语言（技能名与界面一致） | follow the language switch when written, otherwise the game's current language (so skill names match the UI)
-    char lines[8][96]; int n = 0;
+    char lines[8][96]; int n = 0; unsigned mask = 0;
     if (lv[0]) hire_line_add(lines, &n, lv);   // 等级：HireLevel 原文（自带「等级」字样，不再加前缀） | level: raw HireLevel text (no extra prefix)
-    if (cst[0]) {                              // 雇佣费：原文不含「费/金/Gold」才补前缀 | hire cost: add a prefix unless the text already says so
+    if (cst[0]) {                              // 费用：原文不含「费/金/Gold」才补前缀（用户要求文案就叫「费用」） | fee: add a prefix unless the text already says so (the user asked the label be simply "费用" / "Fee")
         if (strstr(cst, "费") || strstr(cst, "金") || strstr(cst, "Gold") || strstr(cst, "gold")) hire_line_add(lines, &n, cst);
-        else { char b[80]; snprintf(b, sizeof b, en ? "Hire cost %s" : "雇佣费 %s", cst); hire_line_add(lines, &n, b); }
+        else { char b[80]; snprintf(b, sizeof b, en ? "Fee %s" : "费用 %s", cst); hire_line_add(lines, &n, b); }
     }
     int ids[3] = {0, 0, 0}, nsk = 0;
     for (int k = 0; k < 3; k++) {   // 技能行：名称 + 短描述（表里没有的 id 不显示） | skill lines: name + short description (ids absent from the table are skipped)
@@ -3585,12 +3599,12 @@ static void hire_info_publish(module_t *m, uint64_t row) {
         char b[128];
         if (desc && desc[0]) snprintf(b, sizeof b, "%s：%s", name, desc);
         else snprintf(b, sizeof b, "%s", name);
-        hire_line_add(lines, &n, b); nsk++;
+        int li = n; hire_line_add(lines, &n, b); if (n > li) mask |= 1u << li; nsk++;
     }
     atomic_store(&g_hire_info_has, 0);
     for (int i = 0; i < 4; i++) g_hire_info.r[i] = r[i];
     snprintf(g_hire_info.title, sizeof g_hire_info.title, "%s", nm);
-    g_hire_info.nlines = n;
+    g_hire_info.nlines = n; g_hire_info.mask = mask;
     for (int i = 0; i < n; i++) snprintf(g_hire_info.lines[i], sizeof g_hire_info.lines[i], "%s", lines[i]);
     atomic_store(&g_hire_info_has, 1);
     { static uint64_t lg; uint64_t fr = dm_guest_frame(); if (fr - lg > 30) { lg = fr;
@@ -3608,18 +3622,19 @@ static int hire_tip_gate(module_t *m, uint64_t root, int x, int y) {   // 1 = �
     if (!lst) { static uint64_t lg; uint64_t f2 = dm_guest_frame(); if (f2 - lg > 300) { lg = f2; LOG("招募信息：面板可见但找不到 ListContainer，退化为按面板矩形判断"); } }
     uint64_t row = lst ? hire_row_at(m, lst, xy_hit) : 0;
     if (!row) { hire_info_clear("没点到列表行"); return 0; }
-    {   // 同一条目 1.5 秒内再点：收起信息栏，并排一个「原版点击」序列（先悬停 3 帧再按下/抬起）——第一次点没摆过游戏光标，直接放行会被当成点空白 | second tap on the same row within 1.5 s: hide the info bar and queue an original click sequence (3 hover frames, then press/release); the first tap did not place the game cursor, so letting the click straight through would be treated as a click on empty space
-      uint64_t fr = dm_guest_frame(), lfr = atomic_load(&g_hire_last_fr), lxy = atomic_load(&g_hire_last_xy);
-      int32_t vh = *(int32_t *)(m->base + 0x211da3c), vw = *(int32_t *)(m->base + 0x211da38);
-      int tol = vh > 0 ? (int)(102 * (int64_t)vh / 2160) : 60, wx = vw > 0 ? vw / 2 : 600;
-      int lx = (int)(lxy >> 32), ly = (int)(lxy & 0xffffffffu);
-      if (atomic_load(&g_hire_info_has) && lfr && fr - lfr <= 90 && x - lx <= wx && lx - x <= wx && y - ly <= tol && ly - y <= tol) {
+    char rn[64] = ""; hire_widget_text(ui_find(row, "HireName", 1), rn, sizeof rn);   // 行名称：列表复用行控件时按名字认是否同一条目 | row name: with reused row widgets, identify the same entry by its name
+    {   // 同一条目 1.5 秒内再点：收起信息栏，并排一个「原版点击」序列（先悬停 3 帧再按下/抬起）——第一次点没摆过游戏光标，直接放行会被当成点空白 | second tap on the same entry within 1.5 s: hide the info bar and queue an original click sequence (3 hover frames, then press/release); the first tap did not place the game cursor, so letting the click straight through would be treated as a click on empty space
+      // 判定用「行控件 + 行名称」，不用坐标容差：旧写法 x 容差是半屏、y 容差是整行高，相邻两行会被当成同一条目（用户只看到第一次点的信息） | judge by row widget + row name, not by coordinate tolerance: the old x tolerance was half the screen and the y tolerance a whole row, so two adjacent rows were taken for the same entry (the player only ever saw the first tap's info)
+      uint64_t fr = dm_guest_frame(), lfr = atomic_load(&g_hire_last_fr), lrow = atomic_load(&g_hire_last_row);
+      if (atomic_load(&g_hire_info_has) && lfr && fr - lfr <= 90 && row == lrow && !strcmp(rn, g_hire_last_name)) {
           hire_info_clear("同一条目再点");
           atomic_store(&g_hire_click_xy, ((uint64_t)(uint32_t)x << 32) | (uint32_t)y);
           g_hire_click_step = 1;
           LOG("招募信息：同一条目 1.5 秒内再点（%d,%d）→ 收起信息栏，排一个原版点击（悬停 3 帧后按下 / 抬起）", x, y);
           return 1; } }
-    atomic_store(&g_hire_last_xy, ((uint64_t)(uint32_t)x << 32) | (uint32_t)y); atomic_store(&g_hire_last_fr, dm_guest_frame());
+    atomic_store(&g_hire_last_fr, dm_guest_frame());
+    atomic_store(&g_hire_last_row, row);
+    snprintf(g_hire_last_name, sizeof g_hire_last_name, "%s", rn);
     hire_info_publish(m, row);
     return 1;
 }

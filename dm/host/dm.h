@@ -84,6 +84,8 @@ float dm_3d_scale_cur(void);          // 当前生效的 3D 渲染比例（hle_o
 void dm_perf_thermal_set(int level);
 int dm_perf_thermal_level(void);
 int dm_fps_x10(void);   // 局内帧率 ×10（近 1 秒窗口平均，约每 0.5 秒刷新一次；覆盖层 DmTouchOverlay.m 每帧查） | in-game FPS x10 (about a 1-second window average, refreshed every ~0.5 s; polled by the overlay)
+void dm_ui_show_ours(uint64_t w, int on);   // 把我们的 Touch 控件设为可见（dm_cursor.c 带守卫；名字不是 Touch 开头不写） | make our Touch widget visible (guarded in dm_cursor.c; names not starting with Touch are not written)
+int dm_hire_info_line_mask(void);           // 招募信息栏每行颜色位：位 i=1 = 第 i 行是技能行（覆盖层画蓝色） | per-line colour mask of the hire info bar: bit i = 1 means line i is a skill line (overlay draws it blue)
 void dm_backtrace(uint64_t fp);
 void crash_watch_progress(uint32_t tick, const char *stage);
 void crash_watch_frame(void);

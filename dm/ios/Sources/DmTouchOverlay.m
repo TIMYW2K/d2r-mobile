@@ -290,7 +290,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                 if (!dm_hud_names_get(k, r, t, &len, &band) || len <= 0 || !(r[2] > r[0] && r[3] > r[1])) continue;
                 if (uw <= 0 || uh <= 0) continue;
                 CGRect rr = CGRectMake((ux + r[0] * uw) / sc, (uy + r[1] * uh) / sc, (r[2] - r[0]) * uw / sc, (r[3] - r[1]) * uh / sc);
-                UIColor *col = band == 3 ? [UIColor colorWithRed:.25 green:.85 blue:.35 alpha:1]
+                UIColor *col = band == 3 ? [UIColor colorWithRed:.95 green:.95 blue:.95 alpha:1]   // 白：健康档（T26 用户要求绿改白） | white: healthy band (green -> white per user request)
                               : band == 2 ? [UIColor colorWithRed:.95 green:.85 blue:.2 alpha:1]
                               : band == 1 ? [UIColor colorWithRed:.95 green:.55 blue:.15 alpha:1]
                               : band == 0 ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:1]
@@ -319,17 +319,18 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     }
 
     // 本地改动：雇佣兵招募信息栏（T10 重绘）—— 点 HireMenuPanel 列表行时，宿主发布该行矩形 + 标题 + 最多 8 行文字
-    // （名称 / 等级 / 雇佣费 / 技能等，内容由宿主决定；「等级」不再重复、不再有「技能图标已放大」这类提示）。
+    // （名称 / 等级 / 费用 / 技能等，内容由宿主决定；「等级」不再重复、不再有「技能图标已放大」这类提示；技能行按宿主给的颜色位画蓝色）。
     // 覆盖层只画用户要求的样子：纯深色半透明矩形（无边框、无圆角），游戏字体小字号（游戏说明框那种大小），
     // 标题略亮 + 正文若干行，行高 1.35、内边距 7 点；位置仍贴行右侧、放不下放左侧，并夹在屏内。
     // Local change: hire-vendor info bar (T10 redraw) -- a tap on a HireMenuPanel list row makes the host publish the
-    // row rect + a title + up to 8 lines (name / level / hire cost / skills; content is the host's job, with the
-    // duplicated 「等级」 removed and no "skill icons enlarged" hint any more). The overlay draws exactly what the user
+    // row rect + a title + up to 8 lines (name / level / fee / skills; content is the host's job, with the
+    // duplicated 「等级」 removed and no "skill icons enlarged" hint any more; skill lines are drawn blue from the host mask). The overlay draws exactly what the user
     // asked for: a plain dark translucent rectangle (no border, no rounded corners), small game-font text (equipment-
     // tooltip size), a slightly brighter title plus body lines, line height 1.35, 7 pt padding; still placed to the
     // right of the row, to the left when it does not fit, clamped to the screen.
     {
         extern int dm_hire_info_get(float r[4], char *title, int *nlines, char lines[8][96]);
+        extern int dm_hire_info_line_mask(void);   // 每行颜色位：bit i=1 = 技能行，画蓝色 | per-line colour mask: bit i = 1 means a skill line, drawn blue
         extern void dm_ui_rect(int *x, int *y, int *w, int *h);
         float r[4] = {0, 0, 0, 0}; char title[128] = ""; int nlines = 0; char lines[8][96] = {{0}};
         if (dm_hire_info_get(r, title, &nlines, lines)) {
@@ -347,8 +348,10 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                 NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new]; ps.lineBreakMode = NSLineBreakByTruncatingTail;
                 NSString *titleS = title[0] ? [NSString stringWithUTF8String:title] : @"佣兵";
                 NSMutableArray<NSString *> *body = [NSMutableArray array];
+                NSMutableArray<NSNumber *> *bodyBlue = [NSMutableArray array];   // 与 body 一一对应：这一行是不是技能行 | parallel to body: whether this line is a skill line
+                unsigned lmask = (unsigned)dm_hire_info_line_mask();
                 int nl = nlines < 0 ? 0 : (nlines > 8 ? 8 : nlines);
-                for (int i = 0; i < nl; i++) { if (!lines[i][0]) continue; NSString *s = [NSString stringWithUTF8String:lines[i]]; if (s.length) [body addObject:s]; }
+                for (int i = 0; i < nl; i++) { if (!lines[i][0]) continue; NSString *s = [NSString stringWithUTF8String:lines[i]]; if (s.length) { [body addObject:s]; [bodyBlue addObject:@((lmask >> i) & 1u)]; } }
                 CGFloat pad = 7, lineH = fs * 1.35, titleH = tfs * 1.35;
                 CGFloat contentW = [titleS sizeWithAttributes:@{NSFontAttributeName:tf}].width;
                 for (NSString *ln in body) { CGFloat w2 = [ln sizeWithAttributes:@{NSFontAttributeName:bf}].width; if (w2 > contentW) contentW = w2; }
@@ -366,10 +369,13 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                 [titleS drawInRect:CGRectMake(bx + pad, by + pad, boxW - pad * 2, titleH)
                     withAttributes:@{NSFontAttributeName:tf, NSForegroundColorAttributeName:[UIColor colorWithWhite:0.97 alpha:0.98], NSParagraphStyleAttributeName:ps}];
                 CGFloat ty = by + pad + titleH;
+                NSUInteger li = 0;
                 for (NSString *ln in body) {
+                    BOOL blue = li < bodyBlue.count && [bodyBlue[li] boolValue];
+                    UIColor *lc = blue ? [UIColor colorWithRed:.55 green:.78 blue:1.0 alpha:0.96] : [UIColor colorWithWhite:0.90 alpha:0.96];   // 技能行蓝色，其余行保持原色 | skill lines blue, other lines keep the old colour
                     [ln drawInRect:CGRectMake(bx + pad, ty, boxW - pad * 2, lineH)
-                        withAttributes:@{NSFontAttributeName:bf, NSForegroundColorAttributeName:[UIColor colorWithWhite:0.90 alpha:0.96], NSParagraphStyleAttributeName:ps}];
-                    ty += lineH;
+                        withAttributes:@{NSFontAttributeName:bf, NSForegroundColorAttributeName:lc, NSParagraphStyleAttributeName:ps}];
+                    ty += lineH; li++;
                 }
             }
         }

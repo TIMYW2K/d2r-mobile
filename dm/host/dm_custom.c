@@ -254,13 +254,16 @@ void dm_custom_ui_pump(unsigned long long root) {
         if (*(uint8_t *)(sp + 0x1a0) != dirty) { *(uint8_t *)(sp + 0x1a0) = (uint8_t)dirty; LOG("自定义设置：有未应用的改动 → %d（「应用 / 放弃」%s）", dirty, dirty ? "点亮" : "变灰"); } }
 }
 
-// ---- 游戏设置页「显示帧率」勾选框（T18/T19）：设置 → 游戏 → 用户界面 分区（touch_layout.py 插入的 Row ShowFrameRate，
+// ---- 游戏设置页「显示帧率」勾选框（T18/T19）：设置 → 游戏 → 用户界面 分区（touch_layout.py 插入的 TouchCustom_RowShowFps，
 // 控件名 TouchCustom_show_fps；文字 / tooltip 用游戏原版串 @OptionsMenuSettingShowFrameRate[Tooltip]，中英自动跟随）。
 // 点一下立即生效并存盘（键 show_fps，重启保留）；设置页重建 / 重开时按生效值重摆。原版面板不认识我们这行，
-// 所以同步与点击处理都在这里做（和自定义页同一套 set_toggle）。
+// 所以同步与点击处理都在这里做（和自定义页同一套 set_toggle）。T26：面板类会隐藏不认识的表行，这行 / 文字 / 勾选框都改成
+// Touch 开头的控件名，这里每帧强制它们可见（原版面板若每帧再隐藏，下一帧也会被我们摆回来）。
 // "Show frame rate" checkbox on the game's settings page (inserted by touch_layout.py): takes effect and saves immediately
 // on tap (key show_fps, kept across restarts); laid out again from the effective value when the page is rebuilt / reopened.
 // The original panel does not know our row, so both the sync and the tap handling live here (the same set_toggle as the custom page).
+// T26: the panel class hides unknown table rows, so the row / text / checkbox all use Touch-prefixed names and are forced visible
+// every frame here (if the panel hides them again, the next frame puts them back).
 void dm_show_fps_page_pump(unsigned long long root) {
     if (!root || !main_base()) return;
     static dm_wref seen; static int was_open, logged_missing, flips; static uint64_t flip_fr;
@@ -269,9 +272,16 @@ void dm_show_fps_page_pump(unsigned long long root) {
     if (!open) { was_open = 0; return; }
     if (!was_open) { was_open = 1; dm_wref_set(&seen, 0); logged_missing = 0; flips = 0; }   // 页刚打开：重新同步一次 | page just opened: resync once
     load_once();
-    uint64_t w = find_w(sp, "TouchCustom_show_fps", 1);
-    if (!w) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页里没找到 TouchCustom_show_fps（布局补丁没生效？）"); } return; }
-    if (!*(uint8_t *)(w + 0x50)) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：勾选框不在屏上（被原版面板隐藏了？）"); } return; }
+    uint64_t row = find_w(sp, "TouchCustom_RowShowFps", 1);
+    if (!row) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页里没找到 TouchCustom_RowShowFps 行（布局补丁没进包，或面板把整行删了？）"); } return; }
+    {   // 原版面板会把不认识的表行整行隐藏（自定义页当年实测）：这行 / 文字 / 勾选框都是我们的 Touch 控件，每帧强制可见（只在变化时写） | the original panel hides unknown table rows (measured on the custom page years ago): the row / text / checkbox are all our Touch widgets, force them visible every frame (write only on change)
+      int was = *(uint8_t *)(row + 0x50);
+      dm_ui_show_ours(row, 1);
+      uint64_t txt = find_w(row, "TouchCustom_ShowFpsText", 1); if (txt) dm_ui_show_ours(txt, 1);
+      if (!was) { static int rlg; if (!rlg) { rlg = 1; LOG("显示帧率：设置页行原先被原版面板隐藏（+0x50=0），已强制显示"); } } }
+    uint64_t w = find_w(row, "TouchCustom_show_fps", 1);
+    if (!w) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页行里没找到 TouchCustom_show_fps（布局补丁没生效？）"); } return; }
+    dm_ui_show_ours(w, 1);
     int val = atomic_load(&g_val[K_SHOW_FPS]);
     if (dm_wref_get(&seen) != w) {   // 页刚出现 / 控件重建：先摆成生效值，这一帧不当玩家点了 | page just appeared / widget rebuilt: lay it out from the effective value, do not treat this frame as a player tap
         dm_wref_set(&seen, w); set_toggle(w, val);

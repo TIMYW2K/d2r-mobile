@@ -1410,15 +1410,22 @@ def _row_height(fn):
 for _k in ('soundoptionspanelhd.json', 'gameplayoptionspanelhd.json', 'onlinegameoptionspanelhd.json'): PRESENT[_k] = _row_height(PRESENT[_k])
 
 
-# 本地改动（T18/T19）：游戏 设置 → 游戏 → 用户界面 分区插一行「显示帧率」。借「显示电量」那一行整块（Row ShowBatteryLevel）：
+# 本地改动（T18/T19/T26）：游戏 设置 → 游戏 → 用户界面 分区插一行「显示帧率」。借「显示电量」那一行整块（Row ShowBatteryLevel）：
 # 复制它的排版字段，改名字 / 文本 / 消息 / tooltip；勾选框控件名 TouchCustom_show_fps（宿主 dm_custom.c 键 show_fps）。
 # 文本与 tooltip 直接用游戏自带本地化串 @OptionsMenuSettingShowFrameRate[Tooltip]（中英自动跟随），所以不进中英表。
+# T26 证据：原版 RomFS 里「设置→游戏」只有这一份 GameplayOptionsPanelHD.json（没有 Controller 变体，tmp/hostdev/layouts 全查过），
+# 所以行看不到不是补丁打错文件，而是面板类把不认识的表行隐藏了（自定义页当年同样实测：不认识的表行 +0x50=0）。
+# 对策：行 / 文字控件名也改成 Touch 开头（宿主 dm_cursor.c 的 ui_show_ours 只允许写 Touch 控件），由 dm_custom.c 每帧强制可见。
 # 插在原行之后；插入前用行块配对找边界，插入后校验大括号数量不变，避免弄坏整份布局（坏 JSON = 面板不显示且不报错）。
-# Local change (T18/T19): insert a 「显示帧率」(Show Frame Rate) row into the game's Settings > Game > User Interface
+# Local change (T18/T19/T26): insert a 「显示帧率」(Show Frame Rate) row into the game's Settings > Game > User Interface
 # section. It copies the whole 「ShowBatteryLevel」 row (same table/layout fields) and only changes the name / text /
 # message / tooltip; the checkbox widget is TouchCustom_show_fps (host key show_fps in dm_custom.c). The text and tooltip
 # use the game's own localised strings (@OptionsMenuSettingShowFrameRate[Tooltip], language follows automatically), so no
-# entry in the Chinese-English table. Inserted right after the original row; the row block is found by brace matching and
+# entry in the Chinese-English table. T26 evidence: the original RomFS has only this one gameplay-options layout (no Controller
+# variant -- tmp/hostdev/layouts was checked completely), so the row not showing was not a wrong-file patch: the panel class hides
+# table rows it does not know (measured on the custom page: unknown rows get +0x50 = 0). The row / text controls therefore also use
+# Touch-prefixed names (ui_show_ours in dm_cursor.c only writes Touch widgets) and dm_custom.c forces them visible every frame.
+# Inserted right after the original row; the row block is found by brace matching and
 # the brace counts are checked afterwards, so a broken script can never corrupt the whole layout (broken JSON = the panel
 # silently stops showing).
 def _add_showfps_row(fn):
@@ -1429,9 +1436,9 @@ def _add_showfps_row(fn):
         if not m: raise SystemExit('touch_layout：游戏设置页里没有 Row ShowBatteryLevel（原版布局变了？），显示帧率行没插')
         st = m.start(); en = _block_end(text, st)
         row = ('\n\n                        {\n'
-               '                            "type": "TableRowWidget", "name": "Row ShowFrameRate",\n'
+               '                            "type": "TableRowWidget", "name": "TouchCustom_RowShowFps",\n'
                '                            "children": [\n'
-               '                                { "type": "TextBoxWidget", "name": "ShowFrameRateText", "fields": { "text": "@OptionsMenuSettingShowFrameRate", "style": "$StyleSettingsText" } },\n'
+               '                                { "type": "TextBoxWidget", "name": "TouchCustom_ShowFpsText", "fields": { "text": "@OptionsMenuSettingShowFrameRate", "style": "$StyleSettingsText" } },\n'
                '                                {\n'
                '                                    "type": "ToggleButtonWidget", "name": "TouchCustom_show_fps",\n'
                '                                    "fields": {\n'
@@ -1453,7 +1460,9 @@ def _add_showfps_row(fn):
         new = text[:en + 1] + ',' + row + text[en + 1:]
         if new.count('{') != text.count('{') + row.count('{') or new.count('}') != text.count('}') + row.count('}'):
             raise SystemExit('touch_layout：显示帧率行插入后大括号数量不对，没写回')
-        if new.count('"TouchCustom_show_fps"') != 1: raise SystemExit('touch_layout：显示帧率行的勾选框名字应恰好 1 处')
+        if new.count('"TouchCustom_RowShowFps"') != 1 or new.count('"TouchCustom_ShowFpsText"') != 1 or new.count('"TouchCustom_show_fps"') != 1:
+            raise SystemExit('touch_layout：显示帧率行的行 / 文字 / 勾选框名字应各恰好 1 处')
+        if '"Row ShowFrameRate"' in new: raise SystemExit('touch_layout：显示帧率行还留着旧行名 Row ShowFrameRate')
         return new, n + 1
     return g
 PRESENT['gameplayoptionspanelhd.json'] = _add_showfps_row(PRESENT['gameplayoptionspanelhd.json'])
