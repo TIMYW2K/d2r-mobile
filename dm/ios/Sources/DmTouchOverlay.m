@@ -9,11 +9,13 @@
 #include "../../host/dm_i18n.h"
 
 static UIColor *bronze(CGFloat a) { return [UIColor colorWithRed:.66 green:.53 blue:.32 alpha:a]; }
-// 本地改动（T38）：灵动岛回城胶囊按钮相对岛中心的偏移（点）。用户要求右移 5、下移 2，想再调只改这两个数。
-// Local change (T38): offset (points) of the Dynamic-Island town-portal capsule button from the island centre.
-// The user asked for +5 right / +2 down; retune with these two constants only.
-static const CGFloat kIslandBtnDx = 5.0;
-static const CGFloat kIslandBtnDy = 2.0;
+// 本地改动（T38/T70）：灵动岛回城胶囊按钮相对岛中心的偏移（点）。先要右移 5、下移 2；后又要左侧岛再左移 2、上移 2
+// （= +3/0；右侧岛自动镜像成 -3/0），想再调只改这两个数。
+// Local change (T38/T70): offset (points) of the Dynamic-Island town-portal capsule button from the island centre.
+// The user first asked for +5 right / +2 down, then for another 2 left / 2 up on a left-side island (= +3 / 0; a
+// right-side island mirrors the X offset automatically to -3 / 0). Retune with these two constants only.
+static const CGFloat kIslandBtnDx = 3.0;
+static const CGFloat kIslandBtnDy = 0.0;
 // 外观按落指立即反馈，不等待游戏按键判定；取消瞄准的手指不再点亮槽框。
 // Visual feedback starts on contact without waiting for game input; a cancelled aim finger no longer lights the frame.
 static BOOL button_held(const dm_tc_state *s, int target) {

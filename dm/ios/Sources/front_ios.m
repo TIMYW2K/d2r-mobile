@@ -76,6 +76,7 @@ static BOOL touch_control_log_enabled(void) {
 - (void)restartCover:(int)mode;
 - (void)captureTouchLayer:(NSString *)path;
 - (void)refreshPortalBinding;
+- (void)rotationChanged:(const char *)why;   // 转屏（180° 横屏翻转）：保持控件层可见并修复重画 | rotation (180-degree landscape flip): keep the control layer visible and repair/repaint it
 @end
 static __weak DmMetalView *g_touch_view;
 // 真全屏（屏幕比 16:9 窄，iPad 4:3）：3D 铺满整窗，游戏视图（界面、自绘控件、界面触点）是贴底的一块 16:9，见 front_ios_view。
@@ -184,8 +185,18 @@ void dm_movie_show(const char *host_path, int64_t dur_ns) {
 static UIInterfaceOrientation dm_scene_orientation(UIView *v) {
     UIWindowScene *ws = v.window.windowScene;
     if (!ws) return UIInterfaceOrientationUnknown;
-    if (@available(iOS 26.0, *)) return ws.effectiveGeometry.interfaceOrientation;
-    return ws.interfaceOrientation;
+    UIInterfaceOrientation o = UIInterfaceOrientationUnknown;
+    if (@available(iOS 26.0, *)) o = ws.effectiveGeometry.interfaceOrientation;
+    else o = ws.interfaceOrientation;
+    // 本地改动：转屏动画途中接口方向可能短暂读到 Unknown / 竖屏（旧方向没了、新方向还没生效）。横屏尺寸下沿用上一次的
+    // 横屏方向，胶囊就不会因为读不到方向而跳到竖屏位置（看起来像消失）。
+    // Local change: in the middle of the rotation animation the interface orientation can briefly read Unknown / portrait
+    // (the old value is gone and the new one is not in effect yet). While the view is landscape-sized, reuse the last
+    // landscape orientation, so the capsule never jumps to the portrait position (which looks like it vanished).
+    static UIInterfaceOrientation lastLandscape = UIInterfaceOrientationUnknown;
+    if (UIInterfaceOrientationIsLandscape(o)) { lastLandscape = o; return o; }
+    if (v.bounds.size.width > v.bounds.size.height && lastLandscape != UIInterfaceOrientationUnknown) return lastLandscape;
+    return o;
 }
 static BOOL dm_island_on_right(UIView *v) {
     UIInterfaceOrientation o = dm_scene_orientation(v);
@@ -239,6 +250,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     uint64_t _touchEventSeq,_touchReceiptSeq,_touchPublishedEventSeq; // 仅 DM_TOUCH_CONTROL_LOG 开启时推进 | Advanced only when DM_TOUCH_CONTROL_LOG is on
     UITouch *_pendEnd; double _pendEndTime,_pendWall; BOOL _pendFire,_finalAsked;   // 松手了但宿主的答案还没回：这根手指的「抬起」先挂着（见 finishTouches） | Released but the host's answer is not back yet: this finger's "lift" is held pending (see finishTouches)
     int32_t _minLeft,_maxLeft; uint64_t _lastButtons; unsigned _touchAPresses,_touchShots; UITouch *_uiFinger; CGPoint _uiFeO; BOOL _uiFeDrag; BOOL _uiDragOn; UITouch *_mapTouch, *_mapBackTouch, *_bindTouch; UIView *_ghostDim; BOOL _ghostOn; uint64_t _bindKey; uint32_t _selId; double _statNext; double _tipUntil, _addAt; unsigned _mapWorldSeq; BOOL _mapWorldAsked; CGPoint _mapWorldPt; CGPoint _mapP0, _bindP0; double _mapT0; BOOL _pulseTicking; uint64_t _pulseEpoch,_pulseS0; double _pulseT0,_pulseSeen,_pulseFree; unsigned _itemSeq,_relSeq; BOOL _relAsked,_itemAsked; int _itemKind;
+    double _rotHoldUntil;   // 转屏过渡「保持控件层可见 + 定时重画」的截止时刻（CACurrentMediaTime） | deadline of the rotation transition's "keep the control layer visible + repaint on a timer" window (CACurrentMediaTime)
 }
 + (Class)layerClass { return CAMetalLayer.class; }
 - (instancetype)initWithFrame:(CGRect)f {
@@ -272,6 +284,31 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     return self;
 }
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
+// 本地改动（T70）：转屏（180° 横屏翻转）时 UIKit 会重新布局、并可能把视图尺寸短暂置零，之前控件层（含灵动岛回城胶囊）
+// 在旋转过程中整段消失、转完才回来。这里在方向变化的当拍和过渡结束后各修一次几何并强制重画，过渡期间 tick 里保持可见
+// 并按 ~15 Hz 重画（见 tickTouchControls），控件层不再中途消失。
+// Local change (T70): on a rotation (180-degree landscape flip) UIKit re-lays out and may briefly zero the view size; the
+// control layer (including the Dynamic-Island town-portal capsule) used to disappear for the whole rotation and come back
+// only after it ended. Here the geometry is repaired and the layer repainted at the orientation change and again after the
+// transition settles, while the tick keeps it visible and repaints at ~15 Hz (see tickTouchControls), so it no longer vanishes.
+- (void)rotationChanged:(const char *)why {
+    if (self.bounds.size.width < 2 || self.bounds.size.height < 2) return;   // 过渡里尺寸可能短暂为 0：这一拍先不动，下一拍由 tick 再修 | the size can briefly be zero mid-transition: leave it to the tick
+    _rotHoldUntil = CACurrentMediaTime() + 1.3;
+    LOG("前端：转屏（%s，方向 %ld，视图 %.0fx%.0f）→ 控件层保持可见并修复重画", why, (long)dm_scene_orientation(self), self.bounds.size.width, self.bounds.size.height);
+    [self setNeedsLayout];
+    __weak typeof(self) weakSelf = self;
+    void (^repair)(void) = ^{
+        typeof(self) sf = weakSelf; if (!sf) return;
+        if (sf.bounds.size.width < 2 || sf.bounds.size.height < 2) return;
+        sf->_overlay.frame = sf.bounds; sf->_info.frame = sf.bounds;
+        if (!sf->_feMode && !sf->_padMode) sf->_overlay.hidden = NO;
+        [sf->_overlay setNeedsDisplay];
+    };
+    repair();
+    static const double kRotRepairDelays[] = {0.06, 0.18, 0.36, 0.6, 0.95};
+    for (int i = 0; i < (int)(sizeof kRotRepairDelays / sizeof kRotRepairDelays[0]); i++)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kRotRepairDelays[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), repair);
+}
 - (void)layoutSubviews {
     [super layoutSubviews];
     if (_verLabel) {   // 左下角，避开安全区 | bottom-left, clear of the safe area
@@ -293,7 +330,11 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     if (safeChanged || _controls.layout.width!=self.bounds.size.width || _controls.layout.height!=self.bounds.size.height) {
         [self cancelControlsFrom:"layout"]; dm_tc_resize(&_controls,self.bounds.size.width,self.bounds.size.height);
     }
-    _overlay.frame=self.bounds; _info.frame=self.bounds; [_overlay setNeedsDisplay]; if(!_rsCover.hidden && self.window) _rsCover.frame=self.window.bounds;
+    // 本地改动：转屏过渡里 UIKit 可能把视图尺寸短暂置零——别把控件层跟着清成 0×0（那期间胶囊会消失）。
+    // Local change: during a rotation transition UIKit may briefly zero the view size -- do not clear the control layer to
+    // 0x0 with it (the capsule would vanish for that stretch).
+    if (self.bounds.size.width >= 2 && self.bounds.size.height >= 2) { _overlay.frame=self.bounds; _info.frame=self.bounds; [_overlay setNeedsDisplay]; }
+    if(!_rsCover.hidden && self.window) _rsCover.frame=self.window.bounds;
 }
 - (void)restartCover:(int)mode {   // 挂在窗口最上层、整窗大小：盖住游戏视图之外的留边与别的兄弟视图，触点全落在它身上被吞掉。2 = 透明（读取画面露出来） | Attached at the top of the window at full window size: covers the margins outside the game view and other sibling views, and all touch points land on it and are swallowed. 2 = transparent (the loading screen shows through)
     UIView *host=self.window ?: self; if(mode){ if(_rsCover.superview!=host) [host addSubview:_rsCover]; _rsCover.frame=host.bounds; [host bringSubviewToFront:_rsCover]; }
@@ -634,7 +675,21 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
 }
 - (void)tickTouchControls:(double)now {
     [self mapGoalSync];
-    { int dm_padmode_busy(void); BOOL hide=_feMode || _padMode || dm_padmode_busy(); if(_overlay.hidden!=hide) _overlay.hidden=hide; }   // 手柄 → 触屏切换事务还没完成（界面还在重建）时触屏控件层先不露出来（dm_padmode.c） | While the controller → touch switch transaction is not yet complete (the UI is still rebuilding) the touch control layer is not revealed yet (dm_padmode.c)
+    // 本地改动：方向一变（转屏动画开始）就进入「保持重画」时段；effectiveGeometry 在旋转一开始就会变。
+    // Local change: a change of interface orientation (the rotation animation starting) enters the repaint window;
+    // effectiveGeometry flips right at the start of the rotation.
+    { static UIInterfaceOrientation lastO = UIInterfaceOrientationUnknown; UIInterfaceOrientation o = dm_scene_orientation(self);
+      if (lastO != UIInterfaceOrientationUnknown && o != lastO) [self rotationChanged:"scene"];
+      lastO = o; }
+    { int dm_padmode_busy(void); BOOL hide=_feMode || _padMode || dm_padmode_busy();
+      // 本地改动：转屏过渡期间不藏控件层（手柄模式 / 前端页面照旧藏）。| Local change: keep the control layer visible
+      // during a rotation transition (controller mode / front-end pages still hide it).
+      if (now < _rotHoldUntil && !_feMode && !_padMode) hide = NO;
+      if(_overlay.hidden!=hide) _overlay.hidden=hide; }   // 手柄 → 触屏切换事务还没完成（界面还在重建）时触屏控件层先不露出来（dm_padmode.c） | While the controller → touch switch transaction is not yet complete (the UI is still rebuilding) the touch control layer is not revealed yet (dm_padmode.c)
+    // 本地改动：转屏过渡期间按 ~15 Hz 重画控件层（胶囊贴图/位置在旋转过程中保持正确，不再整段消失）。
+    // Local change: during a rotation transition repaint the control layer at ~15 Hz (the capsule art / position stays
+    // correct through the rotation instead of vanishing for its whole duration).
+    if (now < _rotHoldUntil) { static double rotRepaintNext; if (now >= rotRepaintNext) { rotRepaintNext = now + 1.0 / 15.0; [_overlay setNeedsDisplay]; } }
     { void dm_rift_hud_draw(UIView *, CGRect, BOOL); dm_rift_hud_draw(_info, world_rect(self), _navigation || _info.hidden); }
     {   // 高价值掉落震动（宿主 dm_drophaptic.c 判档）：1 重 / 2 中 / 3 轻 | High-value drop haptics (the host's dm_drophaptic.c decides the level): 1 heavy / 2 medium / 3 light
         int dm_drop_haptic_take(void); int t = dm_drop_haptic_take();
@@ -1172,6 +1227,13 @@ UIView *front_ios_view(CGRect frame) {
     CGRect full = frame; frame = letterbox_rect(frame);
     dm_tc_set_tall_scale(UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad);   // UIKit 点数：仅 iPad 开启有上限的平板缩放 | UIKit points: enable the bounded tablet profile only on iPad.
     DmMetalView *v = [[DmMetalView alloc] initWithFrame:frame];
+    // 本地改动：设备方向变化 = 转屏动画的开始（界面方向锁不拦这个通知），用它进入「控件层保持可见 + 重画」时段。
+    // Local change: a device orientation change marks the start of the rotation animation (the interface-orientation lock
+    // does not suppress this notification); use it to enter the "control layer stays visible + repaint" window.
+    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceOrientationDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+        (void)n; DmMetalView *tv = g_touch_view; if (tv) [tv rotationChanged:"device"];
+    }];
     g_rate_link = [CADisplayLink displayLinkWithTarget:[DmRateHint new] selector:@selector(tick:)];
     g_rate_link.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
     [g_rate_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
