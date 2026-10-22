@@ -297,8 +297,23 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                                           : [UIColor whiteColor];
                 if (dm_hud_names_dim()) col = [col colorWithAlphaComponent:0.45];   // 菜单打开时变暗 | dimmed under menus
                 UIFont *f = dm_game_font(MAX(8, MIN(16, rr.size.height * 0.85))); if (!f) f = [UIFont systemFontOfSize:11];
+                // 本地改动（T19；task-20 用户确认取消像素偏移）：名字首尾空白（含全角空格）再去一次；文本中心严格取头像矩形中心
+                // （宿主发布的 rect 就是头像槽矩形，中心 = 头像中心）。不做上下像素偏移。打一次限频布局日志（中心 / 文本宽）供真机核对。
+                // Local change (T19; task-20: the user asked to drop the pixel offset): trim the name's padding whitespace again
+                // (including the full-width space) and centre the text strictly on the portrait rect's centre (the host publishes
+                // the portrait slot rect, so its centre is the portrait centre). No vertical pixel offset. One rate-limited layout
+                // log (centre / text width) for checking on a real device.
+                NSString *raw = [NSString stringWithUTF8String:t];
+                if (!raw) continue;
+                NSString *name = [raw stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@" \t\r\n\u3000"]];
+                if (name.length == 0) continue;
                 NSMutableParagraphStyle *pp = [NSMutableParagraphStyle new]; pp.alignment = NSTextAlignmentCenter;
-                [[NSString stringWithUTF8String:t] drawInRect:rr withAttributes:@{NSFontAttributeName:f, NSForegroundColorAttributeName:col, NSParagraphStyleAttributeName:pp}];
+                NSDictionary *attrs = @{NSFontAttributeName:f, NSForegroundColorAttributeName:col, NSParagraphStyleAttributeName:pp};
+                CGSize tw = [name sizeWithAttributes:attrs];
+                CGRect tr = CGRectMake(CGRectGetMidX(rr) - tw.width * 0.5, rr.origin.y + (rr.size.height - tw.height) * 0.5, tw.width + 2, tw.height);
+                { static int logged; if (!(logged & (1 << k))) { logged |= 1 << k;
+                    NSLog(@"名字布局：槽 %d 头像中心=(%.1f,%.1f) 文本宽=%.1f 文本=%@", k, CGRectGetMidX(rr), CGRectGetMidY(rr), tw.width, name); } }
+                [name drawInRect:tr withAttributes:attrs];
             }
         }
     }
@@ -444,6 +459,31 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     [self drawV4:c];   // 底栏：它自己按面板栈 / 死亡判显隐（dm_hud_bar_visible）。原先放在摇杆之后，被下面「面板开着就不画摇杆」的提前返回一起跳过—— | Bottom bar: it decides its own visibility from the panel stack / death (dm_hud_bar_visible). It used to come after the joystick and was skipped along with the early return below for "don't draw the joystick while a panel is open" —
                        // 只开着 NPC 对话菜单 / 说话框时（设计上底栏照常显示）UIKit 底栏不画，露出游戏层那份：没有数值和经验条、难度格空、十字位写着「功能」
                        // When only the NPC dialog menu / speech box is open (by design the bottom bar stays visible), the UIKit bottom bar is not drawn and the game-layer copy shows through: no values or experience bar, the difficulty cell empty, and "功能" (Functions) written in the cross slot
+    // 本地改动（T18/T19）：局内左下角显示帧率。游戏 设置 → 游戏 → 用户界面 分区勾上「显示帧率」（TouchCustom_show_fps，
+    // 宿主键 show_fps）后，在原版本号的位置用游戏字体 11pt、暖白半透明画「FPS 60」；近 1 秒平均、约每 0.5 秒刷新。
+    // 仅局内：主菜单 / 选角不画（dm_ingame_now 为假；覆盖层此时本来也隐藏），掌机模式（opmode 0）也不画。
+    // Local change (T18/T19): show the in-game FPS at the bottom-left. With "Show Frame Rate" checked on the game's
+    // Settings > Game > User Interface section (TouchCustom_show_fps, host key show_fps), draw "FPS 60" in the position of
+    // the version label, game font 11 pt, warm-white translucent; about a 1-second average refreshed every ~0.5 s.
+    // In a run only: no main menu / character select (dm_ingame_now is false; the overlay is hidden there anyway), and no
+    // handheld mode (opmode 0).
+    {
+        extern int dm_show_fps_on(void);
+        extern int dm_fps_x10(void);
+        extern int dm_ingame_now(void);
+        extern int dm_opmode(void);
+        if (dm_show_fps_on() && dm_ingame_now() && dm_opmode() != 0) {
+            int fx = dm_fps_x10();
+            if (fx > 0) {
+                UIEdgeInsets si = self.safeAreaInsets;
+                UIFont *f = dm_game_font(11.0); if (!f) f = [UIFont systemFontOfSize:11.0];
+                NSString *t = [NSString stringWithFormat:@"FPS %d", (fx + 5) / 10];
+                NSDictionary *at = @{ NSFontAttributeName: f, NSForegroundColorAttributeName: [UIColor colorWithRed:.85 green:.79 blue:.65 alpha:0.62] };
+                CGSize ts = [t sizeWithAttributes:at];
+                [t drawInRect:CGRectMake(si.left + 2, self.bounds.size.height - si.bottom - ts.height - 2, ts.width + 2, ts.height) withAttributes:at];
+            }
+        }
+    }
     if (self.hud.valid && self.hud.dead) return;   // 死亡画面：右侧圆钮已由掩码收起，左侧摇杆圈也不画（截图：死后摇杆圈还在） | death screen: the round buttons on the right are already hidden by the mask, and the stick ring on the left is not drawn either (screenshot: the stick ring was still there after death)
     if (s->navigation_mode) return;   // 面板开着（与起摇杆同一个判定：dm_touch_controls.c 起摇杆的条件带 !navigation_mode）：摇杆起不来，静止淡影只会压在面板上（iPad 上双面板占满整宽）——不画 | a panel is open (the same check as starting the stick: the stick-start condition in dm_touch_controls.c includes !navigation_mode): the stick cannot start, and the idle faint shadow would only sit on top of the panel (on iPad the dual panels fill the whole width) - not drawn
     BOOL moving = s->joy_slot >= 0;

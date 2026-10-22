@@ -1189,7 +1189,7 @@ def _drop_rows(*rows):
 # (console version VideoOptionsPanelHD.json; the touch version has already removed the video tab): the fourth item of the tab strip (originally 「控制」(Controls) = KeyBindingMenu, which does not appear on this platform) is renamed 「自定义」(Custom) and opens VideoOptionsPanel;
 # the video page's table is replaced entirely with our rows: section header + one original-game checkbox per switch (following the fields of the 「自动拾取金币」(Auto Gold Pickup) row on the 「游戏」(Game) page). Widget names are TouchCustom_<key>,
 # and the host dm_custom.c reads whether each is checked and handles apply / discard / default. The checkbox message sends a harmless ClosePanel (same as 「极乐世界」(Elysium)), which the game does not recognize
-_CUSTOM_KEYS = ('auto_mana', 'merc_pot', 'drop_light', 'map_mark', 'item_notes', 'icloud', 'pot_pick', 'drop_haptic', 'gem_pick', 'store_btn', 'eco_fps', 'q3d', 'loot_filter', 'auto_buff', 'touch_swap_above', 'hdr', 'zoom')   # 本地改动：touch_swap_above 接在上游位置，hdr、zoom 追加末尾（与 dm_custom.c 的 k_keys 同序）
+_CUSTOM_KEYS = ('auto_mana', 'merc_pot', 'drop_light', 'map_mark', 'item_notes', 'icloud', 'pot_pick', 'drop_haptic', 'gem_pick', 'store_btn', 'q3d', 'loot_filter', 'auto_buff', 'touch_swap_above', 'hdr', 'zoom')   # 本地改动：touch_swap_above 接在上游位置，hdr、zoom 追加末尾（与 dm_custom.c 的 k_keys 同序）；T18：省电模式（eco_fps）已删除
 # 字在中英表（dm/i18n/ui_text.tsv 的 dmCustom<键名驼峰>），布局写 @键、跟原版语言走（英文版）；行高按中文行数分，英文必须同样行数（不然换语言排版变）
 # The text lives in the Chinese-English string table (dmCustom<key name in camel case> in dm/i18n/ui_text.tsv); layouts write @key and follow the
 # original game's language (English version); row height is assigned by the number of Chinese lines, and English must have the same number of lines
@@ -1220,8 +1220,8 @@ _CUSTOM_TITLE_H, _CUSTOM_LINE_H = 180, 180
 # text and voice can differ, and nothing on the Custom page can touch the voice language any more.
 _CUSTOM_ALL = _CUSTOM_ROWS
 _CUSTOM_TEST_ROWS = int(os.environ.get('DM_CUSTOM_TEST_ROWS', '0'))   # 测试（造现场）：末尾多摆这么多行假行，验更多行时的滚动；产品不设 | test (test setup): append this many dummy rows at the end, to verify scrolling with more rows; not set in the product
-# 「3D 画质」（q3d）是单选的两项、每项下面一行说明小字，占两行高（_CUSTOM_Q3D_H）；其余各行一行高
-# "3D Quality" (q3d) is a radio with two options, each with a line of small description text below, taking two rows of height (_CUSTOM_Q3D_H); every other row is one row high
+# 「性能模式」（q3d）是单选的两项、每项下面一行说明小字，占两行高（_CUSTOM_Q3D_H）；其余各行一行高
+# "Performance mode" (q3d) is a radio with two options, each with a line of small description text below, taking two rows of height (_CUSTOM_Q3D_H); every other row is one row high
 _CUSTOM_Q3D_H = 2 * _CUSTOM_LINE_H
 _CUSTOM_ROW_H = [(_CUSTOM_Q3D_H if k in ('q3d', 'touch_swap_above') else _CUSTOM_LINE_H) for k, _ in _CUSTOM_ALL] + [_CUSTOM_LINE_H] * _CUSTOM_TEST_ROWS
 _CUSTOM_Y = [_CUSTOM_TITLE_H + sum(_CUSTOM_ROW_H[:i]) for i in range(len(_CUSTOM_ROW_H))]
@@ -1262,10 +1262,10 @@ def _custom_lang_row():
     return (text('TouchCustom_lang_en_Text', 0, 700, 'dmCustomLang')
             + text('TouchCustomLangZh_Text', _LANG_ZH_X[0], _LANG_ZH_X[1] - _LANG_ZH_X[0] - 10, 'dmCustomLangZh') + box('TouchCustom_lang_zh', _LANG_ZH_X[1])
             + text('TouchCustomLangEn_Text', _LANG_EN_X[0], _LANG_EN_X[1] - _LANG_EN_X[0] - 10, 'dmCustomLangEnOpt') + box('TouchCustom_lang_en', _LANG_EN_X[1]))
-# 「3D 画质」（流畅优先（缺省，掉帧自动降 3D 比例）/ 画质优先（不自动降））：上下两项单选，每项标题下一行说明小字。
+# 「性能模式」（流畅优先（缺省，掉帧自动降 3D 比例）/ 画质优先（不自动降））：上下两项单选，每项标题下一行说明小字。
 # 存的是一个键 q3d（1 = 画质优先）：「画质优先」的勾选框叫 TouchCustom_q3d、「流畅优先」的叫 TouchCustom_q3d_smooth（它的反面），宿主 dm_custom.c 让两框互斥（同语言行）。
 # TouchCustom_q3d_Text 是空字、高度盖住两项的框：手柄选中框按「文字框与勾选框的上下沿取并」框住整行（dm_custom.c），所以用它把两项一起框进去
-# "3D Quality" (Smoothness first (default, automatically lowers the 3D scale on frame drops) / Quality first (no automatic lowering)): a stacked two-option radio, each option with a line of small description text below its title.
+# "Performance mode" (Smoothness first (default, automatically lowers the 3D scale on frame drops) / Quality first (no automatic lowering)): a stacked two-option radio, each option with a line of small description text below its title.
 # It stores a single key q3d (1 = quality first): the "Quality first" checkbox is TouchCustom_q3d and the "Smoothness first" one is TouchCustom_q3d_smooth (its inverse); the host's dm_custom.c makes the two boxes mutually exclusive (like the language row).
 # TouchCustom_q3d_Text is an empty-text box tall enough to cover both options: the controller selection frame wraps the whole row by "the union of the top/bottom edges of the text box and the checkbox" (dm_custom.c), so it is used to frame both options together
 def _custom_q3d_row(i, setting="q3d"):
@@ -1400,6 +1400,56 @@ def _row_height(fn):
         return text.replace(a, '"rowHeight": 180'), n + text.count(a)
     return g
 for _k in ('soundoptionspanelhd.json', 'gameplayoptionspanelhd.json', 'onlinegameoptionspanelhd.json'): PRESENT[_k] = _row_height(PRESENT[_k])
+
+
+# 本地改动（T18/T19）：游戏 设置 → 游戏 → 用户界面 分区插一行「显示帧率」。借「显示电量」那一行整块（Row ShowBatteryLevel）：
+# 复制它的排版字段，改名字 / 文本 / 消息 / tooltip；勾选框控件名 TouchCustom_show_fps（宿主 dm_custom.c 键 show_fps）。
+# 文本与 tooltip 直接用游戏自带本地化串 @OptionsMenuSettingShowFrameRate[Tooltip]（中英自动跟随），所以不进中英表。
+# 插在原行之后；插入前用行块配对找边界，插入后校验大括号数量不变，避免弄坏整份布局（坏 JSON = 面板不显示且不报错）。
+# Local change (T18/T19): insert a 「显示帧率」(Show Frame Rate) row into the game's Settings > Game > User Interface
+# section. It copies the whole 「ShowBatteryLevel」 row (same table/layout fields) and only changes the name / text /
+# message / tooltip; the checkbox widget is TouchCustom_show_fps (host key show_fps in dm_custom.c). The text and tooltip
+# use the game's own localised strings (@OptionsMenuSettingShowFrameRate[Tooltip], language follows automatically), so no
+# entry in the Chinese-English table. Inserted right after the original row; the row block is found by brace matching and
+# the brace counts are checked afterwards, so a broken script can never corrupt the whole layout (broken JSON = the panel
+# silently stops showing).
+def _add_showfps_row(fn):
+    def g(text):
+        text, n = fn(text)
+        if n == 0: return text, 0
+        m = re.search(r'\{\s*"type"\s*:\s*"[A-Za-z]+"\s*,\s*"name"\s*:\s*"Row ShowBatteryLevel"', text)
+        if not m: raise SystemExit('touch_layout：游戏设置页里没有 Row ShowBatteryLevel（原版布局变了？），显示帧率行没插')
+        st = m.start(); en = _block_end(text, st)
+        row = ('\n\n                        {\n'
+               '                            "type": "TableRowWidget", "name": "Row ShowFrameRate",\n'
+               '                            "children": [\n'
+               '                                { "type": "TextBoxWidget", "name": "ShowFrameRateText", "fields": { "text": "@OptionsMenuSettingShowFrameRate", "style": "$StyleSettingsText" } },\n'
+               '                                {\n'
+               '                                    "type": "ToggleButtonWidget", "name": "TouchCustom_show_fps",\n'
+               '                                    "fields": {\n'
+               '                                        "rect": "$OptionsToggleRect",\n'
+               '                                        "sound": "cursor_menu_select_hd",\n'
+               '                                        "focusIndicatorPadding": "$OptionsToggleFocusIndicatorPadding",\n'
+               '                                        "focusIndicatorFilename": "$OptionsToggleFocusIndicatorFilename",\n'
+               '                                        "filename": "Lobby\\\\CreateGame\\\\CreateGame_AdvancedCheckbox",\n'
+               '                                        "focusIndicatorOffset": { "x": 0, "y": -4 },\n'
+               '                                        "untoggledFrame": 0, "untoggledPressedFrame": 1, "untoggledHoveredFrame": 3, "untoggledDisabledFrame": 2,\n'
+               '                                        "toggledFrame": 4, "toggledPressedFrame": 5, "toggledHoveredFrame": 6,\n'
+               '                                        "onClickMessage": "PanelManager:ClosePanel:TouchCustom_show_fps",\n'
+               '                                        "tooltipString": "@OptionsMenuSettingShowFrameRateTooltip",\n'
+               '                                        "tooltipStyle": { "showAfterDelay": true }\n'
+               '                                    }\n'
+               '                                }\n'
+               '                            ]\n'
+               '                        }')
+        new = text[:en + 1] + ',' + row + text[en + 1:]
+        if new.count('{') != text.count('{') + row.count('{') or new.count('}') != text.count('}') + row.count('}'):
+            raise SystemExit('touch_layout：显示帧率行插入后大括号数量不对，没写回')
+        if new.count('"TouchCustom_show_fps"') != 1: raise SystemExit('touch_layout：显示帧率行的勾选框名字应恰好 1 处')
+        return new, n + 1
+    return g
+PRESENT['gameplayoptionspanelhd.json'] = _add_showfps_row(PRESENT['gameplayoptionspanelhd.json'])
+
 
 def _widget_block(s, name):
     m = re.search(r'\{\s*"type"\s*:\s*"[A-Za-z]+"\s*,\s*"name"\s*:\s*"%s"' % re.escape(name), s)

@@ -1,9 +1,9 @@
 // 「自定义」设置：我们自己加的功能的启停开关。接口见 dm_custom.h。
-// 存储：存档提交目录旁的 sw_custom.txt（iOS 上在 Documents 里，升级包不丢），一行一个「键=0/1」；没有这个文件 / 没写的键 = 各键缺省（省电模式关，其余开）；不认识的行（旧版的 drop_filter、ver）读时跳过。
+// 存储：存档提交目录旁的 sw_custom.txt（iOS 上在 Documents 里，升级包不丢），一行一个「键=0/1」；没有这个文件 / 没写的键 = 各键缺省（其余开）；不认识的行（旧版的 drop_filter、ver、eco_fps）读时跳过。
 // 掉落筛选照红叶 mod 一件都不藏，整块拆掉，drop_filter 键与它的 ver=2 迁移一起删了
 // 不写进游戏自己的设置存档：不依赖它的格式与写盘时机，应用 / 放弃 / 默认由我们自己按原版选项页的语义做。
 // 界面：选项面板「自定义」页（借原版视频页 VideoOptionsPanel），每行一个原版勾选框，控件名 TouchCustom_<键>（布局 touch_layout.py 的 _custom_page）。勾选只记成待定值，
-// 「应用」（OptionsPanelMessage:AcceptChanges）才生效并存盘，「放弃」（CancelChanges）丢掉待定值，「默认」（ResetToDefaults）待定值回各键缺省（省电模式关、其余开；还要点应用）
+// 「应用」（OptionsPanelMessage:AcceptChanges）才生效并存盘，「放弃」（CancelChanges）丢掉待定值，「默认」（ResetToDefaults）待定值回各键缺省（其余开；还要点应用）
 // 「自定义」(Custom) settings: on/off switches for the features we added ourselves. For the interface see dm_custom.h.
 // Storage: sw_custom.txt next to the save commit directory (on iOS it is in Documents and survives app upgrades), one 'key=0/1' per line; without this file / for keys not written = each key's default (power-saving mode off, the rest on); unrecognized lines (drop_filter and ver from old versions) are skipped when reading.
 // Drop filtering follows the Hongye community mod and hides nothing, so the whole block was removed, and the drop_filter key was deleted together with its ver=2 migration
@@ -20,15 +20,17 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "eco_fps", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS）。本地改动：touch_swap_above 接在上游位置（下标 15，K_TOUCH_SWAP），hdr、zoom 追加末尾；zoom = 是否允许双指缩放
+static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom", "show_fps" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS；show_fps 不在自定义页，排末尾、只走游戏设置页）。T18：省电模式（eco_fps）已删除，帧率只由温控决定 | order = the custom page's top-to-bottom rows (touch_layout.py _CUSTOM_ROWS; show_fps is not on the custom page, it is last and only lives on the game's settings page). T18: the power-saving mode (eco_fps) is gone; the frame rate is only capped by the thermal state
 #define NK (int)(sizeof k_keys / sizeof *k_keys)   // 行数（解冲突时漏掉过，这里补回）
-static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1 };   // 缺省值：省电模式（30 帧）关、3D 画质流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0，其余开；zoom=1（允许双指缩放）
-// q3d（3D 画质）：0 = 流畅优先（掉帧就自动降 3D 比例）、1 = 画质优先（不自动降）。生效 = 调 hle_oe.c 的 dm_3d_quality_mode_set，读盘与点「应用」时当场调，下一帧控制器就按新档走。
-// 页上是上下两项单选（同语言行）：TouchCustom_q3d 是「画质优先」那格（勾上 = 1），TouchCustom_q3d_smooth 是它的反面
-// q3d (3D quality): 0 = smoothness first (automatically lowers the 3D scale on frame drops), 1 = quality first (no automatic lowering). Applied by calling hle_oe.c's dm_3d_quality_mode_set, immediately on load and on tapping "Apply", so the controller follows the new setting from the next frame.
-// On the page it is a stacked two-option radio (like the language row): TouchCustom_q3d is the "Quality first" cell (checked = 1), TouchCustom_q3d_smooth is its inverse
-#define K_Q3D 12
-#define K_TOUCH_SWAP 15
+static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0 };   // 缺省值：性能模式流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0、show_fps=0，其余开；zoom=1（允许双指缩放） | defaults: performance mode smoothness first (q3d=0), touch_swap_above=0 (left of portal), hdr=0, show_fps=0, the rest on; zoom=1 (pinch-to-zoom allowed)
+// q3d（性能模式，自定义页）：0 = 流畅优先（60 帧，掉帧就自动降 3D 比例）、1 = 画质优先（60 帧，不自动降）。生效 = 调 hle_oe.c 的 dm_3d_quality_mode_set，读盘与点「应用」时当场调，下一帧控制器就按新档走。
+// 页上是上下两项单选（同语言行）：TouchCustom_q3d 是「画质优先」那格（勾上 = 1），TouchCustom_q3d_smooth 是它的反面。过热保护不受这个开关影响，仍会强制降档（hle_oe.c 的温控下限）
+// q3d (performance mode, custom page): 0 = smoothness first (60 fps, automatically lowers the 3D scale on frame drops), 1 = quality first (60 fps, no automatic lowering). Applied by calling hle_oe.c's dm_3d_quality_mode_set, immediately on load and on tapping "Apply", so the controller follows the new level from the next frame.
+// On the page it is a stacked two-option radio (like the language row): TouchCustom_q3d is the "Quality first" cell (checked = 1), TouchCustom_q3d_smooth is its inverse. The thermal protection ignores this switch and still forces the downgrade (hle_oe.c thermal floor)
+#define K_Q3D 11
+#define K_TOUCH_SWAP 14
+#define K_SHOW_FPS (NK - 1)   // show_fps 排在键表末尾、只在游戏设置页有勾选框 | show_fps is last in the key table and only has a checkbox on the game's settings page
+#define K_PAGE_ROWS (NK - 1)  // 自定义页的行数 = 除 show_fps 外的全部键 | rows on the custom page = every key except show_fps
 void dm_3d_quality_mode_set(int mode);
 static const char *rev_box(int i) { return i == 0 ? "TouchCustom_lang_zh" : i == K_Q3D ? "TouchCustom_q3d_smooth" : i == K_TOUCH_SWAP ? "TouchCustom_touch_swap_above_near" : NULL; }   // 单选行「反面那一项」的勾选框 | Checkbox of the radio row's "inverse option"
 static _Atomic int g_val[NK];        // 已生效：1 开 / 0 关 | In effect: 1 on / 0 off
@@ -72,8 +74,8 @@ static void load_once(void) {
     atomic_store(&g_lang_explicit, lang);
     v[K_MERC] = merc < 0 ? k_def[K_MERC] : merc; atomic_store(&g_merc_explicit, merc);
     for (int i = 0; i < NK; i++) { atomic_store(&g_val[i], v[i]); atomic_store(&g_pend[i], -1); }
-    dm_3d_quality_mode_set(v[K_Q3D]); LOG("自定义设置：3D 画质读盘为%s（q3d=%d，已交给 3D 比例控制）", v[K_Q3D] ? "画质优先" : "流畅优先", v[K_Q3D]);
-    if (!atomic_exchange(&g_loaded, 1)) LOG("自定义设置：读盘 %s%s lang_en=%d%s auto_mana=%d merc_pot=%d drop_light=%d map_mark=%d item_notes=%d icloud=%d pot_pick=%d drop_haptic=%d gem_pick=%d store_btn=%d eco_fps=%d", p, f ? "" : "（没有文件，全按缺省）", v[0], lang < 0 ? "（没写，按当前语言）" : "", v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11]);
+    dm_3d_quality_mode_set(v[K_Q3D]); LOG("自定义设置：性能模式读盘为%s（q3d=%d，已交给 3D 比例控制）", v[K_Q3D] ? "画质优先" : "流畅优先", v[K_Q3D]);
+    if (!atomic_exchange(&g_loaded, 1)) LOG("自定义设置：读盘 %s%s lang_en=%d%s auto_mana=%d merc_pot=%d drop_light=%d map_mark=%d item_notes=%d icloud=%d pot_pick=%d drop_haptic=%d gem_pick=%d store_btn=%d show_fps=%d", p, f ? "" : "（没有文件，全按缺省）", v[0], lang < 0 ? "（没写，按当前语言）" : "", v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[K_SHOW_FPS]);
 }
 int dm_custom_get(const char *key) {
     load_once(); int i = key_index(key); if (i < 0) return 1;
@@ -82,26 +84,23 @@ int dm_custom_get(const char *key) {
 int dm_custom_lang_explicit(void) { load_once(); return atomic_load(&g_loaded) ? atomic_load(&g_lang_explicit) : -1; }
 // 本地改动：温控自动降档（T8，无 UI）。前端 front_ios.m 读 NSProcessInfo.thermalState：serious → 1、critical → 2，
 // 回落 < serious 并保持 60 秒后回 0；这里只存档位并提供运行期帧率上限，3D 比例温控下限在 hle_oe.c 用同一档位实现。
-// 不新增/不改任何设置项，eco_fps 行原样保留；两者同时要省电时取更低值（30）。
+// T18：省电模式删除后，帧率只剩这一道上限（正常 60 / 温热 30）；画质优先也不影响过热保护。
 // Local change: automatic thermal downgrade (T8, no UI). The front end maps NSProcessInfo.thermalState (serious -> 1,
 // critical -> 2) and returns to 0 only after 60 s below serious; this file only stores the level and exposes the runtime
-// frame-rate cap, while hle_oe.c applies the 3D scale floor from the same level. No settings row is added or changed --
-// the eco_fps row stays as is; when both ask for power saving the lower value (30) wins.
+// frame-rate cap, while hle_oe.c applies the 3D scale floor from the same level. T18: with the power-saving mode removed
+// this is the only frame-rate cap (60 normal / 30 warm); "quality first" does not disable the thermal protection.
 static _Atomic int g_thermal_level;   // 0 正常 / 1 严重 / 2 危急 | 0 normal / 1 serious / 2 critical
 void dm_perf_thermal_set(int level) {
     if (level < 0) level = 0;
     if (level > 2) level = 2;
     int old = atomic_exchange(&g_thermal_level, level);
     if (old == level) return;
-    LOG("温控优化：热档位 %d → %d（%s），帧率上限 %d（用户 eco_fps=%d，取较低者），3D 比例温控下限第 %d 档",
-        old, level, level >= 2 ? "危急" : level == 1 ? "严重" : "正常", level ? 30 : 60,
-        dm_custom_get("eco_fps") ? 30 : 60, level >= 2 ? 4 : 3);
+    LOG("温控优化：热档位 %d → %d（%s），帧率上限 %d，3D 比例温控下限第 %d 档",
+        old, level, level >= 2 ? "危急" : level == 1 ? "严重" : "正常", level ? 30 : 60, level >= 2 ? 4 : 3);
 }
 int dm_perf_thermal_level(void) { return atomic_load(&g_thermal_level); }
-int dm_fps_setting(void) {   // eco_fps 用户设置与温控上限取较低者 | lower of the user's eco_fps setting and the thermal cap
-    int user = dm_custom_get("eco_fps") ? 30 : 60;
-    int cap = dm_perf_thermal_level() ? 30 : 60;
-    return user < cap ? user : cap;
+int dm_fps_setting(void) {   // 帧率上限：只由温控决定（T18 删除省电模式后） | frame-rate cap: thermal only (power-saving mode removed in T18)
+    return dm_perf_thermal_level() ? 30 : 60;
 }   // 图形层 nvn_mtl.m mtl_fps_target 每帧读（弱符号的强定义） | Read every frame by mtl_fps_target in the graphics layer nvn_mtl.m (strong definition of a weak symbol)
 static void save(void) {
     char p[1100], t[1120]; if (!file_path(p, sizeof p)) { LOG("【红】自定义设置：存档目录没挂上，没存盘"); return; }
@@ -127,10 +126,10 @@ void dm_custom_on_uimsg(const char *cat, const char *act, const char *arg) {
     (void)arg; if (!cat || !act || strcmp(cat, "OptionsPanelMessage")) return;
     load_once();
     if (!strcmp(act, "AcceptChanges")) { int ch = 0;
-        for (int i = 0; i < NK; i++) { int pd = atomic_exchange(&g_pend[i], -1); if (pd >= 0 && pd != atomic_load(&g_val[i])) { atomic_store(&g_val[i], pd); ch = 1; if (i == K_Q3D) { int dm_3d_quality_mode_get(void); float dm_3d_scale_cur(void); dm_3d_quality_mode_set(pd); LOG("自定义设置：3D 画质 → %s（已交给 3D 比例控制，读回模式 %d，此刻 3D 比例 %.2f）", pd ? "画质优先" : "流畅优先", dm_3d_quality_mode_get(), dm_3d_scale_cur()); } if (i == 0) atomic_store(&g_lang_explicit, pd); if (i == K_MERC) atomic_store(&g_merc_explicit, pd); LOG("自定义设置：%s → %s（应用%s）", k_keys[i], pd ? "开" : "关", i == 0 ? "；语言下次启动生效" : ""); } }
+        for (int i = 0; i < NK; i++) { int pd = atomic_exchange(&g_pend[i], -1); if (pd >= 0 && pd != atomic_load(&g_val[i])) { atomic_store(&g_val[i], pd); ch = 1; if (i == K_Q3D) { int dm_3d_quality_mode_get(void); float dm_3d_scale_cur(void); dm_3d_quality_mode_set(pd); LOG("自定义设置：性能模式 → %s（已交给 3D 比例控制，读回模式 %d，此刻 3D 比例 %.2f）", pd ? "画质优先" : "流畅优先", dm_3d_quality_mode_get(), dm_3d_scale_cur()); } if (i == 0) atomic_store(&g_lang_explicit, pd); if (i == K_MERC) atomic_store(&g_merc_explicit, pd); LOG("自定义设置：%s → %s（应用%s）", k_keys[i], pd ? "开" : "关", i == 0 ? "；语言下次启动生效" : ""); } }
         if (ch) save(); }
     else if (!strcmp(act, "CancelChanges")) { for (int i = 0; i < NK; i++) atomic_store(&g_pend[i], -1); atomic_store(&g_repaint, 1); }
-    else if (!strcmp(act, "ResetToDefaults")) { for (int i = 1; i < NK; i++) atomic_store(&g_pend[i], k_def[i]); atomic_store(&g_repaint, 1); }   // 从 1 起：语言那一格不归「默认」管 | Starts from 1: the language cell is not governed by 「默认」(Default)
+    else if (!strcmp(act, "ResetToDefaults")) { for (int i = 1; i < K_PAGE_ROWS; i++) atomic_store(&g_pend[i], k_def[i]); atomic_store(&g_repaint, 1); }   // 从 1 起：语言那一格不归「默认」管；只到自定义页最后一行（show_fps 不在这页，不跟着重置） | Starts from 1: the language cell is not governed by 「默认」(Default); ends at the custom page's last row (show_fps is not on this page, so it is not reset)
 }
 
 // ---- 选项页上的勾选框
@@ -151,7 +150,7 @@ static uint64_t find_w(uint64_t w, const char *name, int dep) {   // 按名字�
 DM_WIDGET_RED_DEF
 #define TOGGLED(w) (dm_widget_is(main_base(), (w), DM_VT_TOGGLE) && *(uint8_t *)((w) + 0xa88) != 0)
 static void set_toggle(uint64_t w, int on) {
-    if (!DM_WIDGET_OK(main_base(), w, DM_VT_TOGGLE, "自定义页")) return;
+    if (!DM_WIDGET_OK(main_base(), w, DM_VT_TOGGLE, "选项页")) return;
     static const int32_t fr[2][4] = { { 0, 1, 3, 2 }, { 4, 5, 6, -1 } };
     *(uint8_t *)(w + 0xa88) = on != 0; memcpy((void *)(w + 0x6e8), fr[on != 0], sizeof fr[0]); *(int32_t *)(w + 0x610) = fr[on != 0][0];
 }
@@ -173,7 +172,7 @@ void dm_custom_ui_pump(unsigned long long root) {
       if (dm_wref_get(&sel_sp) != sp) { dm_wref_set(&sel_sp, sp); sel = 0; }
       uint64_t dm = find_w(sp, "TouchCustomSel", 0), tw = 0, cw = 0; char nm[64];
       if (pad) { uint64_t ev = dm_padmode_page_keys(DM_BTN_UP | DM_BTN_DOWN | DM_BTN_A);
-          if (ev & DM_BTN_DOWN) sel = sel + 1 < NK ? sel + 1 : sel; else if (ev & DM_BTN_UP) sel = sel > 0 ? sel - 1 : 0;
+          if (ev & DM_BTN_DOWN) sel = sel + 1 < K_PAGE_ROWS ? sel + 1 : sel; else if (ev & DM_BTN_UP) sel = sel > 0 ? sel - 1 : 0;
           snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[sel]); cw = find_w(sp, nm, 0); snprintf(nm, sizeof nm, "TouchCustom_%s_Text", k_keys[sel]); tw = find_w(sp, nm, 0);
           if ((ev & DM_BTN_A) && cw && dm_wref_get(&seen[sel]) == cw) {
               if (sel == K_Q3D || sel == K_TOUCH_SWAP) { int p0 = atomic_load(&g_pend[sel]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[sel]); atomic_store(&g_pend[sel], !sh); set_toggle(cw, !sh); { uint64_t z = find_w(sp, rev_box(sel), 0); if (z) set_toggle(z, sh); }
@@ -197,7 +196,7 @@ void dm_custom_ui_pump(unsigned long long root) {
     for (int i = 0; i < NK; i++) { char nm[48]; snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[i]);
         uint64_t w = find_w(sp, nm, 0); if (!w || !*(uint8_t *)(w + 0x50)) continue;
         int pd0 = atomic_load(&g_pend[i]), want = pd0 >= 0 ? pd0 : atomic_load(&g_val[i]);
-        uint64_t z = rev_box(i) ? find_w(sp, rev_box(i), 0) : 0;   // 单选行（语言：并排的「中文」「English」；3D 画质：上下的「流畅优先」「画质优先」）：存的仍是一个键，反面那一项是它的反面 | Radio row (language: side-by-side "中文" / "English"; 3D quality: stacked "Smoothness first" / "Quality first"): still stores a single key, and the other option is its inverse
+        uint64_t z = rev_box(i) ? find_w(sp, rev_box(i), 0) : 0;   // 单选行（语言：并排的「中文」「English」；性能模式：上下的「流畅优先」「画质优先」）：存的仍是一个键，反面那一项是它的反面 | Radio row (language: side-by-side "中文" / "English"; performance mode: stacked "Smoothness first" / "Quality first"): still stores a single key, and the other option is its inverse
         if (dm_wref_get(&seen[i]) != w) { dm_wref_set(&seen[i], w); set_toggle(w, want); if (z) set_toggle(z, !want); continue; }   // 页刚出现（布局里一律是没勾）：先摆成该显示的值，这一帧不当玩家点了 | The page has just appeared (in the layout everything is unchecked): first set it to the value it should show, and do not treat this frame as a player tap
         int on = TOGGLED(w), pd = atomic_load(&g_pend[i]), shown = pd >= 0 ? pd : atomic_load(&g_val[i]);
         if (z) {   // 点没选中的那一项 = 选它；点已选中的那一项不变（摆回勾上） | Tapping the item that is not selected = select it; tapping the one already selected changes nothing (it is put back to checked)
@@ -223,3 +222,39 @@ void dm_custom_ui_pump(unsigned long long root) {
     if (vt_ok) { int dirty = 0; for (int i = 0; i < NK; i++) { int pd = atomic_load(&g_pend[i]); dirty |= pd >= 0 && pd != atomic_load(&g_val[i]); }
         if (*(uint8_t *)(sp + 0x1a0) != dirty) { *(uint8_t *)(sp + 0x1a0) = (uint8_t)dirty; LOG("自定义设置：有未应用的改动 → %d（「应用 / 放弃」%s）", dirty, dirty ? "点亮" : "变灰"); } }
 }
+
+// ---- 游戏设置页「显示帧率」勾选框（T18/T19）：设置 → 游戏 → 用户界面 分区（touch_layout.py 插入的 Row ShowFrameRate，
+// 控件名 TouchCustom_show_fps；文字 / tooltip 用游戏原版串 @OptionsMenuSettingShowFrameRate[Tooltip]，中英自动跟随）。
+// 点一下立即生效并存盘（键 show_fps，重启保留）；设置页重建 / 重开时按生效值重摆。原版面板不认识我们这行，
+// 所以同步与点击处理都在这里做（和自定义页同一套 set_toggle）。
+// "Show frame rate" checkbox on the game's settings page (inserted by touch_layout.py): takes effect and saves immediately
+// on tap (key show_fps, kept across restarts); laid out again from the effective value when the page is rebuilt / reopened.
+// The original panel does not know our row, so both the sync and the tap handling live here (the same set_toggle as the custom page).
+void dm_show_fps_page_pump(unsigned long long root) {
+    if (!root || !main_base()) return;
+    static dm_wref seen; static int was_open, logged_missing, flips; static uint64_t flip_fr;
+    uint64_t sp = find_w(root, "GameplayOptionsPanel", 1);
+    int open = sp && *(uint8_t *)(sp + 0x50);
+    if (!open) { was_open = 0; return; }
+    if (!was_open) { was_open = 1; dm_wref_set(&seen, 0); logged_missing = 0; flips = 0; }   // 页刚打开：重新同步一次 | page just opened: resync once
+    load_once();
+    uint64_t w = find_w(sp, "TouchCustom_show_fps", 1);
+    if (!w) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页里没找到 TouchCustom_show_fps（布局补丁没生效？）"); } return; }
+    if (!*(uint8_t *)(w + 0x50)) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：勾选框不在屏上（被原版面板隐藏了？）"); } return; }
+    int val = atomic_load(&g_val[K_SHOW_FPS]);
+    if (dm_wref_get(&seen) != w) {   // 页刚出现 / 控件重建：先摆成生效值，这一帧不当玩家点了 | page just appeared / widget rebuilt: lay it out from the effective value, do not treat this frame as a player tap
+        dm_wref_set(&seen, w); set_toggle(w, val);
+        LOG("显示帧率：设置页勾选框同步为%s", val ? "开" : "关");
+        return;
+    }
+    int on = TOGGLED(w);
+    if (on != val) {
+        uint64_t fr = dm_guest_frame();   // 防抖：原版面板若每帧把我们这格重置（不认识的控件），别变成「每帧写盘」的振荡 | debounce: if the original panel resets our cell every frame (it does not know the widget), avoid a per-frame disk-write oscillation
+        if (fr - flip_fr > 24) flips = 0;
+        if (++flips > 6) { if (!logged_missing) { logged_missing = 1; LOG("【红】显示帧率：勾选框被面板每帧重置，停止同步（不写盘；等设置页重开）"); } return; }
+        flip_fr = fr;
+        LOG("显示帧率：%s（游戏设置页勾选框，立即生效并存盘）", on ? "开" : "关");
+        dm_custom_set_live("show_fps", on);
+    }
+}
+int dm_show_fps_on(void) { return dm_custom_get("show_fps"); }

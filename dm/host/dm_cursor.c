@@ -2898,67 +2898,137 @@ static uint64_t dm_widget_named_text(module_t *m, uint64_t w, const char *name, 
     return 0;
 }
 
+
+// 去掉首尾空白（空格 / 制表 / 换行 + 全角空格 U+3000），返回指向去首空白后的串（原地缩尾）。
+// Trim leading/trailing whitespace (space / tab / CR / LF + the full-width space U+3000); returns the pointer after
+// the leading run (the trailing part is cut in place).
+static char *dm_trim_ws(char *s) {
+    if (!s) return s;
+    for (;;) {
+        if (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') { s++; continue; }
+        if ((uint8_t)s[0] == 0xe3 && (uint8_t)s[1] == 0x80 && (uint8_t)s[2] == 0x80) { s += 3; continue; }   // 全角空格 U+3000 | full-width space
+        break;
+    }
+    size_t n = strlen(s);
+    for (;;) {
+        if (n && (s[n-1] == ' ' || s[n-1] == '\t' || s[n-1] == '\r' || s[n-1] == '\n')) { s[--n] = 0; continue; }
+        if (n >= 3 && (uint8_t)s[n-3] == 0xe3 && (uint8_t)s[n-2] == 0x80 && (uint8_t)s[n-1] == 0x80) { n -= 3; s[n] = 0; continue; }
+        break;
+    }
+    return s;
+}
+// 游戏文字框整理：去掉所有换行/回车 + 首尾空白；变了才写回（幂等，返回 1 = 写了）。只在游戏主线程调。
+// Compact a game text widget: drop every CR/LF and trim both ends; write back only when changed (idempotent, returns 1 = wrote).
+// Game main thread only.
+static int dm_text_compact(module_t *m, uint64_t w) {
+    if (!m || !w) return 0;
+    const char *s = *(const char **)(uintptr_t)(w + 0x88); size_t n = *(const size_t *)(uintptr_t)(w + 0x90);
+    if (!s || n == 0 || n > 512) return 0;
+    char b[520]; size_t k = 0;
+    for (size_t i = 0; i < n; i++) { char c = s[i]; if (c == '\r' || c == '\n') continue; b[k++] = c; }
+    b[k] = 0;
+    char *t = dm_trim_ws(b); size_t m2 = strlen(t);
+    if (!m2) return 0;
+    if (m2 == n && !memcmp(s, t, n)) return 0;   // 已经是整理后的文本 | already compacted
+    ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, t, (uint64_t)m2);   // 游戏自己的串赋值入口 | the game's own string setter
+    ((void (*)(uint64_t))(m->base + 0xadc434))(w);
+    return 1;
+}
+
+// 本地改动（T19）：角色属性页「攻击伤害 / 攻击命中值」标题 + 技能名整理。中文标题 = 技能名 + 伤害/命中值（字符串里带换行），
+// 英文同；产品用统一 40 号大字号，308 宽的标题框会折行。这里把所有标题文字框的换行/首尾空白去掉（幂等，只有变了才写），
+// 宽度不足 320 的标题框补到 320。运行期字号字段（style 里的 pointSize）没有可靠偏移可写——先把相关字段 dump 一次留作下一轮，
+// 字号不动（宁可不改也不写不确定的游戏控件字段）。
+// Local change (T19): character-sheet title cleanup. The Chinese titles are "skill name + 伤害/命中值" (with a newline in the
+// string) and the English ones likewise; the product uses one large 40 pt profile and the 308-wide title box wraps. Every
+// title text box gets all CR/LF and both-end whitespace removed (idempotent, written only when changed) and widened to 320
+// when narrower. There is no verified runtime offset for the style pointSize, so the font size is left alone (dump the fields
+// once for the next round; changing unverified game widget fields is worse than not changing them).
 static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
     if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return;
     if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
-        // 英文界面：Attack Damage / Attack Rating 在窄框里会被折成两行（文本里没有换行）；这里直接把标题框加宽。
-        {
-            uint8_t *ws = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t wl = *(uint64_t *)(w + 0x90);
-            if (ws && wl >= 6 && wl < 96 && !memcmp(ws, "Attack", 6)) {
-                int32_t *wr = (int32_t *)(uintptr_t)(w + 0x70);
-                if (wr[2] < 460) { int ow = wr[2]; wr[2] = 460; ((void (*)(uint64_t))(m->base + 0xadc434))(w);
-                    static int wlog; if (wlog++ < 6) LOG("角色属性栏：英文 Attack 标题框宽 %d → %d（避免折成两行）", ow, wr[2]); }
-            }
+        const char *nm = (const char *)*(uint64_t *)(w + 8);
+        const char *s = *(const char **)(uintptr_t)(w + 0x88); uint64_t n = *(uint64_t *)(uintptr_t)(w + 0x90);
+        int is_title = 0;
+        if (s && n > 0 && n < 128) {
+            char b[136]; memcpy(b, s, (size_t)n); b[n] = 0;
+            char *t = dm_trim_ws(b);
+            if (!strncmp(t, "Attack", 6)) is_title = 1;                                  // 英文 Attack Damage / Attack Rating | English titles
+            if (strstr(t, "\xe6\x94\xbb\xe5\x87\xbb")) is_title = 1;                     // 中文「攻击」（攻击伤害 / 攻击命中值 / 技能名+伤害） | Chinese titles
         }
-        // 英文界面：把 "Attack\nDamage" / "Attack\nRating" 的换行去掉（中文那条下面照旧处理）
-        {
-            uint8_t *es = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t elen = *(uint64_t *)(w + 0x90);
-            if (es && elen > 8 && elen < 96) {
-                uint64_t nl = UINT64_MAX;
-                for (uint64_t q = 0; q + 6 <= elen && q < 24; q++) if (!memcmp(es + q, "Attack", 6)) {
-                    uint64_t r2 = q + 6; if (r2 < elen && (es[r2] == '\n' || es[r2] == '\r')) { nl = r2; break; } break; }
-                if (nl != UINT64_MAX) {
-                    size_t skip = (nl + 1 < elen && es[nl] == '\r' && es[nl + 1] == '\n') ? 2 : 1;
-                    uint8_t eb[128]; uint64_t en = elen - skip;
-                    memcpy(eb, es, (size_t)nl); memcpy(eb + nl, es + nl + skip, (size_t)(elen - nl - skip)); eb[en] = 0;
-                    ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, (const char *)eb, en);
-                    ((void (*)(uint64_t))(m->base + 0xadc434))(w);
-                    int32_t *er = (int32_t *)(uintptr_t)(w + 0x70);
-                    if (er[2] < 420) { er[2] = 420; ((void (*)(uint64_t))(m->base + 0xadc434))(w); }
-                    static int elog; if (elog++ < 6) LOG("角色属性栏：英文 Attack 标题的换行已去掉，宽度放到 %d", er[2]);
-                }
+        if (nm && (!strcmp(nm, "AttackDamageTitle") || !strcmp(nm, "AttackRatingTitle"))) is_title = 1;   // 布局里这两个名字固定 | fixed layout names
+        if (is_title) {
+            int changed = dm_text_compact(m, w);
+            int32_t *r = (int32_t *)(uintptr_t)(w + 0x70);
+            // 宽度上限 310（数值框从 x=315 开始，不压数字列）；已经更宽的原版框不动（不缩原布局）。task-20 用户确认：折行根因是标题文本里的强制换行，
+            // 宽度只做兜底，别为了宽度盖住数值。
+            // Width cap 310 (the value box starts at x=315, so the title must not cover the numbers); an already wider original box is left
+            // alone (no shrinking of the original layout). task-20: the user confirmed the wrapping comes from the forced newline in the title text.
+            if (r[2] > 0 && r[2] < 310) { int ow = r[2]; r[2] = 310; ((void (*)(uint64_t))(m->base + 0xadc434))(w); changed |= 2;
+                static int wlog; if (wlog++ < 6) LOG("角色属性栏：标题「%s」框宽 %d → 310（≤315，不压数值列）", nm ? nm : "?", ow); }
+            static int dlog; if (dlog++ < 2) {   // 先 dump 一次字段留档（不改字号） | dump the fields once for the record (font size not changed)
+                char db[320]; int q = 0; uint64_t ww = *(uint64_t *)(uintptr_t)(w + 0x90);
+                const char *ts = *(const char **)(uintptr_t)(w + 0x88);
+                for (int o = 0x40; o <= 0x140 && q < (int)sizeof db - 24; o += 4) { int32_t v = *(int32_t *)(uintptr_t)(w + o); if (v) q += snprintf(db + q, sizeof db - q, " %x:%d", o, v); }
+                LOG("角色属性栏：标题字段 dump（%s）文本「%.*s」%llu 字节%s", nm ? nm : "?", (int)(ww < 60 ? ww : 60), ts ? ts : "", (unsigned long long)ww, db);
             }
-        }
-
-        static const uint8_t attack[] = {0xe6,0x94,0xbb,0xe5,0x87,0xbb};     // 攻击
-        static const uint8_t damage[] = {0xe4,0xbc,0xa4,0xe5,0xae,0xb3};     // 伤害
-        uint8_t *s = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); uint64_t len = *(uint64_t *)(w + 0x90);
-        if (s && len >= sizeof attack + sizeof damage && len < 256) {
-            uint64_t ai = UINT64_MAX, di = UINT64_MAX;
-            for (uint64_t i = 0; i + sizeof attack <= len; i++) if (!memcmp(s + i, attack, sizeof attack)) { ai = i; break; }
-            for (uint64_t i = 0; i + sizeof damage <= len; i++) if (!memcmp(s + i, damage, sizeof damage)) { di = i; break; }
-            if (ai != UINT64_MAX && di != UINT64_MAX) {
-                uint64_t nl = ai + sizeof attack;
-                size_t skip = nl < len && s[nl] == '\r' && nl + 1 < len && s[nl + 1] == '\n' ? 2 : nl < len && (s[nl] == '\n' || s[nl] == '\r') ? 1 : 0;
-                if (skip && di == nl + skip) {
-                    uint8_t compact[256]; uint64_t compact_len = len - skip;
-                    memcpy(compact, s, (size_t)nl);
-                    memcpy(compact + nl, s + nl + skip, (size_t)(len - nl - skip));
-                    compact[compact_len] = 0;
-                    ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, (const char *)compact, compact_len);
-                    s = (uint8_t *)(uintptr_t)*(uint64_t *)(w + 0x88); len = *(uint64_t *)(w + 0x90);
-                    ((void (*)(uint64_t))(m->base + 0xadc434))(w);
-                    static int newline_log; if (newline_log++ < 4) LOG("角色属性栏：攻击伤害标题的显式换行已移除，字号不变");
-                }
-                // Give the four-character title enough room on one line; leave the font and numeric value untouched.
-                int32_t *rect = (int32_t *)(uintptr_t)(w + 0x70);
-                if (rect[2] < 320) { int oldw = rect[2]; rect[2] = 320; ((void (*)(uint64_t))(m->base + 0xadc434))(w);
-                    static int width_log; if (width_log++ < 4) LOG("角色属性栏：攻击伤害标题文本框宽度 %d → %d；沿用原字体样式", oldw, rect[2]); }
-            }
+            static int tlog; if (changed == 1 && tlog++ < 6) LOG("角色属性栏：标题「%s」换行/首尾空白已去掉", nm ? nm : "?");
+            if (changed) {   // 游戏反复写回换行时只报告一次（频控见 HUD 泵：标题检查最多每 10 帧一次） | report once if the game keeps writing the newline back (rate limit: title check at most every 10 frames, see the HUD pump)
+                static uint64_t lastw, lastf; static int rep, replog; uint64_t fr = dm_guest_frame();
+                if (w == lastw && fr - lastf < 60 && ++rep >= 3 && !replog) { replog = 1;
+                    LOG("【红】角色属性栏：标题「%s」被游戏反复写回换行（60 帧内 %d 次），已按每 10 帧检查并回写", nm ? nm : "?", rep); }
+                lastw = w; lastf = fr; }
         }
     }
     uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60); if (!ch || n > 256) return;
-    for (uint64_t i = 0; i < n; i++) dm_char_damage_titles_walk(m, *(uint64_t *)(ch + 8 * i), dep + 1);
+    for (uint64_t i = 0; i < n; i++) dm_char_damage_titles_walk(m, *(uint64_t *)(ch + 8 * i), dep + 1);   // 只递归一遍 | single recursion
+}
+// 本地改动（T19）：技能树里的技能名文字框（SkillsTreePanel > Tab0..3 > SkillButtonContainer > SkillButton… > 技能名文字）。
+// 控件名是游戏动态生成的，不写死名字：按「父链上有 SkillButton 前缀的控件」认，排除 Counter（等级数字）。处理 = 去换行/首尾空白；
+// 宽度/字号先只记日志（技能格只有约 260 单位宽，盲改宽度会把字挤出格子；字号字段同上没有可靠偏移）。
+// Local change (T19): skill-name text boxes in the skill tree (SkillsTreePanel > Tab0..3 > SkillButtonContainer >
+// SkillButton... > skill-name text). The widget names are built by the game, so they are not hard-coded: any text widget under
+// a widget whose name starts with SkillButton counts (Counter, the level number, is skipped). Handling = remove CR/LF and trim
+// both ends; width / font size are only logged for now (a skill cell is about 260 units wide, and widening blindly pushes the
+// text out of the cell; same missing verified pointSize offset as above).
+static int dm_skillname_walk(module_t *m, uint64_t w, int dep, int under_btn) {
+    if (!m || !w || dep > 10 || !*(uint8_t *)(uintptr_t)(w + 0x50)) return 0;
+    const char *nm = (const char *)*(uint64_t *)(w + 8);
+    if (nm && !strncmp(nm, "SkillButton", 11) && strcmp(nm, "SkillButtonContainer") && strncmp(nm, "SkillButtonPromptWidget", 22)) under_btn = 1;
+    int hit = 0;
+    if (under_btn && dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT) && nm && strcmp(nm, "Counter")) {
+        const char *s = *(const char **)(uintptr_t)(w + 0x88); uint64_t n = *(uint64_t *)(uintptr_t)(w + 0x90);
+        if (s && n > 0 && n < 256) {
+            char b[260]; size_t k = 0;
+            for (size_t i = 0; i < n; i++) { char c = s[i]; if (c == '\r' || c == '\n') continue; b[k++] = c; }
+            b[k] = 0;
+            char *t = dm_trim_ws(b); size_t m2 = strlen(t);
+            if (m2) {
+                static int dlog, slog;
+                int changed = dm_text_compact(m, w);
+                if (changed && slog++ < 6) LOG("技能名：控件「%s」换行/首尾空白已去掉", nm);
+                if (dlog++ < 6) { int32_t *r = (int32_t *)(uintptr_t)(w + 0x70);
+                    LOG("技能名：控件「%s」文本「%.*s」宽 %d 高 %d（布局里没有技能名控件，运行时生成；字号字段未找到可靠偏移，先只去换行）", nm, (int)(m2 < 40 ? m2 : 40), t, r[2], r[3]); }
+                { static int fd; if (fd++ < 2) {   // 字段留档：下一轮定位字号/字体用 | field dump for the next round's font work
+                    char db[320]; int q = 0;
+                    for (int off = 0x40; off <= 0x140 && q < (int)sizeof db - 24; off += 4) { int32_t v = *(int32_t *)(uintptr_t)(w + off); if (v) q += snprintf(db + q, sizeof db - q, " %x:%d", off, v); }
+                    LOG("技能名：控件「%s」字段 dump%s", nm, db); } }
+                hit = 1;
+            }
+        }
+    }
+    uint64_t ch = *(uint64_t *)(uintptr_t)(w + 0x58), n = *(uint64_t *)(uintptr_t)(w + 0x60); if (!ch || n > 256) return hit;
+    for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (c) hit |= dm_skillname_walk(m, c, dep + 1, under_btn); }
+    return hit;
+}
+static void dm_skill_names_pump(module_t *m, uint64_t root) {   // 每 30 帧一次，低开销 | every 30 frames, low cost
+    static uint64_t next;
+    uint64_t fr = dm_guest_frame();
+    if (fr < next) return;
+    next = fr + 30;
+    uint64_t tp = ui_panel(root, "SkillsTreePanel");
+    if (!tp || !*(uint8_t *)(uintptr_t)(tp + 0x50)) return;
+    dm_skillname_walk(m, tp, 0, 0);
 }
 
 static void dm_text_rgb(module_t *m, uint64_t w, const int rgb[3]) {
@@ -3201,7 +3271,7 @@ int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
 int dm_hud_names_count(void) { return atomic_load(&g_hud_names_n); }
 static _Atomic int g_hud_names_dim;
 int dm_hud_names_dim(void) { return atomic_load(&g_hud_names_dim); }   // 1 = 菜单打开中，覆盖层画暗一点 | 1 = menu open, draw dimmed
-static struct { uint64_t w; char txt[40]; int len, band, hp, source, hits; } g_hud_slot[DM_HUD_NAME_MAX];   // 每个可见头像槽 | one entry per visible portrait slot
+static struct { uint64_t w; char txt[40]; int len, band, hp, source, hits; float cx, cy; } g_hud_slot[DM_HUD_NAME_MAX];   // cx/cy = 头像槽命中矩形中心（UI 单位，日志核对名字居中用） | cx/cy = centre of the portrait slot's hit rect (UI units, for checking the name centring in the log)   // 每个可见头像槽 | one entry per visible portrait slot
 static int g_hud_slot_n;
 static uint64_t g_hud_names_hidden[DM_HUD_NAME_MAX];   // 兜底路径被隐藏的名字控件（下一拍先恢复） | name widgets hidden on the fallback path (restored next tick)
 static uint64_t g_hud_extra_hidden[DM_HUD_EXTRA_MAX]; static int g_hud_extra_n;   // 兜底路径隐藏的重复文字控件 | duplicate text widgets hidden on the fallback path
@@ -3215,14 +3285,19 @@ static const char *dm_hud_band_code(int band) {   // 与 monhp_tint 同一套色
          : NULL;
 }
 static int dm_hud_band_of(int hp) { return hp >= 75 ? 3 : hp >= 50 ? 2 : hp >= 25 ? 1 : hp >= 0 ? 0 : -1; }
-static int dm_hud_plain_text(uint64_t w, char *buf, size_t cap, size_t *out_len) {   // 去掉开头颜色码后的原文 | raw text with a leading colour code stripped
+static int dm_hud_plain_text(uint64_t w, char *buf, size_t cap, size_t *out_len) {   // 去掉开头颜色码后的原文（首尾空白也去掉：游戏名字常带空格，居中绘制会偏几像素） | raw text with a leading colour code stripped (whitespace trimmed too: the game's names often carry padding spaces, which shifts a centred draw by a few pixels)
     if (!w || cap < 8) return 0;
     const char *s = *(const char **)(uintptr_t)(w + 0x88); size_t n = *(const size_t *)(uintptr_t)(w + 0x90);
     if (!s || n == 0 || n > 200) return 0;
     size_t off = 0;
     if (n >= 4 && (uint8_t)s[0] == 0xee && (uint8_t)s[1] == 0x81 && (uint8_t)s[2] == 0xbe && s[3] >= '0' && s[3] <= '9') off = 4;
     size_t m = n - off; if (m == 0 || m >= cap) return 0;
-    memcpy(buf, s + off, m); buf[m] = 0; if (out_len) *out_len = m; return 1;
+    memcpy(buf, s + off, m); buf[m] = 0;
+    char *t = dm_trim_ws(buf); size_t tm = strlen(t);
+    if (t != buf) memmove(buf, t, tm + 1);
+    if (tm == 0) return 0;   // 全是空白：这一份不画 | all whitespace: nothing to draw
+    if (out_len) *out_len = tm;
+    return 1;
 }
 // 把「颜色码 + 原文」写回控件 +0x88（游戏自己的字符串赋值；容量由游戏分配，不手改缓冲区）。
 // 返回 1 = 确实改了；0 = 已经是目标文本；-1 = 串异常（太长 / 空）写不了。只在游戏主线程调（文字框门回调 / 鼠标泵）。
@@ -3235,9 +3310,13 @@ static int dm_hud_write_code(uint64_t w, int band) {
     const char *code = dm_hud_band_code(band);
     size_t off = 0;
     if (n >= 4 && (uint8_t)s[0] == 0xee && (uint8_t)s[1] == 0x81 && (uint8_t)s[2] == 0xbe && s[3] >= '0' && s[3] <= '9') off = 4;
-    char buf[208]; size_t m2 = n - off; if (m2 == 0 || m2 > sizeof buf - 5) return -1;
-    if (code) { memcpy(buf, code, 4); memcpy(buf + 4, s + off, m2); m2 += 4; }
-    else memcpy(buf, s + off, m2);
+    char plain[208]; size_t m2 = n - off; if (m2 == 0 || m2 > sizeof plain - 5) return -1;
+    memcpy(plain, s + off, m2); plain[m2] = 0;
+    char *tp = dm_trim_ws(plain); size_t pm = strlen(tp);   // 名字首尾空白去掉（居中绘制才准） | trim the name's padding spaces so the centred draw lines up
+    if (pm == 0) return -1;
+    char buf[208];
+    if (code) { memcpy(buf, code, 4); memcpy(buf + 4, tp, pm); m2 = pm + 4; }
+    else { memcpy(buf, tp, pm); m2 = pm; }
     if (m2 == n && !memcmp(s, buf, n)) return 0;   // 已经是目标文本 | already the wanted text
     if (code) *(uint8_t *)(uintptr_t)(w + 0xfc) = 1;   // 让 TextBoxWidget 按颜色码解析 | let the TextBoxWidget parse colour codes
     ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, buf, m2);   // 与 dm_textbox.c 同一个赋值入口 | same setter as dm_textbox.c
@@ -3344,6 +3423,7 @@ static void dm_hud_names_pump(module_t *m, uint64_t root) {
         if (!cn || strncmp(cn, "Icon", 4)) continue;
         float ir[4]; dm_widget_rect_ui(ic, vw, vh, ir);
         if (!(ir[2] > ir[0] && ir[3] > ir[1])) continue;
+        g_hud_slot[slot].cx = (ir[0] + ir[2]) * 0.5f; g_hud_slot[slot].cy = (ir[1] + ir[3]) * 0.5f;   // 头像中心：overlay 以它为中心画名字 | portrait centre: the overlay centres the name on it
         uint64_t nm = dm_widget_named_text(m, ic, "Name", 0);
         if (!nm) continue;
         char buf[40]; size_t tl = 0;
@@ -3377,6 +3457,11 @@ static void dm_hud_names_pump(module_t *m, uint64_t root) {
         slot++;
     }
     g_hud_slot_n = slot;
+    { static uint64_t llf; if (slot > 0 && (llf == 0 || fr >= llf + 240)) { llf = fr;   // 限频：每 240 帧最多一次 | rate-limited: at most once per 240 frames
+        for (int k = 0; k < slot && k < 2; k++) { int32_t *nr = (int32_t *)(uintptr_t)(g_hud_slot[k].w + 0x70);
+            LOG("名字布局：槽 %d 文本「%s」%d 字节，头像中心=(%.0f,%.0f)，游戏名字框 %d,%d %dx%d 中心=(%.0f,%.0f)（%s）", k, g_hud_slot[k].txt, g_hud_slot[k].len,
+                (double)g_hud_slot[k].cx, (double)g_hud_slot[k].cy, nr[0], nr[1], nr[2], nr[3], (double)(nr[0] + nr[2] * 0.5f), (double)(nr[1] + nr[3] * 0.5f),
+                native_ok ? "游戏本体着色" : "覆盖层兜底"); } } }
     if (slot > 0 && !nav) { dm_hud_dedupe d; d.n = slot; for (int k = 0; k < slot; k++) d.keep[k] = g_hud_slot[k].w; dm_hud_dedupe_walk(hire, 0, "HireablesPanel", &d); }
     { if (slot && !nav && (!done_log || fr >= last_log_fr + 240)) {
         last_log_fr = fr; done_log = 1;
@@ -3620,8 +3705,36 @@ static void dm_ui_hud_pump(void) {
     dm_hire_probe(m, root);   // 雇佣兵 NPC 页面诊断 | hire-NPC diagnostics
     // Search the active character panel by localized title text, since the row's widget name is not stable across layouts.
     uint64_t cs = ui_panel(root, "CharacterStatsPanel");
-    if (cs && *(uint8_t *)(cs + 0x50)) dm_char_damage_titles_walk(m, cs, 0);
+    {   // 标题整理：面板刚打开的第一帧立即做一次，之后最多每 10 帧检查一次（只写变化字段） | title cleanup: run immediately on the first
+        // frame the panel opens, then at most every 10 frames (only changed fields are written)
+        static uint64_t next; static int was;
+        int open = cs && *(uint8_t *)(cs + 0x50);
+        uint64_t fr = dm_guest_frame();
+        if (open && (!was || fr >= next)) { next = fr + 10; dm_char_damage_titles_walk(m, cs, 0); }
+        was = open;
+    }
+    dm_skill_names_pump(m, root);   // 技能树里的技能名文字框：去换行/首尾空白（限频） | skill-name text boxes in the skill tree: drop newlines / trim (rate-limited)
+    dm_show_fps_page_pump(root);   // 游戏设置页「显示帧率」勾选框：同步 / 点击立即生效并存盘 | "Show Frame Rate" checkbox on the game's settings page: sync / apply and save immediately on tap
     dm_hud_names_pump(m, root);   // 佣兵/傀儡/骷髅名字（多槽位、原版小字号、菜单打开不画）
+}
+
+// 局内帧率读数（T18/T19）：出图线程每帧推进 dm_nvn_frame_count()，这里每 ≥0.5 秒取一个窗口的帧率，再与上一个窗口取平均
+// （≈1 秒平均），供覆盖层左下角「FPS 60」用。内部限频，覆盖层每帧调用也不会带来开销；只在主线程（覆盖层绘制）用。
+// In-game frame-rate readout (T18/T19): the present thread advances dm_nvn_frame_count(); every >=0.5 s this samples the
+// frame rate of one window and averages it with the previous window (~1 s average) for the overlay's bottom-left "FPS 60".
+// Throttled internally, so the overlay may call it every frame; used on the main thread (overlay drawing) only.
+int dm_fps_x10(void) {
+    static uint64_t last_ns, last_fr; static int prev, cur, have;
+    uint64_t t = now_ns(), fr = dm_nvn_frame_count();
+    if (!last_ns) { last_ns = t; last_fr = fr; return 0; }
+    if (t - last_ns >= 500ull * 1000000ull) {
+        double dt = (double)(t - last_ns) / 1e9;
+        int f = (int)lround((double)(fr - last_fr) / dt * 10.0);
+        last_ns = t; last_fr = fr;
+        if (f >= 0 && f <= 600) { prev = cur; cur = f; if (have < 2) have++; }
+    }
+    if (!have) return 0;
+    return have >= 2 ? (prev + cur) / 2 : cur;
 }
 
 

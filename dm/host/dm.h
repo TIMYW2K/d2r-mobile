@@ -74,13 +74,16 @@ int dm_ingame_now(void);              // 是否在局内（diag.c） | Whether w
 void dm_3d_scale_feed(double iv_ms);   // 出图线程每帧报实际上屏间隔（−1 丢弃 / 0 无读数），驱动动态 3D 比例 | The present thread reports the actual present interval every frame (−1 discard / 0 no reading), driving the dynamic 3D scale
 float dm_3d_scale_cur(void);          // 当前生效的 3D 渲染比例（hle_oe.c scale3d_tick）     // 当前累计出图帧数（DM_TICKS 对齐观测） | The 3D render scale currently in effect (hle_oe.c scale3d_tick)     // current cumulative count of presented frames (for DM_TICKS alignment observation)
 // 温控自动降档（T8，无 UI）：前端 front_ios.m 读 NSProcessInfo.thermalState 后调；0 = 恢复正常，1 = 严重（serious），2 = 危急（critical）。
-// 只影响运行期：帧率上限取「用户 eco_fps 与温控上限的较低者」（dm_custom.c）；3D 比例温控下限档由 hle_oe.c scale3d_tick 施加；回落 60 秒由前端保持后再调 0。不写盘、不改 UI。
+// 只影响运行期：帧率上限由 dm_custom.c 的 dm_fps_setting() 给出（正常 60 / 温热 30）；3D 比例温控下限档由 hle_oe.c scale3d_tick 施加；回落 60 秒由前端保持后再调 0。不写盘、不改 UI。
+// T18：省电模式已删除，帧率只剩温控上限。
 // Automatic thermal downgrade (T8, no UI): the iOS front end calls this after reading NSProcessInfo.thermalState;
-// 0 = back to normal, 1 = serious, 2 = critical. Runtime only: the frame-rate cap is the lower of the user's eco_fps and
-// the thermal cap (dm_custom.c); the 3D scale thermal floor is applied by hle_oe.c scale3d_tick; the front end keeps the
-// downgrade for 60 s after cooling before calling 0. Nothing is written to disk and no UI changes.
+// 0 = back to normal, 1 = serious, 2 = critical. Runtime only: the frame-rate cap comes from dm_custom.c's
+// dm_fps_setting() (60 normal / 30 warm); the 3D scale thermal floor is applied by hle_oe.c scale3d_tick; the front end
+// keeps the downgrade for 60 s after cooling before calling 0. Nothing is written to disk and no UI changes.
+// T18: the power-saving mode is gone; the frame rate is only capped by the thermal state now.
 void dm_perf_thermal_set(int level);
 int dm_perf_thermal_level(void);
+int dm_fps_x10(void);   // 局内帧率 ×10（近 1 秒窗口平均，约每 0.5 秒刷新一次；覆盖层 DmTouchOverlay.m 每帧查） | in-game FPS x10 (about a 1-second window average, refreshed every ~0.5 s; polled by the overlay)
 void dm_backtrace(uint64_t fp);
 void crash_watch_progress(uint32_t tick, const char *stage);
 void crash_watch_frame(void);
