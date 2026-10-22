@@ -1329,6 +1329,46 @@ int dm_merc_hp_pct(void) {
     return -1;
 }
 
+// 玩家宠物（傀儡 / 骷髅 / 束缚恶魔等，不含佣兵）的服务端生命百分比列表：按宠物表类型升序、同类型按链表顺序。
+// 数据源与 dm_rift.c pet_hp_pump 同一条：[[玩家+0x10]+0x98] 按宠物类型每项 0x20，项里是节点链（+4 单位号、+0x18 下一个），
+// 类型 7 = 佣兵跳过；生命取服务端怪物表里该单位的 stat 6 / 7 原始定点值（与 dm_merc_hp_pct 同口径）。
+// 左上角佣兵 / 傀儡名字着色用：傀儡多半不触发「友方血条」那条观测事件，旧来源一直 -1（白色）。
+// 返回个数；不在局内 / 读不到玩家或宠物表返回 -1。只在游戏主线程调（服务端表与它同一条线程）。
+// Pet (golem / skeleton / bound demon, mercenary excluded) life percentages from the server pet table, ordered by pet
+// type and then by chain order -- the same walk as dm_rift.c pet_hp_pump ([[player+0x10]+0x98], 0x20 per pet type, node
+// chain +4 unit id / +0x18 next; type 7 = mercenary is skipped). Life comes from the server monster table's raw stat 6 / 7,
+// the same measure as dm_merc_hp_pct. Used for the top-left name colours: a golem usually never fires the friendly
+// health-bar event, so the old source stayed at -1 (white). Returns the count; -1 when not in a run / the player or the
+// pet table cannot be read. Game main thread only (the server table runs on that same thread).
+int dm_pet_hp_list(int *pct, int max) {
+    if (!pct || max <= 0) return 0;
+    module_t *m = main_mod(); if (!in_game() || !m || !g_lastG) return -1;
+    uint64_t player = dm_player_unit(); if (!player) return -1;
+    uint64_t pd = 0, lst = 0, arr = 0, T = 0, G = g_lastG; uint8_t tier = 0;
+    if (!tk_rd(player + 0x10, &pd, 8) || !pd || !tk_rd(pd + 0x98, &lst, 8) || !lst || !tk_rd(lst, &arr, 8) || !arr) return -1;
+    if (!tk_rd(G + 0x106, &tier, 1)) return -1;
+    if (!tk_rd((uint64_t)(m->base + 0x2d64a18 + (uint64_t)tier * 16), &T, 8) || !T) return -1;
+    uint32_t nt = 0; if (!tk_rd(T + 0x1300, &nt, 4) || nt == 0 || nt > 64) return -1;
+    int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(m->base + 0x5b9290);
+    int n = 0;
+    for (uint32_t ty = 1; ty < nt && n < max; ty++) {
+        if (ty == 7) continue;   // 7 = 佣兵，不算 | 7 = mercenary, not counted
+        uint64_t nd = 0; if (!tk_rd(arr + (uint64_t)ty * 0x20, &nd, 8)) continue;
+        for (int guard = 0; nd && guard < 64 && n < max; guard++) {
+            uint32_t id = 0; if (!tk_rd(nd + 4, &id, 4)) break;
+            uint64_t u = 0;   // 服务端怪物表 G+0x2630 里按单位号找那一只 | find that unit in the server monster table G+0x2630
+            for (int b = 0; b < 128 && !u; b++) { uint64_t x = 0; if (!tk_rd(G + 0x2630 + 8 * b, &x, 8)) continue;
+                for (int k = 0; x && k < 4096; k++) { uint32_t ut = 0, uid = 0; if (!tk_rd(x, &ut, 4) || !tk_rd(x + 8, &uid, 4)) break;
+                    if (ut == 1 && uid == id) { u = x; break; } if (!tk_rd(x + 0x158, &x, 8)) break; } }
+            if (u) { uint32_t mode = 0; if (tk_rd(u + 0xc, &mode, 4) && mode != 0 && mode != 12) {
+                int64_t hp = get(u, 6, 0), mx = get(u, 7, 0);
+                if (hp >= 0 && mx > 0) { int64_t p = hp * 100 / mx; pct[n++] = p > 100 ? 100 : (int)p; } } }
+            if (!tk_rd(nd + 0x18, &nd, 8)) break;
+        }
+    }
+    return n;
+}
+
 int dm_diag_difficulty(void) { uint8_t d = 0; return in_game() && tk_rd(g_lastG + 0x104, &d, 1) && d < 3 ? d : -1; }   // 当前局难度（G+0x104：0 普通 1 噩梦 2 地狱），不在局内 -1；一键重开用（dm_cursor.c） | Difficulty of the current run (G+0x104: 0 Normal 1 Nightmare 2 Hell), -1 when not in a run; used by one-tap restart (dm_cursor.c)
 uint32_t dm_cur_tick(void) { uint32_t t = 0; if (in_game()) tk_rd(g_lastG + 0x170, &t, 4); return t; }   // 触点脚本（touch_mac.c）用 | For the touch point script (touch_mac.c)
 static uint32_t cur_tick(void) { return dm_cur_tick(); }
@@ -2062,6 +2102,7 @@ void ticks_install(void) {
     if (gate_obs_present(OBS_TICK)) gate_obs_set(OBS_TICK, tick_gate_product);
     else LOG("【红】产物没有拍入口观测门 OBS_TICK：底栏数字 / 难度条 / 动态 3D 比例（dm_ingame_now）都不工作");
     { module_t *tm = main_mod(); void dm_textbox_install(uint8_t *); if (tm) dm_textbox_install((uint8_t *)tm->base); }   // 普通文字框里的注释颜色码（dm_textbox.c，观测门 14） | Annotation color codes in ordinary text boxes (dm_textbox.c, observation gate 14)
+    { module_t *tm = main_mod(); void dm_hud_textbox_install(uint8_t *); if (tm) dm_hud_textbox_install((uint8_t *)tm->base); }   // 本地改动：HUD 名字在游戏本体里着色（接替门 14 回调，注释改写逻辑照旧；dm_cursor.c） | Local change: colour the HUD names inside the game itself (takes over the gate-14 callback, annotation rewriting kept; dm_cursor.c)
     { module_t *tm = main_mod(); void dm_turnsmooth_install(uint8_t *); if (tm) dm_turnsmooth_install((uint8_t *)tm->base); }   // 转向回跳平滑 / 模型转身参数读取（dm_turnsmooth.c，观测门 19 / 20） | turn snap-back smoothing / reading the model turning parameters (dm_turnsmooth.c, observation gates 19 / 20)
     if (e || rp || lg || sp) {                              // DM_C2S_LOG 也挂拍入口：系统类消息的拍号要从 G 读 | DM_C2S_LOG also hooks the tick entry: the tick number of system-class messages has to be read from G
         if (!gate_obs_present(OBS_TICK)) die("DM_TICKS / DM_STATE / DM_C2S_REPLAY / DM_C2S_LOG：产物没有拍入口观测门 OBS_TICK（需 r8 起的产物）");

@@ -9,6 +9,7 @@
 #include "dm_cursor_item.h"
 #include "dm_widget.h"
 #include "dm_i18n.h"
+#include "dm_textbox_core.h"   // 物品注释颜色码对照表（文字框门 14 的改写逻辑，dm_textbox_core.c） | annotation colour-code table (gate-14 rewrite logic)
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@
 
 int dm_merc_hp_pct(void);
 int dm_friendly_hp_pct(void);   // 友方受击血量（傀儡/骷髅名字用） | friendly hit HP for minion names
+int dm_pet_hp_list(int *pct, int max);   // 宠物服务端生命百分比（diag.c；傀儡/骷髅变色用） | pet life percentages from the server table (diag.c; for minion colours)
 
 static module_t *main_module(void) {
     for (int i = 0; i < g_nmod; ++i)
@@ -2405,90 +2407,6 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
           wob = !wob; dm_ui_hover_now(hx + (wob ? 2 : 0), hy); } }
 }
 
-// ---------- 本地改动：页签高亮动画测量（T2，一次性诊断） ----------
-// 症状：「页签高亮一点点跳过去」。切页这一步宿主已经是一步到位（main+0x405898 直接到目标页 + main+0xad9b80 直接选中目标页签），
-// 但玩家看到高亮分几帧缓动过去；怀疑页签条自己某个字段在缓动。这里在直接切页那一帧开始，连续 45 帧对
-//   ① 页签条 +0x0..+0x1000、② 它的前 8 个直接子控件（页签图 / 文字）+0x0..+0x100、③ 功能页面板 UISwitcher +0x180..+0x2c0
-// 做 4 字节快照差分，结束时只打印「变化过的偏移 + 首值→末值 + 变化次数 + 最后变化帧 + 前 6 个值的序列」。
-// 每次进程最多 2 组；只读、不写任何游戏控件，找不到 / 面板提前关了就直接结束。日志前缀「页签动画：」。
-// Local change: one-shot measurement of the tab highlight animation (T2 diagnostic). The page switch itself is already
-// one step (main+0x405898 to the target page plus main+0xad9b80 selecting the target tab), yet the highlight visually eases
-// over several frames, so some field of the tab bar itself is suspected. Right after a direct switch, for 45 frames, take
-// 4-byte snapshots of (1) the tab bar +0x0..+0x1000, (2) its first 8 direct children +0x0..+0x100, (3) the function page
-// panel UISwitcher +0x180..+0x2c0, and at the end log only the offsets that changed, with first -> last value, change count,
-// last-change frame and the first 6 values of the sequence. At most 2 groups per process; read-only, no game widget is
-// written, and it stops early if the bar goes away. Log prefix "页签动画：".
-#define TA_FRAMES 45
-#define TA_MAIN_W 1024
-#define TA_KIDS 8
-#define TA_KID_W 64
-#define TA_SW_OFF 0x180
-#define TA_SW_W 80
-#define TA_TOTAL (TA_MAIN_W + TA_KIDS * TA_KID_W + TA_SW_W)
-#define TA_MAXLOG 16
-static struct {
-    int on, groups, nkids, tabk, page; uint64_t fr0, until; dm_wref bar, sw;
-    uint32_t snap[TA_TOTAL], first[TA_TOTAL], hist[TA_TOTAL][6], cframe[TA_TOTAL];
-    uint16_t ccount[TA_TOTAL]; uint8_t hn[TA_TOTAL];
-} g_ta;
-static int ta_read(uint32_t *out) {   // 只许游戏主线程调；0 = 页签条不在了 | game main thread only; 0 = the tab bar is gone
-    uint64_t bar = dm_wref_get(&g_ta.bar); if (!bar || !*(uint8_t *)(bar + 0x50)) return 0;
-    uint64_t ch = *(uint64_t *)(bar + 0x58), n = *(uint64_t *)(bar + 0x60);
-    int w = 0;
-    for (int i = 0; i < TA_MAIN_W; i++) out[w++] = *(uint32_t *)(bar + 4 * i);
-    for (int k = 0; k < TA_KIDS; k++) {
-        uint64_t c = (ch && n <= 256 && (uint64_t)k < n) ? *(uint64_t *)(ch + 8 * k) : 0;
-        for (int j = 0; j < TA_KID_W; j++) out[w++] = c ? *(uint32_t *)(c + 4 * j) : 0;
-    }
-    uint64_t sw = dm_wref_get(&g_ta.sw);
-    for (int j = 0; j < TA_SW_W; j++) out[w++] = sw ? *(uint32_t *)(sw + TA_SW_OFF + 4 * j) : 0;
-    return 1;
-}
-static void dm_tab_anim_begin(uint64_t fr, uint64_t bar, uint64_t sw, int tabk, int page) {   // 直接切页成功后调 | called after a successful direct switch
-    if (!bar || g_ta.on || g_ta.groups >= 2) return;
-    g_ta.on = 1; g_ta.fr0 = fr; g_ta.until = fr + TA_FRAMES; g_ta.tabk = tabk; g_ta.page = page;
-    dm_wref_set(&g_ta.bar, bar); dm_wref_set(&g_ta.sw, sw);
-    if (!ta_read(g_ta.snap)) { g_ta.on = 0; LOG("页签动画：页签条读不到，跳过这次测量"); return; }
-    for (int i = 0; i < TA_TOTAL; i++) { g_ta.first[i] = g_ta.snap[i]; g_ta.ccount[i] = 0; g_ta.hn[i] = 0; g_ta.cframe[i] = 0; }
-    g_ta.groups++;
-    { uint64_t ch = *(uint64_t *)(bar + 0x58), n = *(uint64_t *)(bar + 0x60); g_ta.nkids = (ch && n <= TA_KIDS) ? (int)n : 0; }
-    LOG("页签动画：开始测量（目标第 %d 页 / 第 %d 个页签，帧 %llu，页签条 %p 子项 %d）",
-        page, tabk, (unsigned long long)fr, (void *)(uintptr_t)bar, g_ta.nkids);
-}
-static void dm_tab_anim_finish(void) {
-    g_ta.on = 0;
-    int nchg = 0; for (int i = 0; i < TA_TOTAL; i++) if (g_ta.ccount[i]) nchg++;
-    LOG("页签动画：%d 帧测量结束（第 %d 页 / 第 %d 个页签），%d 个 4 字节字段变过，按变化次数列出前 %d 个：",
-        TA_FRAMES, g_ta.page, g_ta.tabk, nchg, TA_MAXLOG);
-    for (int n = 0; n < TA_MAXLOG; n++) {
-        int best = -1; uint32_t bc = 0;
-        for (int i = 0; i < TA_TOTAL; i++) if (g_ta.ccount[i] > bc) { bc = g_ta.ccount[i]; best = i; }
-        if (best < 0) break;
-        char where[48], seq[200]; int q = 0; for (int h = 0; h < g_ta.hn[best] && q < (int)sizeof seq - 24; h++) q += snprintf(seq + q, sizeof seq - q, "%s%d", h ? "," : "", (int32_t)g_ta.hist[best][h]);
-        if (best < TA_MAIN_W) snprintf(where, sizeof where, "页签条+0x%x", best * 4);
-        else if (best < TA_MAIN_W + TA_KIDS * TA_KID_W) { int k = (best - TA_MAIN_W) / TA_KID_W, j = (best - TA_MAIN_W) % TA_KID_W; snprintf(where, sizeof where, "子控件%d+0x%x", k, j * 4); }
-        else { int j = best - TA_MAIN_W - TA_KIDS * TA_KID_W; snprintf(where, sizeof where, "功能页+0x%x", TA_SW_OFF + j * 4); }
-        LOG("页签动画：  %s 变化 %u 次，值 %d → %d，最后变化帧 %llu，序列 [%s]",
-            where, (unsigned)bc, (int32_t)g_ta.first[best], (int32_t)g_ta.snap[best], (unsigned long long)g_ta.cframe[best], seq);
-        g_ta.ccount[best] = 0;   // 已列出，不再重复 | already listed, do not list again
-    }
-    { uint64_t bar = dm_wref_get(&g_ta.bar), sw = dm_wref_get(&g_ta.sw);
-      LOG("页签动画：末态 页签记录 +0xdc4=%d，功能页当前页=%d（目标页 %d、目标页签 %d）",
-          bar ? TAB_SEL(bar) : -999, sw ? *(int32_t *)(sw + 0x1b8) : -999, g_ta.page, g_ta.tabk); }
-}
-static void dm_tab_anim_pump(void) {   // 每出图帧（dm_ui_mouse_pump 开头）调 | called every presented frame at the top of dm_ui_mouse_pump
-    if (!g_ta.on) return;
-    uint64_t fr = dm_guest_frame(); uint32_t cur[TA_TOTAL];
-    if (!ta_read(cur)) { LOG("页签动画：页签条已不在（帧 %llu），提前结束", (unsigned long long)fr); g_ta.on = 0; return; }
-    for (int i = 0; i < TA_TOTAL; i++) if (cur[i] != g_ta.snap[i]) {
-        uint32_t old = g_ta.snap[i]; g_ta.snap[i] = cur[i];
-        if (g_ta.ccount[i] < 60000) g_ta.ccount[i]++;
-        if (!g_ta.hn[i]) g_ta.hist[i][g_ta.hn[i]++] = old;
-        if (g_ta.hn[i] < 6) g_ta.hist[i][g_ta.hn[i]++] = cur[i];
-        g_ta.cframe[i] = (uint32_t)fr;
-    }
-    if (fr >= g_ta.until) dm_tab_anim_finish();
-}
 // 小地图任务终点（dm_world.c dm_map_goals）用的地图几何：地图开没开、全屏还是微缩、每格像素。每格像素照游戏自己的算法（同 ui_map_center：0x413280–0x413298），
 // 单位是真实画面像素；地图上的世界格 (x, y) 画在 玩家所在点 + ((Δx−Δy)×1.6, (Δx+Δy)×0.8) × 每格像素（宿主峡谷 4 组墓口拟合，误差 ≤3%）。
 // 开没开看 AutoMap 控件可见位（+0x50）；全屏 / 微缩看 [main+0x2d5c748]（0 = 全屏，同 ui_map_pump）；微缩地图的玩家点在小地图框中心、缩放用另一档（+0x15ac）。主线程每帧写一次
@@ -3223,15 +3141,35 @@ static void dm_merc_name_tint(module_t *m, uint64_t root) {
     }
 }
 
-// 本地改动：左上角佣兵/傀儡/骷髅名字 —— 每个可见 Icon 一份，隐藏游戏原文，用原版小字号画在头像下方。
-// 菜单打开（navigation）时整体不画，避免浮在界面上。| Local change: names under every visible portrait icon
-// (merc / golem / skeletons), the game's own text is hidden and ours is drawn with the original small HUD font size;
-// skipped entirely while a menu is open.
+// 本地改动：左上角佣兵/傀儡/骷髅名字 —— 先在游戏本体里着色（TextBoxWidget 颜色码），不成功再退回「隐藏原文 + 覆盖层重画」。
+// 用户要求「在游戏本体中修改」：文字框门（观测门 14）挂在 main+0xadc434「文字变了」入口，游戏每帧改写名字时、原版重排之前触发；
+// 在那里面用游戏自己的字符串赋值 main+0x136e5c 把「颜色码 + 名字」写回控件 +0x88（走 std::string 赋值，容量由游戏分配，不手改缓冲区），
+// 并把 +0xfc 置 1——TextBoxWidget 认颜色码的那一档（pipeCharacterBehavior: handle；dm_textbox.c 用同一控件开/不开做过逐字节差分）。
+// 颜色码与 monhp_tint 同形：私用区 U+E07E + 数字（EE 81 BE '2' 绿 / '9' 黄 / '8' 橙 / '1' 红）。
+// 每个槽独立判定：门确实为这个控件命中过（hits > 0）→ 游戏本体内着色生效，不再隐藏原文、也不再让覆盖层画这一份；
+// 门没命中（产物没有门 14 / 这一份不是文字框）→ 退回隐藏原文 + 覆盖层按四档色重画，并隐藏 HireablesPanel 里所有可见、
+// 文本相同的其它文字框（用户看到的「上方旧白字盖住变色名」重复就是这个来源）。
+// 血量来源：槽 0 = 佣兵服务端怪物表（dm_merc_hp_pct）；其它槽 = 玩家宠物表里非佣兵随从按顺序（dm_pet_hp_list，diag.c）；
+// 都取不到时才用友方血条事件（dm_friendly_hp_pct）。日志前缀「名字颜色：」「名字重复：」，限频。
+// Local change: top-left merc/minion names -- colour them inside the game itself first (TextBoxWidget colour codes) and only
+// fall back to "hide the game text + redraw in the overlay" when that is unavailable. Gate 14 sits on the TextBoxWidget
+// "text changed" entry (main+0xadc434) and fires when the game rewrites the name, before the original lays it out; there we
+// rewrite +0x88 to "colour code + name" through the game's own string assignment (main+0x136e5c, capacity allocated by the
+// game -- no manual buffer writes) and set +0xfc = 1, the TextBoxWidget mode that parses colour codes (pipeCharacterBehavior:
+// handle; dm_textbox.c measured it byte-by-byte on the same widget). Colour codes have monhp_tint's shape: private-use U+E07E
+// + digit (EE 81 BE '2' green / '9' yellow / '8' orange / '1' red). Per slot: once the gate has really fired for that widget
+// the game's own coloured text is kept (no hiding, no overlay copy); otherwise the host hides the game text and draws this
+// copy in the overlay, and hides every other visible text box in HireablesPanel carrying the same text (that duplicate white
+// line above the portrait is what the player reported). Life source: slot 0 = mercenary server monster table; other slots =
+// the player's server pet table (golem / skeletons / ... in order); only when neither is available the friendly health-bar
+// event. Log prefixes "名字颜色：" / "名字重复：", rate limited.
 #define DM_HUD_NAME_MAX 4
-static struct { float r[4]; char txt[40]; int len; int band; _Atomic int has; } g_hud_names[DM_HUD_NAME_MAX];
+#define DM_HUD_OUT_MAX 4
+#define DM_HUD_EXTRA_MAX 8
+static struct { float r[4]; char txt[40]; int len; int band; _Atomic int has; } g_hud_names[DM_HUD_OUT_MAX];   // 覆盖层要画的那几份 | copies the overlay draws
 static _Atomic int g_hud_names_n;
 int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
-    if (k < 0 || k >= DM_HUD_NAME_MAX) return 0;
+    if (k < 0 || k >= DM_HUD_OUT_MAX) return 0;
     int has = atomic_load(&g_hud_names[k].has); if (!has) return 0;
     for (int i = 0; i < 4; i++) r[i] = g_hud_names[k].r[i];
     int n = g_hud_names[k].len; if (n > 39) n = 39;
@@ -3241,23 +3179,134 @@ int dm_hud_names_get(int k, float r[4], char *txt, int *len, int *band) {
 int dm_hud_names_count(void) { return atomic_load(&g_hud_names_n); }
 static _Atomic int g_hud_names_dim;
 int dm_hud_names_dim(void) { return atomic_load(&g_hud_names_dim); }   // 1 = 菜单打开中，覆盖层画暗一点 | 1 = menu open, draw dimmed
-// 上一拍被我们隐藏掉的名字控件：这一拍先全部恢复，再按当前可见槽位重新隐藏。
-// Widgets hidden last tick: restore them first, then hide the ones needed this tick.
-static uint64_t g_hud_names_hidden[DM_HUD_NAME_MAX];
+static struct { uint64_t w; char txt[40]; int len, band, hp, source, hits; } g_hud_slot[DM_HUD_NAME_MAX];   // 每个可见头像槽 | one entry per visible portrait slot
+static int g_hud_slot_n;
+static uint64_t g_hud_names_hidden[DM_HUD_NAME_MAX];   // 兜底路径被隐藏的名字控件（下一拍先恢复） | name widgets hidden on the fallback path (restored next tick)
+static uint64_t g_hud_extra_hidden[DM_HUD_EXTRA_MAX]; static int g_hud_extra_n;   // 兜底路径隐藏的重复文字控件 | duplicate text widgets hidden on the fallback path
+static int g_hud_tb_installed;
+
+static const char *dm_hud_band_code(int band) {   // 与 monhp_tint 同一套色码 | same colour codes as monhp_tint
+    return band == 3 ? "\xee\x81\xbe" "2"     // 绿 green
+         : band == 2 ? "\xee\x81\xbe" "9"     // 黄 yellow
+         : band == 1 ? "\xee\x81\xbe" "8"     // 橙 orange
+         : band == 0 ? "\xee\x81\xbe" "1"     // 红 red
+         : NULL;
+}
+static int dm_hud_band_of(int hp) { return hp >= 75 ? 3 : hp >= 50 ? 2 : hp >= 25 ? 1 : hp >= 0 ? 0 : -1; }
+static int dm_hud_plain_text(uint64_t w, char *buf, size_t cap, size_t *out_len) {   // 去掉开头颜色码后的原文 | raw text with a leading colour code stripped
+    if (!w || cap < 8) return 0;
+    const char *s = *(const char **)(uintptr_t)(w + 0x88); size_t n = *(const size_t *)(uintptr_t)(w + 0x90);
+    if (!s || n == 0 || n > 200) return 0;
+    size_t off = 0;
+    if (n >= 4 && (uint8_t)s[0] == 0xee && (uint8_t)s[1] == 0x81 && (uint8_t)s[2] == 0xbe && s[3] >= '0' && s[3] <= '9') off = 4;
+    size_t m = n - off; if (m == 0 || m >= cap) return 0;
+    memcpy(buf, s + off, m); buf[m] = 0; if (out_len) *out_len = m; return 1;
+}
+// 把「颜色码 + 原文」写回控件 +0x88（游戏自己的字符串赋值；容量由游戏分配，不手改缓冲区）。
+// 返回 1 = 确实改了；0 = 已经是目标文本；-1 = 串异常（太长 / 空）写不了。只在游戏主线程调（文字框门回调 / 鼠标泵）。
+// Writes "colour code + text" back through the game's own string assignment. 1 = changed; 0 = already the wanted text;
+// -1 = cannot (empty / too long). Game main thread only (text-box gate callback / mouse pump).
+static int dm_hud_write_code(uint64_t w, int band) {
+    module_t *m = main_module(); if (!m || !w) return -1;
+    const char *s = *(const char **)(uintptr_t)(w + 0x88); size_t n = *(const size_t *)(uintptr_t)(w + 0x90);
+    if (!s || n == 0 || n > 200) return -1;
+    const char *code = dm_hud_band_code(band);
+    size_t off = 0;
+    if (n >= 4 && (uint8_t)s[0] == 0xee && (uint8_t)s[1] == 0x81 && (uint8_t)s[2] == 0xbe && s[3] >= '0' && s[3] <= '9') off = 4;
+    char buf[208]; size_t m2 = n - off; if (m2 == 0 || m2 > sizeof buf - 5) return -1;
+    if (code) { memcpy(buf, code, 4); memcpy(buf + 4, s + off, m2); m2 += 4; }
+    else memcpy(buf, s + off, m2);
+    if (m2 == n && !memcmp(s, buf, n)) return 0;   // 已经是目标文本 | already the wanted text
+    if (code) *(uint8_t *)(uintptr_t)(w + 0xfc) = 1;   // 让 TextBoxWidget 按颜色码解析 | let the TextBoxWidget parse colour codes
+    ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, buf, m2);   // 与 dm_textbox.c 同一个赋值入口 | same setter as dm_textbox.c
+    return 1;
+}
+// 文字框门回调里的名字部分：这个控件是某个头像槽的 Name 吗？是就写颜色码并记一次命中。
+// Name part of the text-box gate callback: is this widget one of the portrait Name boxes? Then write the colour code and count a hit.
+static int dm_hud_gate_name(uint64_t w) {
+    for (int k = 0; k < g_hud_slot_n; k++) if (g_hud_slot[k].w == w) {
+        int first = g_hud_slot[k].hits++ == 0;
+        if (first) LOG("名字颜色：槽 %d「%s」文字框门命中（血量 %d%%、档 %d、原 +0xfc=%u）→ 游戏本体写颜色码", k, g_hud_slot[k].txt, g_hud_slot[k].hp, g_hud_slot[k].band, (unsigned)*(uint8_t *)(uintptr_t)(w + 0xfc));
+        dm_hud_write_code(w, g_hud_slot[k].band);
+        return 1; }
+    for (int e = 0; e < g_hud_extra_n; e++) if (g_hud_extra_hidden[e] == w) { *(uint8_t *)(uintptr_t)(w + 0x50) = 0; return 1; }
+    return 0;
+}
+// 接替 dm_textbox.c 的门 14 回调：名字着色 + 物品注释颜色码改写（后半段与原 tb_obs 等价）。
+// Takes over dm_textbox.c's gate-14 callback: name colouring + the item-annotation rewrite (the second half is equivalent to the original tb_obs).
+static void dm_hud_tb_obs(const uint64_t *regs) {
+    uint64_t w = regs[0];
+    if (w && dm_hud_gate_name(w)) return;
+    { static int off = -1; if (off < 0) off = getenv("DM_TEXTBOX_OFF") != NULL; if (off) return; }   // DM_TEXTBOX_OFF 只关物品注释改写，名字着色照旧 | this switch only disables the annotation rewrite, name colouring still runs
+    if (!dm_textbox_ensure_loaded()) return;   // 物品注释关着：没有对照表，文字框全原样 | item annotations off: no table, all text boxes unchanged
+    if (!w) return;
+    const char *s = *(const char **)(uintptr_t)(w + 0x88); size_t n = *(const size_t *)(uintptr_t)(w + 0x90);
+    if (!s || n == 0 || n > 4096) return;
+    if (*(const uint8_t *)(uintptr_t)(w + 0xfc) == 1) return;   // 认颜色码的文字框（聊天区）不动 | boxes that already parse codes (chat) are left alone
+    char *o = NULL; size_t on = 0;
+    if (!dm_textbox_rewrite(s, n, &o, &on)) return;
+    module_t *m = main_module();
+    if (m) ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, o, on);
+    free(o);
+}
+void dm_hud_textbox_install(uint8_t *main_base) {
+    (void)main_base;
+    if (g_hud_tb_installed) return;
+    if (!gate_obs_present(OBS_TEXTBOX)) { LOG("名字颜色：产物没有文字框观测门 14，游戏本体着色不可用 → 退回隐藏原文 + 覆盖层重画"); return; }
+    gate_obs_set(OBS_TEXTBOX, dm_hud_tb_obs); g_hud_tb_installed = 1;
+    LOG("名字颜色：已接替文字框门 14（HUD 名字写游戏颜色码；物品注释改写逻辑照旧）");
+}
+
+static void dm_hud_restore(void) {   // 下一拍先把上一拍隐藏的控件恢复，再按当前槽位重新隐藏 | restore last tick's hidden widgets, they are hidden again below if still needed
+    static int reset_log;
+    for (int k = 0; k < DM_HUD_NAME_MAX; k++) { uint64_t w = g_hud_names_hidden[k]; g_hud_names_hidden[k] = 0;
+        if (!w) continue;
+        if (*(uint8_t *)(uintptr_t)(w + 0x50) && reset_log++ < 8) LOG("名字重复：上一拍隐藏的名字控件又被游戏显示（第 %d 次），本拍继续隐藏", reset_log);
+        *(uint8_t *)(uintptr_t)(w + 0x50) = 1; }
+    for (int e = 0; e < DM_HUD_EXTRA_MAX; e++) { uint64_t w = g_hud_extra_hidden[e]; g_hud_extra_hidden[e] = 0; if (w) *(uint8_t *)(uintptr_t)(w + 0x50) = 1; }
+    g_hud_extra_n = 0;
+}
+
+typedef struct { int n; uint64_t keep[DM_HUD_NAME_MAX]; } dm_hud_dedupe;
+static void dm_hud_dedupe_walk(uint64_t w, int dep, const char *parent, const dm_hud_dedupe *d) {   // 隐藏其它位置上文本相同的可见文字框 | hide other visible text boxes carrying the same text
+    module_t *m = main_module(); if (!m || !w || dep > 12) return;
+    if (!*(uint8_t *)(uintptr_t)(w + 0x50)) return;
+    const char *nm = (const char *)*(uint64_t *)(uintptr_t)(w + 8);
+    if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
+        char b[40]; size_t len = 0;
+        if (dm_hud_plain_text(w, b, sizeof b, &len)) {
+            for (int k = 0; k < d->n; k++) if (d->keep[k] != w && g_hud_slot[k].len == (int)len && !memcmp(b, g_hud_slot[k].txt, len)) {
+                *(uint8_t *)(uintptr_t)(w + 0x50) = 0;
+                if (g_hud_extra_n < DM_HUD_EXTRA_MAX) g_hud_extra_hidden[g_hud_extra_n++] = w;
+                { static int lg; if (lg++ < 24) { int32_t *r = (int32_t *)(uintptr_t)(w + 0x70); LOG("名字重复：隐藏第 2 份「%s」（控件「%s」父「%s」矩形 %d,%d,%d,%d）", b, nm ? nm : "?", parent ? parent : "?", r[0], r[1], r[2], r[3]); } }
+                break; }
+        }
+    }
+    uint64_t ch = *(uint64_t *)(uintptr_t)(w + 0x58), n = *(uint64_t *)(uintptr_t)(w + 0x60);
+    if (!ch || n > 256) return;
+    for (uint64_t i = 0; i < n; i++) dm_hud_dedupe_walk(*(uint64_t *)(uintptr_t)(ch + 8 * i), dep + 1, nm ? nm : parent, d);
+}
+
 static void dm_hud_names_pump(module_t *m, uint64_t root) {
     extern int dm_front_navigation(void);
     if (!m || !root) return;
-    static int done_log;
-    for (int k = 0; k < DM_HUD_NAME_MAX; k++) { uint64_t hw = g_hud_names_hidden[k];
-        if (hw) { *(uint8_t *)(uintptr_t)(hw + 0x50) = 1; g_hud_names_hidden[k] = 0; } atomic_store(&g_hud_names[k].has, 0); }
+    static int done_log; static uint64_t last_log_fr;
+    dm_hud_restore();
+    for (int k = 0; k < DM_HUD_OUT_MAX; k++) atomic_store(&g_hud_names[k].has, 0);
     atomic_store(&g_hud_names_n, 0);
+    g_hud_slot_n = 0;
     if (dm_front_navigation()) { atomic_store(&g_hud_names_dim, 1); return; }   // 菜单打开：名字保留在原位、只画暗 | menu open: keep the names in place and draw them dimmed
     atomic_store(&g_hud_names_dim, 0);
     uint64_t hire = ui_panel(root, "HireablesPanel");
-    if (!hire || !*(uint8_t *)(hire + 0x50)) { atomic_store(&g_hud_names_n, 0); for (int k = 0; k < DM_HUD_NAME_MAX; k++) atomic_store(&g_hud_names[k].has, 0); return; }
-    module_t *mm = m; int32_t vw = *(int32_t *)(mm->base + 0x211da38), vh = *(int32_t *)(mm->base + 0x211da3c);
+    if (!hire || !*(uint8_t *)(hire + 0x50)) return;
+    int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
+    uint64_t fr = dm_guest_frame();
     int32_t hp_merc = dm_merc_hp_pct(); int32_t hp_fr = dm_friendly_hp_pct();
+    // 宠物表扫描每 8 帧一次（128 桶 × 链表，别放在每帧路径上）| the pet-table scan runs once per 8 frames (128 buckets x chains: not a per-frame path)
+    static int pet[8]; static int npet; static uint64_t next_pet_fr;
+    if (fr >= next_pet_fr) { next_pet_fr = fr + 8; npet = dm_pet_hp_list(pet, 8); if (npet < 0) npet = 0; }
     int slot = 0;
+    int native_ok = g_hud_tb_installed;   // 门 14 挂上了 = 游戏本体着色可用 | gate 14 installed = in-game colouring available
     uint64_t ch = *(uint64_t *)(hire + 0x58), n = *(uint64_t *)(hire + 0x60);
     if (!ch || n > 256) return;
     for (uint64_t i = 0; i < n && slot < DM_HUD_NAME_MAX; i++) {
@@ -3265,30 +3314,46 @@ static void dm_hud_names_pump(module_t *m, uint64_t root) {
         if (!ic || !*(uint8_t *)(ic + 0x50)) continue;                 // 只处理可见的槽位 | visible icons only
         const char *cn = (const char *)*(uint64_t *)(ic + 8);
         if (!cn || strncmp(cn, "Icon", 4)) continue;
-        /* Icon 本身可能又不可见（兄弟槽位切换）| the Icon can be hidden even when its parent is visible */
-        if (!*(uint8_t *)(ic + 0x50)) continue;
         float ir[4]; dm_widget_rect_ui(ic, vw, vh, ir);
         if (!(ir[2] > ir[0] && ir[3] > ir[1])) continue;
         uint64_t nm = dm_widget_named_text(m, ic, "Name", 0);
         if (!nm) continue;
-        uint8_t *ts = (uint8_t *)(uintptr_t)*(uint64_t *)(nm + 0x88); uint64_t tl = *(uint64_t *)(nm + 0x90);
-        if (!ts || tl == 0 || tl > 39) continue;
-        char buf[40]; memcpy(buf, ts, (size_t)tl); buf[tl] = 0;
-        int band;
-        if (slot == 0) band = hp_merc >= 75 ? 3 : hp_merc >= 50 ? 2 : hp_merc >= 25 ? 1 : hp_merc >= 0 ? 0 : -1;
-        else           band = hp_fr   >= 75 ? 3 : hp_fr   >= 50 ? 2 : hp_fr   >= 25 ? 1 : hp_fr   >= 0 ? 0 : -1;
-        /* 名字放在头像正下方、与头像同宽居中；字号 = 头像高度的 11%（贴近原版小字） | under the portrait, centred, ~11% of its height */
-        float h = ir[3] - ir[1];
-        g_hud_names[slot].r[0] = ir[0]; g_hud_names[slot].r[1] = ir[3] + h * 0.03f;
-        g_hud_names[slot].r[2] = ir[2]; g_hud_names[slot].r[3] = ir[3] + h * 0.03f + h * 0.14f;
-        memcpy(g_hud_names[slot].txt, buf, (size_t)tl + 1); g_hud_names[slot].len = (int)tl; g_hud_names[slot].band = band;
-        atomic_store(&g_hud_names[slot].has, 1);
+        char buf[40]; size_t tl = 0;
+        if (!dm_hud_plain_text(nm, buf, sizeof buf, &tl)) continue;
+        int pet_idx = slot - (hp_merc >= 0 ? 1 : 0), hp, src;
+        if (slot == 0 && hp_merc >= 0) { hp = hp_merc; src = 0; }              // 佣兵服务端表 | mercenary server table
+        else if (pet_idx >= 0 && pet_idx < npet) { hp = pet[pet_idx]; src = 1; }   // 宠物服务端表 | pet server table
+        else { hp = hp_fr; src = 2; }                                         // 友方血条事件 | friendly health-bar event
+        int band = dm_hud_band_of(hp);
+        if (g_hud_slot[slot].w != nm) g_hud_slot[slot].hits = 0;   // 换了控件就重新判定门 | new widget: re-probe the gate
+        g_hud_slot[slot].w = nm; memcpy(g_hud_slot[slot].txt, buf, tl + 1); g_hud_slot[slot].len = (int)tl;
+        g_hud_slot[slot].band = band; g_hud_slot[slot].hp = hp; g_hud_slot[slot].source = src;
+        if (native_ok) {   // 游戏本体着色：写码，变了就按原版重排入口再排一次（游戏每帧重写文字时门回调也会补写） | native: write the code and force the original re-layout when it changed (the gate callback also rewrites when the game re-sets the text each frame)
+            int wr = dm_hud_write_code(nm, band);
+            if (wr > 0) ((void (*)(uint64_t))(m->base + 0xadc434))(nm);
+            else if (wr < 0) { static int lgf; if (lgf++ < 4) LOG("名字颜色：槽 %d 文本串长度异常，这一份不写颜色码", slot); }
+            slot++; continue;
+        }
+        int fb = atomic_load(&g_hud_names_n);   // 兜底：隐藏原文 + 覆盖层画这一份 | fallback: hide the game text, draw this copy in the overlay
+        if (fb < DM_HUD_OUT_MAX) {
+            float h = ir[3] - ir[1];
+            g_hud_names[fb].r[0] = ir[0]; g_hud_names[fb].r[1] = ir[3] + h * 0.03f;
+            g_hud_names[fb].r[2] = ir[2]; g_hud_names[fb].r[3] = ir[3] + h * 0.03f + h * 0.14f;
+            memcpy(g_hud_names[fb].txt, buf, tl + 1); g_hud_names[fb].len = (int)tl; g_hud_names[fb].band = band;
+            atomic_store(&g_hud_names[fb].has, 1); atomic_store(&g_hud_names_n, fb + 1);
+        }
         *(uint8_t *)(uintptr_t)(nm + 0x50) = 0;                              // 控件设为不可见：游戏不再画白字，只留我们这份
         g_hud_names_hidden[slot] = nm;
         slot++;
     }
-    atomic_store(&g_hud_names_n, slot);
-    if (!done_log++) LOG("界面名字：可见槽位 %d 个（佣兵 %d%% / 友方 %d%%）", slot, hp_merc, hp_fr);
+    g_hud_slot_n = slot;
+    if (slot > 0) { dm_hud_dedupe d; d.n = slot; for (int k = 0; k < slot; k++) d.keep[k] = g_hud_slot[k].w; dm_hud_dedupe_walk(hire, 0, "HireablesPanel", &d); }
+    { if (slot && (!done_log || fr >= last_log_fr + 240)) {
+        last_log_fr = fr; done_log = 1;
+        for (int k = 0; k < slot; k++) LOG("名字颜色：槽 %d 文本「%s」血量 %d%%（来源 %s）颜色档 %d%s", k, g_hud_slot[k].txt, g_hud_slot[k].hp,
+            g_hud_slot[k].source == 0 ? "佣兵表" : g_hud_slot[k].source == 1 ? "宠物表" : "友方血条", g_hud_slot[k].band,
+            native_ok ? "；游戏本体内着色" : "；覆盖层兜底");
+      } }
 }
 
 // 本地改动：雇佣兵 NPC 页面诊断 —— 面板打开期间，每 2 秒打印一次可见顶层面板名；名字里带 Hire/Merc/雇佣 的面板整棵树打出来
@@ -3321,24 +3386,49 @@ static void dm_hire_probe(module_t *m, uint64_t root) {
     if (vis) budget--;
 }
 
-// ---------- 本地改动：佣兵招募面板「点条目 = 只移光标出说明」（T3） ----------
+// ---------- 本地改动：雇佣兵招募面板「点行出信息栏 + 技能图标放大」（T10） ----------
+// 用户：NPC 招募面板只有名称 / 价格和很小的技能图标，点佣兵要像装备说明框一样弹一个佣兵信息栏。
 // 招募列表 = HireMenuPanel > ListContainer（布局 Controller/HireMenuPanelHD.json），行是 ListItemWidget：
-// 点一下原来会发 DialogMessage:HireMenuSelection（选中 / 进入操作），玩家要的是「点一下先出该佣兵的说明，松手保持」。
-// 做法和物品「单击常驻说明框」同一套：只把游戏光标摆到该点（dm_ui_hover_now——游戏当场重算悬停 / 焦点，原版自己弹条目说明），
-// 落点同时记进 g_stick_px，ui_ptr_pump 每帧补一次 MouseMove 顶住悬停；这一下不发点击。明确是按钮（名字含
-// Button / Confirm / Accept / Cancel / Close）的地方照旧发点击；面板关掉 / 切走时把我们摆的保持清掉。
-// Local change: mercenary-hire panel, "tap a list row = only move the cursor so the game shows its description" (T3).
-// The hire list is HireMenuPanel > ListContainer (layout Controller/HireMenuPanelHD.json) with ListItemWidget rows:
-// a tap used to send DialogMessage:HireMenuSelection (select / act), while the player wants "one tap shows that
-// mercenary's description, kept after the finger lifts". Same mechanism as the sticky item tooltip: only place the
-// game cursor at that point (dm_ui_hover_now -- the game recomputes hover / focus on the spot and pops up its own row
-// description), record the point in g_stick_px so ui_ptr_pump sends a MouseMove every frame to keep the hover, and send
-// no click this time. Real buttons (name contains Button / Confirm / Accept / Cancel / Close) are still clicked as
-// before; our hold is dropped when the panel closes or is switched away.
+//   HireName / HireLevel / Skill0..2（HirelingSkillIconWidget，布局 scale 0.50）/ CostContainer > HireCost。
+// 1) 点列表行：不再摆游戏光标、也不发点击（避免原版 tooltip 和我们的信息栏叠在一起），把该行名称 / 等级 / 费用的文本
+//    与行矩形发布给覆盖层（dm_hire_info_get），由 DmTouchOverlay.m 画说明框样式的小信息栏；同一条目 1.5 秒内再点
+//    放行原点击（选中 / 招募）；点面板其它处 / 面板关闭即收起。
+// 2) 技能图标：面板打开时把每行 Skill0..2 的 +0x80 放到 DM_HIRE_ICON_SCALE，并按放大后的显示宽重排三个图标的间距
+//    （右缘不越过行内费用列 x≈1471）；改矩形后照原版补一次虚表 +0x10 重算；每帧保持（游戏重排版会写回布局值）。
+// 3) 技能名：图标控件里没有可读的技能名文本，技能 id→中文名要离线从 RomFS 技能表生成，本批未做；信息栏写「图标已放大」，
+//    并一次性打印 Skill0 控件 +0x84..+0xd8 的非零字段，供下一批定位技能 id。
+// Local change: hire-vendor panel (T10) -- a tap on a list row pops a mercenary info bar (name / level / hire cost) drawn
+// by the overlay (no game cursor, no click, so the original tooltip does not overlap it), and the three tiny skill icons
+// per row are enlarged via the widget scale field +0x80 and re-spaced so they stay clear of the cost column. The host only
+// reads and publishes; drawing lives in DmTouchOverlay.m. Skill names are not readable from the icon widget (no text
+// child), so the info bar says the icons were enlarged and the widget's fields are logged once for a later id mapping.
 #define HIRE_PANEL_NAME "HireMenuPanel"
-static _Atomic int g_hire_tip;             // 1 = 上一次点按被改成「只移光标」 | 1 = the last tap was turned into "move the cursor only"
-static _Atomic uint64_t g_hire_tip_xy;     // 我们摆光标的点 (x<<32)|y | the point we placed the cursor at
-static _Atomic uint64_t g_hire_last_fr, g_hire_last_xy;   // 上一次「只悬停」的帧与点：同一条目 1.5 秒内再点一次就放行原点击（不能把招募弄成永远点不了） | frame/point of the last hover-only tap: a second tap on the same row within 1.5 s lets the original click through (hiring must not become impossible)
+#define DM_HIRE_ICON_SCALE 0.85f
+#define DM_HIRE_ICON_ROWS 8
+static _Atomic int g_hire_info_has;   // 1 = 信息栏要显示 | 1 = the info bar is up
+static struct { float r[4]; char name[64], level[48], cost[48]; } g_hire_info;
+static _Atomic uint64_t g_hire_last_fr, g_hire_last_xy;   // 上一次点中的帧与点：同一条目 1.5 秒内再点放行原点击（不能把招募弄成永远点不了） | frame/point of the last row tap: a second tap on the same row within 1.5 s lets the original click through (hiring must never become impossible)
+static _Atomic uint64_t g_hire_click_xy;   // 第二次点要补发的点击位置 | point of the deferred click for the second tap
+static int g_hire_click_step;              // 0 空闲；1..3 悬停；4 按下；5 抬起 | 0 idle; 1..3 hover; 4 press; 5 release
+int dm_hire_info_get(float r[4], char *name, char *level, char *cost) {   // 覆盖层查询（DmTouchOverlay.m） | queried by the overlay
+    if (!atomic_load(&g_hire_info_has)) return 0;
+    for (int i = 0; i < 4; i++) r[i] = g_hire_info.r[i];
+    snprintf(name, 64, "%s", g_hire_info.name); snprintf(level, 48, "%s", g_hire_info.level); snprintf(cost, 48, "%s", g_hire_info.cost);
+    return 1;
+}
+static void hire_info_clear(const char *why) { if (atomic_exchange(&g_hire_info_has, 0)) LOG("招募信息：收起信息栏（%s）", why); }
+static void hire_trim(char *s) {
+    size_t n = strlen(s);
+    while (n && (s[n-1] == ' ' || s[n-1] == '\n' || s[n-1] == '\r' || s[n-1] == '\t')) s[--n] = 0;
+    size_t k = 0; while (s[k] == ' ' || s[k] == '\n' || s[k] == '\r' || s[k] == '\t') k++;
+    if (k) memmove(s, s + k, strlen(s + k) + 1);
+}
+static int hire_widget_text(uint64_t w, char *out, size_t cap) {   // 读文字控件的文本（去首尾空白） | read a text widget's text (trimmed)
+    if (!w || !out || cap < 8) return 0;
+    const char *s = *(const char **)(uintptr_t)(w + 0x88); size_t n = *(const size_t *)(uintptr_t)(w + 0x90);
+    if (!s || n == 0 || n >= cap) return 0;
+    memcpy(out, s, n); out[n] = 0; hire_trim(out); return out[0] != 0;
+}
 static int hire_button_hit(uint64_t w, uint64_t xy, int dep) {   // 这一点上有没有名字像按钮的可见控件 | whether a visible button-like widget is hit at this point
     if (!w || dep > 12 || !*(uint8_t *)(w + 0x50)) return 0;
     const char *nm = (const char *)*(uint64_t *)(w + 8);
@@ -3351,47 +3441,158 @@ static int hire_button_hit(uint64_t w, uint64_t xy, int dep) {   // 这一点上
     for (uint64_t i = 0; i < n; i++) if (hire_button_hit(*(uint64_t *)(ch + 8 * i), xy, dep + 1)) return 1;
     return 0;
 }
-static int hire_tip_gate(module_t *m, uint64_t root, int x, int y) {   // 1 = 这一下已改成只悬停（调用方把点击丢掉） | 1 = this tap was turned into hover-only (the caller drops the click)
+static int hire_row_rect(module_t *m, uint64_t row, float rect[4]) {   // 行矩形（界面归一化，同 dm_widget_rect_ui 的探边界法） | row rect in normalized UI space
+    if (!m || !row) return 0;
+    int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
+    if (vw <= 0 || vh <= 0) return 0;
+    dm_widget_rect_ui(row, vw, vh, rect);
+    return rect[2] > rect[0] && rect[3] > rect[1];
+}
+static uint64_t hire_row_at(module_t *m, uint64_t lst, uint64_t xy_hit) {   // 点在哪个列表行上 | which list row was hit
+    (void)m;
+    uint64_t ch = *(uint64_t *)(uintptr_t)(lst + 0x58), n = *(uint64_t *)(uintptr_t)(lst + 0x60);
+    if (!ch || n > 256) return 0;
+    for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(uintptr_t)(ch + 8 * i); if (!c || !*(uint8_t *)(uintptr_t)(c + 0x50)) continue;
+        if (!ui_find(c, "HireName", 1)) continue;   // Selection 等非行控件跳过 | skip non-row children (Selection image etc.)
+        uint64_t fn = *(uint64_t *)(*(uint64_t *)c + 0x48);
+        if (((int (*)(uint64_t, uint64_t))fn)(c, xy_hit) & 1) return c; }
+    return 0;
+}
+static int hire_would_show_info(module_t *m, uint64_t root, int x, int y) {   // 这一点会不会走「弹信息栏」：用来跳过通用的悬停 MouseMove，别让原版行 tooltip 冒出来 | whether this point will pop the info bar: used to skip the generic hover MouseMove so the original row tooltip does not appear
+    if (!m || !root) return 0;
+    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
+    if (!pn || !*(uint8_t *)(pn + 0x50) || !has_visible_leaf(pn, 1)) return 0;
+    uint64_t lst = ui_find(pn, "ListContainer", 1);
+    if (!lst || !*(uint8_t *)(lst + 0x50)) return 0;
+    uint64_t xy_hit = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32);
+    if (!(((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)lst + 0x48))(lst, xy_hit) & 1)) return 0;
+    if (hire_button_hit(pn, xy_hit, 0)) return 0;
+    return hire_row_at(m, lst, xy_hit) != 0;
+}
+static void hire_info_publish(module_t *m, uint64_t row) {
+    char nm[64] = "", lv[48] = "", cst[48] = "";
+    hire_widget_text(ui_find(row, "HireName", 1), nm, sizeof nm);
+    hire_widget_text(ui_find(row, "HireLevel", 1), lv, sizeof lv);
+    hire_widget_text(ui_find(row, "HireCost", 1), cst, sizeof cst);
+    float r[4] = {0, 0, 0, 0};
+    if (!hire_row_rect(m, row, r)) { LOG("招募信息：行矩形读不到，这次不弹信息栏"); return; }
+    atomic_store(&g_hire_info_has, 0);
+    for (int i = 0; i < 4; i++) g_hire_info.r[i] = r[i];
+    snprintf(g_hire_info.name, sizeof g_hire_info.name, "%s", nm);
+    snprintf(g_hire_info.level, sizeof g_hire_info.level, "%s", lv);
+    snprintf(g_hire_info.cost, sizeof g_hire_info.cost, "%s", cst);
+    atomic_store(&g_hire_info_has, 1);
+    { static uint64_t lg; uint64_t fr = dm_guest_frame(); if (fr - lg > 30) { lg = fr;
+        LOG("招募信息：行「%s」等级「%s」费用「%s」矩形 %.2f,%.2f,%.2f,%.2f", nm, lv, cst, (double)r[0], (double)r[1], (double)r[2], (double)r[3]); } }
+}
+static int hire_tip_gate(module_t *m, uint64_t root, int x, int y) {   // 1 = 这一下已改成「弹信息栏」（调用方把点击丢掉） | 1 = this tap became "show the info bar" (caller drops the click)
     if (!m || !root) return 0;
     uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
     if (!pn || !*(uint8_t *)(pn + 0x50) || !has_visible_leaf(pn, 1)) return 0;   // 面板没开 / 空壳（只剩矩形）不动 | panel not open / empty shell (only a rect left): do nothing
-    uint64_t lst = ui_find(pn, "ListContainer", 1), hw = lst && *(uint8_t *)(lst + 0x50) ? lst : pn;
+    uint64_t lst = ui_find(pn, "ListContainer", 1);
     uint64_t xy_hit = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32);   // 控件命中函数的打包格式：x 低 / y 高 | packed form for the widget hit-test: x low / y high
-    uint64_t xy = ((uint64_t)(uint32_t)x << 32) | (uint32_t)y;                 // 悬停保持用：x 高 / y 低，与 g_stick_px / g_ui_hover_xy 一致 | hover-hold form: x high / y low, same as g_stick_px / g_ui_hover_xy
-    if (!(((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)hw + 0x48))(hw, xy_hit) & 1)) return 0;   // 不在列表上照旧 | not on the list: as before
+    uint64_t hw = lst && *(uint8_t *)(lst + 0x50) ? lst : pn;
+    if (!(((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)hw + 0x48))(hw, xy_hit) & 1)) { hire_info_clear("点在面板其它处"); return 0; }   // 不在列表上照旧 | not on the list: as before
     if (hire_button_hit(pn, xy_hit, 0)) return 0;   // 真按钮照旧点 | a real button is clicked as usual
-    if (!lst) { static uint64_t lg; uint64_t f2 = dm_guest_frame(); if (f2 - lg > 300) { lg = f2; LOG("招募说明：面板可见但找不到 ListContainer，退化为按面板矩形判断"); } }
-    {   // 同一条目 1.5 秒内再点一次：放行原点击（第一下出说明，第二下才选中 / 招募；否则招募流程永远点不了） | second tap on the same row within 1.5 s: let the original click through (first tap shows the description, the second selects / hires; otherwise hiring could never work)
+    if (!lst) { static uint64_t lg; uint64_t f2 = dm_guest_frame(); if (f2 - lg > 300) { lg = f2; LOG("招募信息：面板可见但找不到 ListContainer，退化为按面板矩形判断"); } }
+    uint64_t row = lst ? hire_row_at(m, lst, xy_hit) : 0;
+    if (!row) { hire_info_clear("没点到列表行"); return 0; }
+    {   // 同一条目 1.5 秒内再点：收起信息栏，并排一个「原版点击」序列（先悬停 3 帧再按下/抬起）——第一次点没摆过游戏光标，直接放行会被当成点空白 | second tap on the same row within 1.5 s: hide the info bar and queue an original click sequence (3 hover frames, then press/release); the first tap did not place the game cursor, so letting the click straight through would be treated as a click on empty space
       uint64_t fr = dm_guest_frame(), lfr = atomic_load(&g_hire_last_fr), lxy = atomic_load(&g_hire_last_xy);
       int32_t vh = *(int32_t *)(m->base + 0x211da3c), vw = *(int32_t *)(m->base + 0x211da38);
       int tol = vh > 0 ? (int)(102 * (int64_t)vh / 2160) : 60, wx = vw > 0 ? vw / 2 : 600;
       int lx = (int)(lxy >> 32), ly = (int)(lxy & 0xffffffffu);
-      if (atomic_load(&g_hire_tip) && lfr && fr - lfr <= 90 && x - lx <= wx && lx - x <= wx && y - ly <= tol && ly - y <= tol) {
-          atomic_store(&g_hire_tip, 0); LOG("招募说明：同一条目 1.5 秒内再点一次（%d,%d）→ 放行原点击（选中 / 招募）", x, y); return 0; } }
-    int ok = dm_ui_hover_now(x, y);
-    if (!ok) { static uint64_t lg2; uint64_t f2 = dm_guest_frame(); if (f2 - lg2 > 60) { lg2 = f2; LOG("招募说明：(%d,%d) 光标模式不可用，hover_now 失败 → 照原样发点击", x, y); } return 0; }
-    atomic_store(&g_hire_tip_xy, xy); atomic_store(&g_hire_tip, 1);
-    atomic_store(&g_hire_last_xy, xy); atomic_store(&g_hire_last_fr, dm_guest_frame());
-    atomic_store(&g_stick_px, xy);   // ui_ptr_pump 每帧补 MouseMove，说明框常驻 | ui_ptr_pump sends a MouseMove every frame, keeping the description up
-    { static uint64_t lg; uint64_t fr = dm_guest_frame(); if (fr - lg > 60) { lg = fr;
-        LOG("招募说明：(%d,%d) 落在招募列表 → 只移光标（hover_now=%d），不发点击、悬停保持", x, y, ok); } }
+      if (atomic_load(&g_hire_info_has) && lfr && fr - lfr <= 90 && x - lx <= wx && lx - x <= wx && y - ly <= tol && ly - y <= tol) {
+          hire_info_clear("同一条目再点");
+          atomic_store(&g_hire_click_xy, ((uint64_t)(uint32_t)x << 32) | (uint32_t)y);
+          g_hire_click_step = 1;
+          LOG("招募信息：同一条目 1.5 秒内再点（%d,%d）→ 收起信息栏，排一个原版点击（悬停 3 帧后按下 / 抬起）", x, y);
+          return 1; } }
+    atomic_store(&g_hire_last_xy, ((uint64_t)(uint32_t)x << 32) | (uint32_t)y); atomic_store(&g_hire_last_fr, dm_guest_frame());
+    hire_info_publish(m, row);
     return 1;
 }
-static void hire_tip_pump(uint64_t root) {   // 每帧：招募面板关了 / 切走就把我们摆的保持清掉，避免说明框残留 | every frame: drop our hold when the hire panel closes, so no description lingers
-    if (!atomic_load(&g_hire_tip)) return;
+static void hire_info_pump(uint64_t root) {   // 每帧：面板关了 / 切走就收起信息栏 | every frame: hide the info bar when the panel closes
+    if (!atomic_load(&g_hire_info_has)) return;
     uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
     if (pn && *(uint8_t *)(pn + 0x50) && has_visible_leaf(pn, 1)) return;
-    uint64_t xy = atomic_load(&g_hire_tip_xy);
-    if (atomic_load(&g_stick_px) == xy) atomic_store(&g_stick_px, 0);
-    { extern _Atomic uint64_t g_ui_hover_xy; if (atomic_load(&g_ui_hover_xy) == xy) atomic_store(&g_ui_hover_xy, 0); }
-    atomic_store(&g_hire_tip, 0);
-    LOG("招募说明：招募面板已关 / 切走，清掉光标悬停保持");
+    hire_info_clear("面板已关 / 切走");
+}
+// 第二次点的补发序列：第一次点没摆游戏光标，直接放行点击会被当成点空白，所以这里自己补「悬停 3 帧 → 按下 → 抬起」。
+// Deferred original click for the second tap: the first tap never placed the game cursor, so a straight click would be
+// treated as a click on empty space -- this sends the normal 3 hover frames, then press, then release.
+static void hire_click_pump(module_t *m, uint64_t root) {
+    if (!g_hire_click_step || !m || !root) return;
+    static uint64_t h_mv, h_dn, h_up;
+    if (!h_mv) { h_mv = ui_hash("MouseMove"); h_dn = ui_hash("LeftMouseButtonDown"); h_up = ui_hash("LeftMouseButtonUp"); }
+    uint64_t v = atomic_load(&g_hire_click_xy); int x = (int)(v >> 32), y = (int)(v & 0xffffffffu);
+    if (g_hire_click_step <= 3) { ui_send_mouse(m, root, h_mv, x, y); g_hire_click_step++; return; }
+    if (g_hire_click_step == 4) { ui_send_mouse(m, root, h_mv, x, y); ui_send_mouse(m, root, h_dn, x, y); g_hire_click_step = 5; return; }
+    ui_send_mouse(m, root, h_mv, x, y); ui_send_mouse(m, root, h_up, x, y); g_hire_click_step = 0;
+    LOG("招募信息：补发原版点击完成（%d,%d）", x, y);
+}
+// 技能图标放大 + 重排间距（每帧保持；游戏重排版写回布局值后再改回来）。
+// 中心点每帧从控件自己的当前矩形现算（x + 宽 × 当前缩放 / 2）：游戏若把矩形写回布局值、或列表滚动，
+// 下一帧自然按新位置重算，不需要缓存绝对坐标。放大后按显示宽重新排间距，右缘不越过行内费用列（x≈1471）。
+// Enlarge and re-space the skill icons every frame. Each icon's centre is recomputed from its own current rect
+// (x + width x current scale / 2) every frame, so a layout reset or list scroll is followed automatically (no absolute
+// coordinates are cached); after scaling, the spacing uses the scaled display width, keeping clear of the cost column.
+static struct { uint64_t row; int logged; } g_hire_rows[DM_HIRE_ICON_ROWS];
+static int g_hire_rows_n;
+static void dm_hire_icons_pump(module_t *m, uint64_t root) {
+    if (!m || !root) return;
+    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
+    if (!pn || !*(uint8_t *)(pn + 0x50)) { g_hire_rows_n = 0; return; }
+    uint64_t lst = ui_find(pn, "ListContainer", 1);
+    if (!lst || !*(uint8_t *)(lst + 0x50)) return;
+    uint64_t ch = *(uint64_t *)(lst + 0x58), n = *(uint64_t *)(lst + 0x60);
+    if (!ch || n > 256) return;
+    int used = 0;
+    for (uint64_t i = 0; i < n && used < DM_HIRE_ICON_ROWS; i++) {
+        uint64_t row = *(uint64_t *)(ch + 8 * i);
+        if (!row || !*(uint8_t *)(row + 0x50) || !ui_find(row, "HireName", 1)) continue;
+        uint64_t sk[3] = {0, 0, 0};
+        for (int k = 0; k < 3; k++) { char wn[8]; snprintf(wn, sizeof wn, "Skill%d", k); sk[k] = ui_find(row, wn, 1); if (sk[k] && !*(uint8_t *)(uintptr_t)(sk[k] + 0x50)) sk[k] = 0; }
+        if (!sk[0]) continue;
+        int32_t *r0 = (int32_t *)(uintptr_t)(sk[0] + 0x70); float *sc0 = (float *)(uintptr_t)(sk[0] + 0x80);
+        int32_t w0 = r0[2], h0 = r0[3];
+        if (w0 <= 0) w0 = 100;
+        if (h0 <= 0) h0 = 100;
+        float disp = (float)w0 * DM_HIRE_ICON_SCALE;
+        float cx0 = (float)r0[0] + (float)w0 * (*sc0) * 0.5f;
+        float step = disp + 4.0f;   // 放大后按显示宽重新排间距 | re-space by the scaled display width
+        float maxStep = (1462.0f - cx0 - disp * 0.5f) / 2.0f;   // 右缘不压到费用列（行内 x≈1471） | keep the right edge off the cost column (row-local x about 1471)
+        if (maxStep > disp && step > maxStep) step = maxStep;
+        for (int k = 0; k < 3; k++) {
+            uint64_t s = sk[k]; if (!s) continue;
+            int32_t *r = (int32_t *)(uintptr_t)(s + 0x70); float *sc = (float *)(uintptr_t)(s + 0x80);
+            float cy = (float)r[1] + (float)h0 * (*sc) * 0.5f;
+            float cx = cx0 + step * (float)k;
+            int32_t nx = (int32_t)(cx - disp * 0.5f), ny = (int32_t)(cy - (float)h0 * DM_HIRE_ICON_SCALE * 0.5f);
+            int chg = 0;
+            if (*sc != DM_HIRE_ICON_SCALE) { *sc = DM_HIRE_ICON_SCALE; chg = 1; }
+            if (r[0] != nx) { r[0] = nx; chg = 1; }
+            if (r[1] != ny) { r[1] = ny; chg = 1; }
+            if (chg) ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)s + 0x10))(s);   // 原版矩形变了要补一次重算 | the original recompute call after a rect change
+        }
+        int slot = -1; for (int k = 0; k < g_hire_rows_n; k++) if (g_hire_rows[k].row == row) { slot = k; break; }
+        if (slot < 0) { if (g_hire_rows_n >= DM_HIRE_ICON_ROWS) continue; slot = g_hire_rows_n++; g_hire_rows[slot].row = row; g_hire_rows[slot].logged = 0; }
+        if (!g_hire_rows[slot].logged) { g_hire_rows[slot].logged = 1;
+            LOG("招募信息：技能图标放大 %.2f 倍（行 %p，原宽 %d、显示宽 %.0f、间距 %.0f%s）", (double)DM_HIRE_ICON_SCALE,
+                (void *)(uintptr_t)row, w0, (double)disp, (double)step, step < disp + 4.0f ? "（右移受限，略微重叠）" : "");
+            if (slot == 0) { static int dmp; if (!dmp) { dmp = 1;
+                char b[300]; int q = 0; for (int o = 0x84; o <= 0xd8 && q < (int)sizeof b - 16; o += 4) { int32_t v = *(int32_t *)(uintptr_t)(sk[0] + o); if (v) q += snprintf(b + q, sizeof b - q, " %x:%d", o, v); }
+                LOG("招募信息：技能图标字段（Skill0 +0x84..+0xd8 非零）：%s", b); } }
+        }
+        used++;
+    }
+    if (!used) g_hire_rows_n = 0;
 }
 
 static void dm_ui_hud_pump(void) {
     module_t *m = main_module(); if (!m) return;
     uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
-    hire_tip_pump(root);   // 招募说明的悬停保持：面板关了要清掉 | hire-description hover hold: clear it when the panel closes
+    hire_info_pump(root);   // 招募信息栏：面板关了要收起 | hire info bar: clear it when the panel closes
     int unstable = dm_ui_unstable();
     { static uint64_t next_trace; uint64_t fr = dm_guest_frame(); if (fr >= next_trace) {
         next_trace = fr + 300; uint64_t hire = ui_panel(root, "HireablesPanel"); int hp = dm_merc_hp_pct();
@@ -3401,6 +3602,7 @@ static void dm_ui_hud_pump(void) {
                 hire ? *(uint8_t *)(hire + 0x50) : 0, (unsigned long long)(hire ? *(uint64_t *)(hire + 0x60) : 0), hp);
       } }
     if (unstable) return;
+    dm_hire_icons_pump(m, root);   // 招募面板：技能图标放大到 0.85 并重排间距（每帧保持） | hire panel: enlarge the skill icons to 0.85 and re-space them (kept every frame)
     dm_hire_probe(m, root);   // 雇佣兵 NPC 页面诊断 | hire-NPC diagnostics
     // Search the active character panel by localized title text, since the row's widget name is not stable across layouts.
     uint64_t cs = ui_panel(root, "CharacterStatsPanel");
@@ -3412,8 +3614,8 @@ static void dm_ui_hud_pump(void) {
 void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线程）；每个出图帧做一次 | called where the game fetches the controller (hle_hid fill, main thread); done once per presented frame
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
-    dm_tab_anim_pump();   // 诊断：页签高亮动画测量（见上面的测量段） | diagnostic: tab highlight animation measurement (see the section above)
     dm_ui_hud_pump();   // 每帧修正角色栏文字与佣兵名字颜色 | refresh character-panel titles and mercenary name colour each frame
+    { module_t *hm = main_module(); uint64_t hr = 0; if (hm) { memcpy(&hr, hm->base + 0x2f05458, 8); if (hr) hire_click_pump(hm, hr); } }   // 招募信息栏：第二次点的补发点击序列 | hire info bar: deferred click sequence for the second tap
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame
     ui_watch_pump();
@@ -3444,7 +3646,6 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
               if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) {
                   if (cur != to) ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, to > cur);
                   ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, to, 0); int selected = TAB_SEL(tw);
-                  dm_tab_anim_begin(fr, tw, us, g_tab_k, to);   // 诊断：从这一帧起测量高亮是什么在动 | diagnostic: from this frame on, measure what the highlight animates
                   LOG("界面页签：功能页第 %d → 第 %d 页；页签记录同步到 %d%s", cur, to, selected, selected == to ? "" : "（目标页签未选中）"); }
               else LOG("【红】界面页签：功能页目标 %d，但页签条已不在 / 不可见，这次不切", to); }
           else if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) { int was = TAB_SEL(tw);
@@ -3512,7 +3713,7 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
             if (ph && vh > 0 && !atomic_load(&g_fe_confirm_open) && y > BLISS_Y0 * vh / 2160 && y < BLISS_Y1 * vh / 2160) { x = vw / 2 + (-1551 + 35) * vh / 2160; y = (1330 + 33) * vh / 2160; } } }   // 这一行里点哪都算点勾选框（悬停那几拍也要挪：控件没被悬停过不收点击） | a tap anywhere in this row counts as tapping the checkbox (the hover ticks must be moved too: a widget that has never been hovered does not accept clicks)
     static uint64_t h_mv, h_dn, h_up; if (!h_mv) { h_mv = ui_hash("MouseMove"); h_dn = ui_hash("LeftMouseButtonDown"); h_up = ui_hash("LeftMouseButtonUp"); }
     static int logged;
-    { int dm_vault_ui_blocks(int, int); if (!((dm_ui_panel_state() & DM_PS_VAULT) && dm_vault_ui_blocks(x, y))) ui_send_mouse(m, root, h_mv, x, y); }   // 编年史页上不悬停（会冒出底下魔盒钮的原版说明，dm_vault_ui.c） | no hover on the chronicle page (it would bring up the original description of the cube button underneath, dm_vault_ui.c)
+    { int dm_vault_ui_blocks(int, int); if (!((dm_ui_panel_state() & DM_PS_VAULT) && dm_vault_ui_blocks(x, y)) && !hire_would_show_info(m, root, x, y)) ui_send_mouse(m, root, h_mv, x, y); }   // 编年史页上不悬停（会冒出底下魔盒钮的原版说明，dm_vault_ui.c）；招募列表行也不悬停（会冒出原版行 tooltip，和我们的信息栏叠） | no hover on the chronicle page (it would bring up the original description of the cube button underneath, dm_vault_ui.c); nor on hire list rows (it would bring up the original row tooltip under our info bar)
     // 按下之前至少先悬停 2 帧：游戏下一帧才算出「光标在哪个控件上」，同一帧 Move + Down 会被当成点在空白处
     // （Mac 的 iOS 包：暂停菜单点「选项」→ 整个面板被关。之前没暴露是因为手柄光标先走到了那里）
     // Hover for at least 2 frames before pressing: the game only works out "which widget the cursor is on" on the next frame, and Move + Down in the same frame is treated as a click on empty space

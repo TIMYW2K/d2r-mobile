@@ -296,6 +296,60 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         }
     }
 
+    // 本地改动：雇佣兵招募信息栏（T10）—— 点 HireMenuPanel 列表行时，宿主发布该行名称 / 等级 / 雇佣费，
+    // 这里在行旁画一个类似装备说明框的小信息栏（深色半透明底 + 1px 边框；右侧优先，放不下放左侧，夹在屏内）。
+    // 技能名暂时拿不到（游戏图标控件里没有文字），信息栏写「技能图标已放大」——图标放大由宿主做，见 dm_cursor.c。
+    // Local change: hire-vendor info bar (T10) -- a tap on a HireMenuPanel list row makes the host publish that row's name /
+    // level / hire cost; draw a small equipment-tooltip-style bar next to the row (dark translucent fill, 1 px border;
+    // right of the row first, left when it does not fit, clamped to the screen). Skill names are not available (the game's
+    // icon widgets carry no text), so the bar says the skill icons were enlarged -- the host does the enlargement.
+    {
+        extern int dm_hire_info_get(float r[4], char *name, char *level, char *cost);
+        extern void dm_ui_rect(int *x, int *y, int *w, int *h);
+        float r[4] = {0, 0, 0, 0}; char hn[64] = "", hlv[48] = "", hcost[48] = "";
+        if (dm_hire_info_get(r, hn, hlv, hcost) && (hn[0] || hlv[0] || hcost[0])) {
+            int ux = 0, uy = 0, uw = 0, uh = 0; dm_ui_rect(&ux, &uy, &uw, &uh);
+            CGFloat sw = self.bounds.size.width, sh = self.bounds.size.height;
+            if (uw > 0 && uh > 0 && sw > 0 && sh > 0 && r[2] > r[0] && r[3] > r[1]) {
+                CGFloat sc = self.window.screen.scale; if (sc <= 0) sc = UIScreen.mainScreen.scale; if (sc <= 0) sc = 3;
+                CGFloat rowX = (ux + r[0] * uw) / sc, rowY = (uy + r[1] * uh) / sc;
+                CGFloat rowW = (r[2] - r[0]) * uw / sc, rowH = (r[3] - r[1]) * uh / sc;
+                CGFloat fs = MAX(11, MIN(15, rowH * 0.30));
+                UIFont *tf = dm_game_font(fs + 1.5); if (!tf) tf = [UIFont boldSystemFontOfSize:fs + 1.5];
+                UIFont *bf = dm_game_font(fs); if (!bf) bf = [UIFont systemFontOfSize:fs];
+                NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new]; ps.lineBreakMode = NSLineBreakByTruncatingTail;
+                NSString *title = hn[0] ? [NSString stringWithUTF8String:hn] : @"佣兵";
+                NSMutableArray<NSString *> *lines = [NSMutableArray array];
+                if (hlv[0]) [lines addObject:[NSString stringWithFormat:@"等级  %@", [NSString stringWithUTF8String:hlv]]];
+                if (hcost[0]) [lines addObject:[NSString stringWithFormat:@"雇佣费  %@", [NSString stringWithUTF8String:hcost]]];
+                [lines addObject:@"技能图标已放大（见行内）"];
+                CGFloat pad = 10, lineH = fs * 1.55, titleH = (fs + 1.5) * 1.55;
+                CGFloat contentW = [title sizeWithAttributes:@{NSFontAttributeName:tf}].width;
+                for (NSString *ln in lines) { CGFloat w2 = [ln sizeWithAttributes:@{NSFontAttributeName:bf}].width; if (w2 > contentW) contentW = w2; }
+                CGFloat boxW = MIN(sw * 0.52, contentW + pad * 2 + 8);
+                CGFloat boxH = pad * 2 + titleH + lineH * (CGFloat)lines.count;
+                CGFloat bx = rowX + rowW + 10;
+                if (bx + boxW > sw - 8) bx = rowX - boxW - 10;
+                if (bx < 8) bx = MAX(8.0, MIN(rowX, sw - boxW - 8));
+                CGFloat by = rowY + (rowH - boxH) / 2;
+                if (by < 8) by = 8;
+                if (by + boxH > sh - 8) by = sh - boxH - 8;
+                CGRect box = CGRectMake(bx, by, boxW, boxH);
+                UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:box cornerRadius:6];
+                [[UIColor colorWithWhite:0 alpha:0.84] setFill]; [path fill];
+                [[UIColor colorWithRed:0.62 green:0.53 blue:0.33 alpha:1] setStroke]; path.lineWidth = 1.0; [path stroke];
+                [title drawInRect:CGRectMake(bx + pad, by + pad, boxW - pad * 2, titleH)
+                   withAttributes:@{NSFontAttributeName:tf, NSForegroundColorAttributeName:[UIColor colorWithRed:0.86 green:0.79 blue:0.61 alpha:1], NSParagraphStyleAttributeName:ps}];
+                CGFloat ty = by + pad + titleH;
+                for (NSString *ln in lines) {
+                    [ln drawInRect:CGRectMake(bx + pad, ty, boxW - pad * 2, lineH)
+                    withAttributes:@{NSFontAttributeName:bf, NSForegroundColorAttributeName:[UIColor colorWithWhite:0.94 alpha:1], NSParagraphStyleAttributeName:ps}];
+                    ty += lineH;
+                }
+            }
+        }
+    }
+
     const dm_tc_state *s = self.controls; if (!s) return;
     const dm_tc_layout *l = &s->layout;
     CGFloat k = l->joy_radius / 60;
