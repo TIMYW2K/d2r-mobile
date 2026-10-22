@@ -236,7 +236,7 @@ void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_per
                        lv ? g_s3_levels[lv - 1] : -1.0f, c.need_good ? "（刚升又掉：下次升档要 90 秒）" : "");
     atomic_store(&g_scale3d_level, lv);
 }
-void dm_3d_scale_hot(int hot) { (void)hot; }   // 过热不再直接降档（改按实际掉帧）；保留符号给前端 | overheating no longer lowers the level directly (now by actual dropped frames); the symbol is kept for the front end
+void dm_3d_scale_hot(int hot) { dm_perf_thermal_set(hot ? 1 : 0); }   // 旧的过热接口（前端不再用）：转发到新的温控降档 API，语义 = 严重档 | legacy overheating entry (the front end no longer uses it): forwarded to the new thermal API, meaning the serious level
 void dm_3d_scale_reset_level(void) { atomic_store(&g_scale3d_level, 0); }
 static _Atomic float g_scale3d_cur = 1.0f;
 float dm_3d_scale_cur(void) { return atomic_load(&g_scale3d_cur); }
@@ -268,6 +268,16 @@ static void scale3d_tick(void) {
 #endif
     }
     int lv = atomic_load(&g_scale3d_level);   // 动态档：0 = 配置值，k = g_s3_levels[k − 1]（都不高于配置值） | Dynamic level: 0 = configured value, k = g_s3_levels[k − 1] (none higher than the configured value)
+    // 本地改动：温控下限档（T8，无 UI）——严重（1）不低于第 3 档（0.64）、危急（2）不低于第 4 档（0.59）；只更深不更浅，
+    // 温控解除后交回掉帧控制器的档位。帧率上限由 dm_custom.c 的 dm_fps_setting 同步生效（30）。
+    // Local change: thermal floor (T8, no UI) -- serious (1) is at least level 3 (0.64), critical (2) at least level 4
+    // (0.59); only deeper, never shallower, and after recovery the dropped-frame controller's level takes over again. The
+    // frame-rate cap (30) takes effect in dm_fps_setting in dm_custom.c at the same time.
+    { int tl = dm_perf_thermal_level(), tf = tl >= 2 ? 4 : tl == 1 ? 3 : 0;
+      if (tf > lv) lv = tf;
+      static int last_tl; if (tl != last_tl) { last_tl = tl;
+          if (tl) LOG("温控优化：3D 比例受温控（热档位 %d）：生效第 %d 档 %.2f（原配置 %.2f，帧率上限 30）", tl, lv, lv > 0 ? g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1] : want_cfg, want_cfg);
+          else LOG("温控优化：3D 比例恢复（温控解除，回到掉帧控制器 / 配置值）"); } }
     float dyn = lv <= 0 ? want_cfg : g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1]; if (dyn > want_cfg) dyn = want_cfg;
     float want = dm_nvn_ruler_truth() ? 1.0f : dyn;
     if (want == cur || !main || dm_nvn_frame_count() < 30) return;

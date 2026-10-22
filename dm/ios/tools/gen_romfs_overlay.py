@@ -110,7 +110,16 @@ with tempfile.TemporaryDirectory() as t:
     # Legacy Device Pack (devices whose GPU does not support BC): environment variable DM_ASTC_PACK = Legacy Device Pack directory (build output of dm/tools/astc_pack.py + casc_overlay.py pack, containing pack_index.tsv / pack.json).
     # When set, an additional ASTC overlay set is produced (out_astc, out_astc_variants), in whose index those 27 thousand textures point to the Legacy Device Pack's data archive (contents are not copied into the App); the App picks this set when BC is unsupported and the Legacy Device Pack passes verification.
     # Not set = the two directories are still created but empty (the App takes it that this package carries no ASTC version).
-    ASTC=os.environ.get('DM_ASTC_PACK','')
+    # ---- 本地改动（用户决定 T10，2026-10-21）：放弃老机型（A16 及更早，显卡不支持 BC），只保留 BC 版 ----
+    # 上游流程仍通过 DM_ASTC_PACK 传补充包；这里主动忽略，不再生成 out_astc / out_astc_variants 两套覆盖层。
+    # 目标只有 iPhone 16 Pro / iOS 26+（支持 BC）；没有 ASTC 版时 App 在非 BC 机器上不能跑，属预期。
+    # 效果：IPA 省约 23.6 MB。
+    # ---- Local change (user decision T10, 2026-10-21): drop legacy devices (A16 and older, no BC support), BC sets only ----
+    # The upstream pipeline still passes DM_ASTC_PACK; ignore it here so the out_astc / out_astc_variants overlay sets are not
+    # generated. The only targets now are iPhone 16 Pro / iOS 26+ (BC capable); without an ASTC set the App cannot run on
+    # non-BC GPUs, which is expected. Effect: about 23.6 MB off the IPA.
+    if os.environ.get('DM_ASTC_PACK'): print('gen_romfs_overlay：T10 放弃老机型，忽略 DM_ASTC_PACK（不生成 ASTC 版覆盖层）')
+    ASTC=''
     # 触屏版布局放进自己的目录（手柄支持 P2）：原版手柄布局 layouts/controller/ 原样保留，触屏改过的与没改的一并放到三个新目录，
     # 宿主按模式把原版拼路径用的三个前缀串改写成同长的新目录名（dm_padmode.c）再让游戏重载布局：
     #   Controller/ → Xtouch_lay/、Controller/Console/ → Ztouch_console_lay/、Controller/Console/Switch/ → 0touch_console_switch_lay/

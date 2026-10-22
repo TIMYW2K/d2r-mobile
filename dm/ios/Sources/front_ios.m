@@ -1393,15 +1393,32 @@ void front_save_failed(int err) {
 
 #define THERMAL_RESTORE_SEC 60
 
+// 本地改动：温控自动降档（T8，无 UI）——过热时宿主自动把帧率上限压到 30、3D 渲染比例下调；温度回落（< serious）后
+// 保持 THERMAL_RESTORE_SEC 秒再恢复玩家设置 / 默认。不再切掌机模式（界面始终原生）。
+// 优先级：帧率取「用户 eco_fps 与温控上限的较低者」（dm_custom.c dm_fps_setting）；3D 比例温控下限在 hle_oe.c scale3d_tick。
+// Local change: automatic thermal downgrade (T8, no UI) -- while hot the host caps the frame rate at 30 and lowers the 3D
+// render scale; after cooling below serious it keeps the downgrade for THERMAL_RESTORE_SEC, then restores the player's
+// setting / defaults. It no longer switches to handheld mode (the UI stays native). Priority: frame rate = lower of the
+// user's eco_fps and the thermal cap (dm_custom.c dm_fps_setting); the 3D scale thermal floor lives in hle_oe.c scale3d_tick.
 static void thermal_apply(void) {
-    static unsigned gen;                       // 每次状态变化作废之前排的「恢复主机模式」 | Every state change invalidates the previously scheduled "restore docked mode"
+    static unsigned gen;                       // 每次状态变化作废之前排的「恢复」 | Every state change invalidates the previously scheduled restore
     NSProcessInfoThermalState s = NSProcessInfo.processInfo.thermalState;
     unsigned my = ++gen;
-    if (s >= NSProcessInfoThermalStateSerious) {
-        if (getenv("DM_THERMAL_NOFALLBACK")) { LOG("前端：过热 %ld，DM_THERMAL_NOFALLBACK 不降档（只供功耗测量）", (long)s); return; }
-        LOG("前端：过热 %ld（3D 比例改由实际掉帧驱动，这里只记一行）", (long)s); return; }
+    if (getenv("DM_THERMAL_NOFALLBACK")) { LOG("温控优化：DM_THERMAL_NOFALLBACK，不做自动降档（只供功耗测量）"); return; }
+    int lv = s >= NSProcessInfoThermalStateCritical ? 2 : s >= NSProcessInfoThermalStateSerious ? 1 : 0;
+    if (lv) {
+        dm_perf_thermal_set(lv);
+        LOG("温控优化：温控档位 %ld（%s）→ 自动降档：帧率上限 30、3D 比例下调", (long)s, lv >= 2 ? "危急" : "严重");
+        return;
+    }
+    if (!dm_perf_thermal_level()) { LOG("温控优化：温控正常（%ld），保持默认", (long)s); return; }
+    LOG("温控优化：温度回落（%ld），保持降档，%d 秒后恢复", (long)s, THERMAL_RESTORE_SEC);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)THERMAL_RESTORE_SEC * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        if (my == gen && NSProcessInfo.processInfo.thermalState < NSProcessInfoThermalStateSerious) { LOG("前端：温度回落持续 %d 秒", THERMAL_RESTORE_SEC); }
+        if (my != gen) return;   // 期间又变热了：这次恢复作废 | it got hot again in the meantime: this restore is void
+        if (NSProcessInfo.processInfo.thermalState < NSProcessInfoThermalStateSerious) {
+            dm_perf_thermal_set(0);
+            LOG("温控优化：温度回落持续 %d 秒，恢复玩家设置 / 默认（帧率上限 60）", THERMAL_RESTORE_SEC);
+        }
     });
 }
 

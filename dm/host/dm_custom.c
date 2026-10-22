@@ -80,7 +80,29 @@ int dm_custom_get(const char *key) {
     return atomic_load(&g_loaded) ? atomic_load(&g_val[i]) : k_def[i];
 }
 int dm_custom_lang_explicit(void) { load_once(); return atomic_load(&g_loaded) ? atomic_load(&g_lang_explicit) : -1; }
-int dm_fps_setting(void) { return dm_custom_get("eco_fps") ? 30 : 60; }   // 图形层 nvn_mtl.m mtl_fps_target 每帧读（弱符号的强定义） | Read every frame by mtl_fps_target in the graphics layer nvn_mtl.m (strong definition of a weak symbol)
+// 本地改动：温控自动降档（T8，无 UI）。前端 front_ios.m 读 NSProcessInfo.thermalState：serious → 1、critical → 2，
+// 回落 < serious 并保持 60 秒后回 0；这里只存档位并提供运行期帧率上限，3D 比例温控下限在 hle_oe.c 用同一档位实现。
+// 不新增/不改任何设置项，eco_fps 行原样保留；两者同时要省电时取更低值（30）。
+// Local change: automatic thermal downgrade (T8, no UI). The front end maps NSProcessInfo.thermalState (serious -> 1,
+// critical -> 2) and returns to 0 only after 60 s below serious; this file only stores the level and exposes the runtime
+// frame-rate cap, while hle_oe.c applies the 3D scale floor from the same level. No settings row is added or changed --
+// the eco_fps row stays as is; when both ask for power saving the lower value (30) wins.
+static _Atomic int g_thermal_level;   // 0 正常 / 1 严重 / 2 危急 | 0 normal / 1 serious / 2 critical
+void dm_perf_thermal_set(int level) {
+    if (level < 0) level = 0;
+    if (level > 2) level = 2;
+    int old = atomic_exchange(&g_thermal_level, level);
+    if (old == level) return;
+    LOG("温控优化：热档位 %d → %d（%s），帧率上限 %d（用户 eco_fps=%d，取较低者），3D 比例温控下限第 %d 档",
+        old, level, level >= 2 ? "危急" : level == 1 ? "严重" : "正常", level ? 30 : 60,
+        dm_custom_get("eco_fps") ? 30 : 60, level >= 2 ? 4 : 3);
+}
+int dm_perf_thermal_level(void) { return atomic_load(&g_thermal_level); }
+int dm_fps_setting(void) {   // eco_fps 用户设置与温控上限取较低者 | lower of the user's eco_fps setting and the thermal cap
+    int user = dm_custom_get("eco_fps") ? 30 : 60;
+    int cap = dm_perf_thermal_level() ? 30 : 60;
+    return user < cap ? user : cap;
+}   // 图形层 nvn_mtl.m mtl_fps_target 每帧读（弱符号的强定义） | Read every frame by mtl_fps_target in the graphics layer nvn_mtl.m (strong definition of a weak symbol)
 static void save(void) {
     char p[1100], t[1120]; if (!file_path(p, sizeof p)) { LOG("【红】自定义设置：存档目录没挂上，没存盘"); return; }
     snprintf(t, sizeof t, "%s.tmp", p); FILE *f = fopen(t, "w"); int ok = f != NULL;
