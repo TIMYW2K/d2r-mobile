@@ -28,6 +28,17 @@ for name in ('TouchCustom_touch_swap_above', 'TouchCustom_touch_swap_above_near'
 assert nodes['TouchCustom_touch_swap_above_Text']['fields']['rect']['height'] == 360
 for suffix in ('Near', 'Far'):
     assert any(n.get('fields', {}).get('text') == '@dmCustomTouchSwap' + suffix for n in nodes.values())
+# 性能模式三选一（task-22）：三个勾选框都在、都是开关、点消息指向自己；三项标题与说明字都在；整行文字框盖住三行高
+# Performance mode, one of three (task-22): all three checkboxes exist, are toggles and send their own message; the three
+# titles and descriptions are in the page; the row's text box covers three rows.
+for name in ('TouchCustom_q3d_smooth', 'TouchCustom_q3d', 'TouchCustom_q3d_force'):
+    assert nodes[name]['type'] == 'ToggleButtonWidget', name
+    assert nodes[name]['fields']['onClickMessage'].endswith(name), name
+assert nodes['TouchCustom_q3d_Text']['fields']['rect']['height'] == 3 * 180, nodes['TouchCustom_q3d_Text']['fields']['rect']
+for key in ('@dmCustomQ3dSmooth', '@dmCustomQ3dQuality', '@dmCustomQ3dForce'):
+    assert any(n.get('fields', {}).get('text') == key for n in nodes.values()), key
+for key in ('@dmCustomQ3dSmoothHint', '@dmCustomQ3dQualityHint', '@dmCustomQ3dForceHint'):
+    assert any(n.get('fields', {}).get('text') == key for n in nodes.values()), key
 host = (root / 'host/dm_custom.c').read_text()
 keys = re.findall(r'"([a-z_0-9]+)"', re.search(r'k_keys\[\].*?=\s*\{(.*?)\}', host, re.S)[1])
 page_keys = [key for key, _ in layout._CUSTOM_ALL]
@@ -42,4 +53,4 @@ assert keys[1 + len(page_keys):] == ['show_fps'], keys[1 + len(page_keys):]
 defaults = [int(x) for x in re.search(r'k_def\[NK\].*?=\s*\{(.*?)\}', host, re.S)[1].split(',')]
 assert len(defaults) == len(keys) and defaults[keys.index('touch_swap_above')] == 0
 assert 'TouchCustom_touch_swap_above_near' in host
-print('PASS touch layout options: generated radio pair, labels, defaults, host order and scrolling row extent')
+print('PASS touch layout options: generated radios (two-position switch + three-way performance mode), labels, defaults, host order and scrolling row extent')

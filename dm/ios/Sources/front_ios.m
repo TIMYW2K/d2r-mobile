@@ -1408,6 +1408,15 @@ static void thermal_apply(void) {
     NSProcessInfoThermalState s = NSProcessInfo.processInfo.thermalState;
     unsigned my = ++gen;
     if (getenv("DM_THERMAL_NOFALLBACK")) { LOG("温控优化：DM_THERMAL_NOFALLBACK，不做自动降档（只供功耗测量）"); return; }
+    {   // 性能模式「画质优先（强制）」q3d=2：固定 60 帧 / 固定 3D 画质，忽略过热降档（已有降档也立即解除） | performance mode q3d=2
+        // (forced quality): fixed 60 fps / fixed 3D quality, ignore the thermal downgrade (and clear an active one at once)
+        extern int dm_custom_get(const char *key);
+        if (dm_custom_get("q3d") == 2) {
+            if (dm_perf_thermal_level()) { dm_perf_thermal_set(0); }
+            LOG("温控优化：强制画质模式（q3d=2），忽略过热降档（温控档位 %ld）", (long)s);
+            return;
+        }
+    }
     int lv = s >= NSProcessInfoThermalStateCritical ? 2 : s >= NSProcessInfoThermalStateSerious ? 1 : 0;
     if (lv) {
         dm_perf_thermal_set(lv);

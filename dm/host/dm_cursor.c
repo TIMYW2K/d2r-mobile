@@ -2983,53 +2983,6 @@ static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
     uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60); if (!ch || n > 256) return;
     for (uint64_t i = 0; i < n; i++) dm_char_damage_titles_walk(m, *(uint64_t *)(ch + 8 * i), dep + 1);   // 只递归一遍 | single recursion
 }
-// 本地改动（T19）：技能树里的技能名文字框（SkillsTreePanel > Tab0..3 > SkillButtonContainer > SkillButton… > 技能名文字）。
-// 控件名是游戏动态生成的，不写死名字：按「父链上有 SkillButton 前缀的控件」认，排除 Counter（等级数字）。处理 = 去换行/首尾空白；
-// 宽度/字号先只记日志（技能格只有约 260 单位宽，盲改宽度会把字挤出格子；字号字段同上没有可靠偏移）。
-// Local change (T19): skill-name text boxes in the skill tree (SkillsTreePanel > Tab0..3 > SkillButtonContainer >
-// SkillButton... > skill-name text). The widget names are built by the game, so they are not hard-coded: any text widget under
-// a widget whose name starts with SkillButton counts (Counter, the level number, is skipped). Handling = remove CR/LF and trim
-// both ends; width / font size are only logged for now (a skill cell is about 260 units wide, and widening blindly pushes the
-// text out of the cell; same missing verified pointSize offset as above).
-static int dm_skillname_walk(module_t *m, uint64_t w, int dep, int under_btn) {
-    if (!m || !w || dep > 10 || !*(uint8_t *)(uintptr_t)(w + 0x50)) return 0;
-    const char *nm = (const char *)*(uint64_t *)(w + 8);
-    if (nm && !strncmp(nm, "SkillButton", 11) && strcmp(nm, "SkillButtonContainer") && strncmp(nm, "SkillButtonPromptWidget", 22)) under_btn = 1;
-    int hit = 0;
-    if (under_btn && dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT) && nm && strcmp(nm, "Counter")) {
-        const char *s = *(const char **)(uintptr_t)(w + 0x88); uint64_t n = *(uint64_t *)(uintptr_t)(w + 0x90);
-        if (s && n > 0 && n < 256) {
-            char b[260]; size_t k = 0;
-            for (size_t i = 0; i < n; i++) { char c = s[i]; if (c == '\r' || c == '\n') continue; b[k++] = c; }
-            b[k] = 0;
-            char *t = dm_trim_ws(b); size_t m2 = strlen(t);
-            if (m2) {
-                static int dlog, slog;
-                int changed = dm_text_compact(m, w);
-                if (changed && slog++ < 6) LOG("技能名：控件「%s」换行/首尾空白已去掉", nm);
-                if (dlog++ < 6) { int32_t *r = (int32_t *)(uintptr_t)(w + 0x70);
-                    LOG("技能名：控件「%s」文本「%.*s」宽 %d 高 %d（布局里没有技能名控件，运行时生成；字号字段未找到可靠偏移，先只去换行）", nm, (int)(m2 < 40 ? m2 : 40), t, r[2], r[3]); }
-                { static int fd; if (fd++ < 2) {   // 字段留档：下一轮定位字号/字体用 | field dump for the next round's font work
-                    char db[320]; int q = 0;
-                    for (int off = 0x40; off <= 0x140 && q < (int)sizeof db - 24; off += 4) { int32_t v = *(int32_t *)(uintptr_t)(w + off); if (v) q += snprintf(db + q, sizeof db - q, " %x:%d", off, v); }
-                    LOG("技能名：控件「%s」字段 dump%s", nm, db); } }
-                hit = 1;
-            }
-        }
-    }
-    uint64_t ch = *(uint64_t *)(uintptr_t)(w + 0x58), n = *(uint64_t *)(uintptr_t)(w + 0x60); if (!ch || n > 256) return hit;
-    for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (c) hit |= dm_skillname_walk(m, c, dep + 1, under_btn); }
-    return hit;
-}
-static void dm_skill_names_pump(module_t *m, uint64_t root) {   // 每 30 帧一次，低开销 | every 30 frames, low cost
-    static uint64_t next;
-    uint64_t fr = dm_guest_frame();
-    if (fr < next) return;
-    next = fr + 30;
-    uint64_t tp = ui_panel(root, "SkillsTreePanel");
-    if (!tp || !*(uint8_t *)(uintptr_t)(tp + 0x50)) return;
-    dm_skillname_walk(m, tp, 0, 0);
-}
 
 static void dm_text_rgb(module_t *m, uint64_t w, const int rgb[3]) {
     if (!m || !w || !dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) return;
@@ -3713,7 +3666,6 @@ static void dm_ui_hud_pump(void) {
         if (open && (!was || fr >= next)) { next = fr + 10; dm_char_damage_titles_walk(m, cs, 0); }
         was = open;
     }
-    dm_skill_names_pump(m, root);   // 技能树里的技能名文字框：去换行/首尾空白（限频） | skill-name text boxes in the skill tree: drop newlines / trim (rate-limited)
     dm_show_fps_page_pump(root);   // 游戏设置页「显示帧率」勾选框：同步 / 点击立即生效并存盘 | "Show Frame Rate" checkbox on the game's settings page: sync / apply and save immediately on tap
     dm_hud_names_pump(m, root);   // 佣兵/傀儡/骷髅名字（多槽位、原版小字号、菜单打开不画）
 }

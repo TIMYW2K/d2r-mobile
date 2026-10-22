@@ -74,10 +74,12 @@ dmCustomPotPick	腰带有空位时自动拾取能放进去的药水	Auto-pick po
 dmCustomDropHaptic	高价值物品掉落时震动	Vibrate on valuable drops	自定义页开关
 dmCustomGemPick	符文与宝石自动拾取（直接进高级仓库）	Auto-stash runes & gems	自定义页开关
 dmCustomStoreBtn	背包「存放」按钮	Inventory Deposit button	自定义页开关
-dmCustomQ3dSmooth	性能模式：流畅优先	Performance: Smoothness first	自定义页「性能模式」单选的第一项（缺省；dm_custom.c 键 q3d=0）
+dmCustomQ3dSmooth	性能模式：流畅优先	Performance: Smoothness first	自定义页「性能模式」三选一的第一项（缺省；dm_custom.c 键 q3d=0）
 dmCustomQ3dSmoothHint	60 帧，掉帧时自动降低 3D 清晰度	60 fps; lowers 3D resolution when frames drop	流畅优先下面的说明小字
-dmCustomQ3dQuality	性能模式：画质优先	Performance: Quality first	自定义页「性能模式」单选的第二项（q3d=1）
-dmCustomQ3dQualityHint	60 帧，始终保持 3D 清晰度	60 fps; always keeps the 3D resolution	画质优先下面的说明小字
+dmCustomQ3dQuality	性能模式：画质优先	Performance: Quality first	自定义页「性能模式」三选一的第二项（q3d=1）
+dmCustomQ3dQualityHint	60 帧，保持画质（过热时仍会自动降档）	60 fps; keeps the quality (thermal may still lower it)	画质优先下面的说明小字
+dmCustomQ3dForce	性能模式：画质优先（强制）	Performance: Quality first (forced)	自定义页「性能模式」三选一的第三项（q3d=2：固定 60 帧 / 画质）
+dmCustomQ3dForceHint	60 帧，强制保持画质，忽略过热自动降档	60 fps; forced quality, ignores thermal throttling	画质优先（强制）下面的说明小字
 dmCustomHdr	HDR 输出（重启生效）	HDR output (restart)	本地改动：自定义页开关 dm_custom.c 键 hdr，图形层 nvn_mtl.m 呈现时按它换 EDR；标签保持一行
 dmCustomZoom	镜头拉近	Closer camera	本地改动：自定义页开关 dm_custom.c 键 zoom（缺省开）；宿主 dm_uiscreen.c 每帧把相机的视野改小
 dmCustomLootFilter	掉落过滤（噩梦起自动隐藏杂物）	Loot Filter (auto, Nightmare+)	自定义页开关；Loot Filter 是原版过滤器的英文名

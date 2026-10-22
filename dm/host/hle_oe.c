@@ -206,11 +206,15 @@ static int scale3d_ctl_step(scale3d_ctl *c, double iv_ms, uint64_t now) {   // �
     else c->good_run = 0;
     return c->level;
 }
-// 画质设置（做界面，这里给接口）：0 = 流畅优先（缺省，掉帧就自动降 3D 比例）；1 = 画质优先（不自动降，保持配置值）。档位名与缺省值等
-// Quality setting (UI to be built; this provides the interface): 0 = smoothness first (default; automatically lowers the 3D scale on frame drops); 1 = quality first (no automatic lowering, keeps the configured value). Level names, defaults, etc.
+// 画质设置（做界面，这里给接口）：0 = 流畅优先（缺省，掉帧就自动降 3D 比例）；1 = 画质优先（不自动降，保持配置值；过热保护仍可降档）；
+// 2 = 画质优先（强制）（不自动降、且忽略过热 3D 下限，永远保持配置值）。档位名与缺省值等见 dm_custom.c 键 q3d。
+// Quality setting: 0 = smoothness first (default; automatically lowers the 3D scale on frame drops); 1 = quality first (no
+// automatic lowering, keeps the configured value; the thermal protection may still lower it); 2 = quality first (forced):
+// no automatic lowering and the thermal 3D floor is ignored, always the configured value. Mode names / defaults: dm_custom.c key q3d.
 static _Atomic int g_3d_quality_mode;
-void dm_3d_quality_mode_set(int mode) { atomic_store(&g_3d_quality_mode, mode == 1 ? 1 : 0); }
+void dm_3d_quality_mode_set(int mode) { atomic_store(&g_3d_quality_mode, mode < 0 ? 0 : mode > 2 ? 2 : mode); }
 int dm_3d_quality_mode_get(void) { return atomic_load(&g_3d_quality_mode); }
+int dm_3d_quality_force_get(void) { return atomic_load(&g_3d_quality_mode) >= 2; }   // 1 = 强制画质（q3d=2）：忽略过热降档 | 1 = forced quality (q3d=2): ignore the thermal downgrade
 static _Atomic int g_scale3d_level;
 static _Atomic int g_scale3d_resumed;
 void dm_3d_scale_resumed(void) { atomic_store(&g_scale3d_resumed, 1); }   // 前端：刚回前台。回来头几秒的慢帧是恢复（表面重建、缓存变冷），不是 GPU 吃紧：停判 3 秒 | front end: just returned to foreground. Slow frames in the first few seconds back are recovery (surface rebuild, caches gone cold), not GPU pressure: suspend judging for 3 seconds
@@ -222,7 +226,7 @@ void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_per
         for (int k = 0; k < S3_NLV; k++) if (g_s3_levels[k] >= fl - 1e-4f) c.max_level = k + 1;
         LOG("3D 比例控制：%s，下限 %.2f（第 %d 档）", on ? "开" : "关", c.max_level ? g_s3_levels[c.max_level - 1] : 0.0f, c.max_level); }
     if (!on) return;
-    if (atomic_load(&g_3d_quality_mode) == 1) { if (c.level) { c.level = 0; LOG("3D 比例控制：画质优先，回到配置值"); } atomic_store(&g_scale3d_level, 0); return; }
+    if (atomic_load(&g_3d_quality_mode) >= 1) { if (c.level) { c.level = 0; LOG("3D 比例控制：画质优先（含强制），回到配置值"); } atomic_store(&g_scale3d_level, 0); return; }
     uint64_t now = now_ns();
     if (atomic_exchange(&g_scale3d_resumed, 0)) scale3d_ctl_hold(&c, now, 3 * S3_SEC);
     { static int was; int in = dm_ingame_now();   // 不在局内（菜单 / 读取）不判；刚进局的 20 秒也不判（进局头十几秒的慢帧是装载，不是 GPU 吃紧） | not judged outside a run (menu / loading); not judged in the first 20 seconds of a run either (slow frames in the first ten-odd seconds of a run are loading, not GPU pressure)
@@ -273,10 +277,12 @@ static void scale3d_tick(void) {
     // Local change: thermal floor (T8, no UI) -- serious (1) is at least level 3 (0.64), critical (2) at least level 4
     // (0.59); only deeper, never shallower, and after recovery the dropped-frame controller's level takes over again. The
     // frame-rate cap (30) takes effect in dm_fps_setting in dm_custom.c at the same time.
-    { int tl = dm_perf_thermal_level(), tf = tl >= 2 ? 4 : tl == 1 ? 3 : 0;
-      if (tf > lv) lv = tf;
-      static int last_tl; if (tl != last_tl) { last_tl = tl;
-          if (tl) LOG("温控优化：3D 比例受温控（热档位 %d）：生效第 %d 档 %.2f（原配置 %.2f，帧率上限 30）", tl, lv, lv > 0 ? g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1] : want_cfg, want_cfg);
+    { int tl = dm_perf_thermal_level(), force_q = dm_3d_quality_force_get(), tf = force_q ? 0 : tl >= 2 ? 4 : tl == 1 ? 3 : 0;
+      if (tf > lv) lv = tf;   // 强制画质（q3d=2）：不做温控下限 | forced quality (q3d=2): no thermal floor
+      static int last_key = -99; int key = force_q ? 100 + tl : tl;
+      if (key != last_key) { last_key = key;
+          if (force_q && tl) LOG("温控优化：强制画质模式（q3d=2）忽略过热降档（热档位 %d）：3D 比例保持配置值 %.2f", tl, want_cfg);
+          else if (tl) LOG("温控优化：3D 比例受温控（热档位 %d）：生效第 %d 档 %.2f（原配置 %.2f，帧率上限 30）", tl, lv, lv > 0 ? g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1] : want_cfg, want_cfg);
           else LOG("温控优化：3D 比例恢复（温控解除，回到掉帧控制器 / 配置值）"); } }
     float dyn = lv <= 0 ? want_cfg : g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1]; if (dyn > want_cfg) dyn = want_cfg;
     float want = dm_nvn_ruler_truth() ? 1.0f : dyn;

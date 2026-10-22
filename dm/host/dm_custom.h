@@ -12,9 +12,9 @@
 // touch_swap_above: 0 = left of portal (default), 1 = above the skill fan; applies after Apply.
 int dm_custom_get(const char *key);
 int dm_custom_lang_explicit(void);   // 语言开关（键 lang_en）在设置文件里写着的值：-1 没写过（不动原版设置）/ 0 简中 / 1 英文；hle_fs.c 挂存档时读 | Value of the language switch (key lang_en) as written in the settings file: -1 never written (original settings left alone) / 0 Simplified Chinese / 1 English; read by hle_fs.c at save mount
-// q3d 性能模式（缺省 0 = 流畅优先：掉帧自动降 3D 比例；1 = 画质优先：不自动降），读盘 / 应用时调 hle_oe.c 的 dm_3d_quality_mode_set 生效
-// q3d performance mode (default 0 = smoothness first: automatically lowers the 3D scale on frame drops; 1 = quality first: no automatic lowering); applied on load / apply by calling hle_oe.c's dm_3d_quality_mode_set
-int dm_fps_setting(void);   // 帧率上限：只由温控决定（正常 60 / 温热 30）；nvn_mtl.m mtl_fps_target 读 | frame-rate cap: thermal only (60 normal / 30 warm); read by mtl_fps_target in nvn_mtl.m
+// q3d 性能模式（缺省 0 = 流畅优先：掉帧自动降 3D 比例；1 = 画质优先：不自动降，过热仍降档；2 = 画质优先（强制）：固定 60 帧 / 画质，忽略过热降档），读盘 / 应用时调 hle_oe.c 的 dm_3d_quality_mode_set 生效
+// q3d performance mode (default 0 = smoothness first: automatically lowers the 3D scale on frame drops; 1 = quality first: no automatic lowering, thermal may still lower it; 2 = quality first (forced): fixed 60 fps / quality, ignores thermal downgrade); applied on load / apply by calling hle_oe.c's dm_3d_quality_mode_set
+int dm_fps_setting(void);   // 帧率上限：温控决定（正常 60 / 温热 30），但 q3d=2（强制画质）恒 60；nvn_mtl.m mtl_fps_target 读 | frame-rate cap: thermal (60 normal / 30 warm), except q3d=2 (forced quality) which is always 60; read by mtl_fps_target in nvn_mtl.m
 void dm_custom_set_live(const char *key, int val);   // 运行时更改并存盘（双指缩放等手势调用） | Change at runtime and save to disk (called by gestures like pinch-to-zoom)
 int dm_show_fps_on(void);   // 游戏设置页「显示帧率」是否勾上（键 show_fps；覆盖层读） | whether the settings page's "Show Frame Rate" is on (key show_fps; read by the overlay)
 void dm_show_fps_page_pump(unsigned long long root);   // 游戏主线程每帧：游戏设置页「用户界面」分区的显示帧率勾选框同步 / 点击处理 | Game main thread, every frame: sync / handle taps of the show-frame-rate checkbox in the game's settings page
