@@ -2933,7 +2933,7 @@ static char *dm_trim_ws(char *s) {
 // 游戏文字框整理：去掉所有换行/回车 + 首尾空白；变了才写回（幂等，返回 1 = 写了）。只在游戏主线程调。
 // Compact a game text widget: drop every CR/LF and trim both ends; write back only when changed (idempotent, returns 1 = wrote).
 // Game main thread only.
-static int dm_text_compact(module_t *m, uint64_t w) {
+static int dm_text_compact_ex(module_t *m, uint64_t w, int relayout) {
     if (!m || !w) return 0;
     const char *s = *(const char **)(uintptr_t)(w + 0x88); size_t n = *(const size_t *)(uintptr_t)(w + 0x90);
     if (!s || n == 0 || n > 512) return 0;
@@ -2944,8 +2944,50 @@ static int dm_text_compact(module_t *m, uint64_t w) {
     if (!m2) return 0;
     if (m2 == n && !memcmp(s, t, n)) return 0;   // 已经是整理后的文本 | already compacted
     ((void *(*)(uint64_t, const char *, uint64_t))(m->base + 0x136e5c))(w + 0x88, t, (uint64_t)m2);   // 游戏自己的串赋值入口 | the game's own string setter
-    ((void (*)(uint64_t))(m->base + 0xadc434))(w);
+    if (relayout) ((void (*)(uint64_t))(m->base + 0xadc434))(w);   // 门 14 里不调：原函数随后会按新串重排 | not called inside gate 14: the original function re-lays out from the new string afterwards
     return 1;
+}
+static int dm_text_compact(module_t *m, uint64_t w) { return dm_text_compact_ex(m, w, 1); }
+// 本地改动（67.1）：角色属性栏 4 个标题（左/右 × AttackDamageTitle / AttackRatingTitle）的游戏文本会被原版持续写回带换行的版本；
+// 原来只在 HUD 泵里每 10 帧整理一次，写完下一帧又被盖回「攻击\n伤害」。现在把 walk 认到的标题控件地址登记成表，挂在
+// 已有文字框门 14（main+0xadc434 入口，游戏每次 set 文本都会过；现有观测门，不改改写器/prepared）里按控件地址命中，
+// 一进来就把 CR/LF + 首尾空白压掉并用游戏自己的串赋值写回（幂等，只有变了才写；门里不调重排，原函数随后会重排）。
+// 面板重建 / UI 代号变化、或控件地址被别的控件复用时清表项；每 10 帧兜底 walk 保留（宽度兜底也还在那里）。
+// Local change (67.1): the four character-sheet titles (left/right x AttackDamageTitle/AttackRatingTitle) are continuously
+// rewritten by the original game with a newline; the old walk every 10 frames was overwritten by the next frame ("攻击\n伤害").
+// The widgets recognised by the walk are now registered in a table and matched by address in the existing text-box gate 14
+// (main+0xadc434 entry, hit on every text set; an existing observation gate, no rewriter/prepared change). On every hit the
+// CR/LF + both-end whitespace are stripped and written back with the game's own string setter (idempotent, only when changed;
+// no re-layout inside the gate -- the original function re-lays out right after). The table is cleared on a panel rebuild /
+// UI-generation change or when the address gets reused by another widget; the 10-frame fallback walk (and its width fallback) stays.
+static uint64_t g_dmg_title[8]; static int g_dmg_title_n; static uint64_t g_dmg_title_gen;   // 标题控件地址表 | title widget addresses
+static int g_dmg_title_gate_hits;                                                          // 门 14 命中次数（日志限频） | gate-14 hit count (rate-limited log)
+static int dm_dmg_title_is(const char *nm) { return nm && (!strcmp(nm, "AttackDamageTitle") || !strcmp(nm, "AttackRatingTitle")); }
+static void dm_dmg_title_table_reset(uint64_t gen) { g_dmg_title_gen = gen; g_dmg_title_n = 0; }
+static void dm_dmg_title_register(module_t *m, uint64_t w) {
+    (void)m;
+    if (g_dmg_title_gen != dm_ui_gen()) dm_dmg_title_table_reset(dm_ui_gen());
+    for (int i = 0; i < g_dmg_title_n; i++) if (g_dmg_title[i] == w) return;
+    if (g_dmg_title_n < (int)(sizeof g_dmg_title / sizeof g_dmg_title[0])) g_dmg_title[g_dmg_title_n++] = w;
+}
+static int dm_hud_gate_title(uint64_t w) {   // 门 14：标题控件每次 set 文本都压一次换行（幂等） | gate 14: strip the newline on every text set of a title widget (idempotent)
+    if (!w) return 0;
+    const char *nm = (const char *)*(uint64_t *)(uintptr_t)(w + 8);
+    int idx = -1;
+    for (int i = 0; i < g_dmg_title_n; i++) if (g_dmg_title[i] == w) { idx = i; break; }
+    if (idx >= 0 && !dm_dmg_title_is(nm)) { g_dmg_title[idx] = g_dmg_title[--g_dmg_title_n]; idx = -1; }   // 地址被别的控件复用 → 删表项 | address reused by another widget -> drop the entry
+    if (idx < 0) {
+        if (!dm_dmg_title_is(nm)) return 0;
+        module_t *mm = main_module(); if (!mm) return 0;
+        dm_dmg_title_register(mm, w);
+    }
+    module_t *m = main_module(); if (!m) return 0;
+    int ch = dm_text_compact_ex(m, w, 0);   // 只写串，重排交给原函数 | write the string only; the original function re-lays out
+    if (ch) {
+        int hit = g_dmg_title_gate_hits++;   // 限频：前 8 次 + 每 300 次一条 | rate limit: first 8 + one every 300
+        if (hit < 8 || hit % 300 == 0) LOG("角色属性栏：门 14 里压掉换行「%s」（第 %d 次）", nm ? nm : "?", hit + 1);
+    }
+    return 1;   // 标题控件不再进物品注释改写 | title widgets skip the annotation rewrite
 }
 
 // 本地改动（T19）：角色属性页「攻击伤害 / 攻击命中值」标题 + 技能名整理。中文标题 = 技能名 + 伤害/命中值（字符串里带换行），
@@ -2959,6 +3001,7 @@ static int dm_text_compact(module_t *m, uint64_t w) {
 // once for the next round; changing unverified game widget fields is worse than not changing them).
 static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
     if (!m || !w || dep > 14 || !*(uint8_t *)(w + 0x50)) return;
+    if (dep == 0 && g_dmg_title_gen != dm_ui_gen()) dm_dmg_title_table_reset(dm_ui_gen());   // 面板重建/UI 代号变：地址表作废 | panel rebuild / UI generation change: drop the address table
     if (dm_widget_is((const uint8_t *)m->base, w, DM_VT_TEXT)) {
         const char *nm = (const char *)*(uint64_t *)(w + 8);
         const char *s = *(const char **)(uintptr_t)(w + 0x88); uint64_t n = *(uint64_t *)(uintptr_t)(w + 0x90);
@@ -2971,6 +3014,7 @@ static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
         }
         if (nm && (!strcmp(nm, "AttackDamageTitle") || !strcmp(nm, "AttackRatingTitle"))) is_title = 1;   // 布局里这两个名字固定 | fixed layout names
         if (is_title) {
+            if (dm_dmg_title_is(nm)) dm_dmg_title_register(m, w);   // 登记给门 14：以后每次 set 文本都被立刻压掉 | register for gate 14: every later text set is stripped immediately
             int changed = dm_text_compact(m, w);
             int32_t *r = (int32_t *)(uintptr_t)(w + 0x70);
             // 宽度上限 310（数值框从 x=315 开始，不压数字列）；已经更宽的原版框不动（不缩原布局）。task-20 用户确认：折行根因是标题文本里的强制换行，
@@ -2989,7 +3033,7 @@ static void dm_char_damage_titles_walk(module_t *m, uint64_t w, int dep) {
             if (changed) {   // 游戏反复写回换行时只报告一次（频控见 HUD 泵：标题检查最多每 10 帧一次） | report once if the game keeps writing the newline back (rate limit: title check at most every 10 frames, see the HUD pump)
                 static uint64_t lastw, lastf; static int rep, replog; uint64_t fr = dm_guest_frame();
                 if (w == lastw && fr - lastf < 60 && ++rep >= 3 && !replog) { replog = 1;
-                    LOG("【红】角色属性栏：标题「%s」被游戏反复写回换行（60 帧内 %d 次），已按每 10 帧检查并回写", nm ? nm : "?", rep); }
+                    LOG("【红】角色属性栏：标题「%s」被游戏反复写回换行（60 帧内 %d 次）；门 14 已即时压掉，walk 每 10 帧兜底", nm ? nm : "?", rep); }
                 lastw = w; lastf = fr; }
         }
     }
@@ -3304,6 +3348,7 @@ static int dm_hud_gate_name(uint64_t w) {
 // Takes over dm_textbox.c's gate-14 callback: name colouring + the item-annotation rewrite (the second half is equivalent to the original tb_obs).
 static void dm_hud_tb_obs(const uint64_t *regs) {
     uint64_t w = regs[0];
+    if (w && dm_hud_gate_title(w)) return;   // 角色栏标题：set 文本时立即压掉换行（67.1） | character-sheet titles: strip the newline the moment the text is set (67.1)
     if (w && dm_hud_gate_name(w)) return;
     { static int off = -1; if (off < 0) off = getenv("DM_TEXTBOX_OFF") != NULL; if (off) return; }   // DM_TEXTBOX_OFF 只关物品注释改写，名字着色照旧 | this switch only disables the annotation rewrite, name colouring still runs
     if (!dm_textbox_ensure_loaded()) return;   // 物品注释关着：没有对照表，文字框全原样 | item annotations off: no table, all text boxes unchanged
@@ -3920,6 +3965,7 @@ static void dm_ui_hud_pump(void) {
         int open = cs && *(uint8_t *)(cs + 0x50);
         uint64_t fr = dm_guest_frame();
         if (open && (!was || fr >= next)) { next = fr + 10; dm_char_damage_titles_walk(m, cs, 0); }
+        if (!open && g_dmg_title_n) dm_dmg_title_table_reset(dm_ui_gen());   // 面板关了：地址表清空 | panel closed: clear the address table
         was = open;
     }
     dm_show_fps_page_pump(root);   // 游戏设置页「显示帧率」勾选框：同步 / 点击立即生效并存盘 | "Show Frame Rate" checkbox on the game's settings page: sync / apply and save immediately on tap

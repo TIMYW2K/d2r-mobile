@@ -380,6 +380,4 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmCustomTouchSwapNearHint", "沿传送门外侧弧线排布，松手后切换", "On the portal arc; release to switch" },
     { "dmCustomTouchSwapFar", "换组键：技能区上方", "Skill-set switch: above skills" },
     { "dmCustomTouchSwapFarHint", "位于技能区左上，松手后切换", "Above-left of skills; release to switch" },
-    { "dmCustomShowOrbTextBoth", "显示生命&法力文本", "Show Life & Mana Text" },
-    { "dmCustomShowOrbTextBothHint", "同时开关生命球与法力球上的数字文字", "Toggle the number text on both the life and mana orbs" },
 };

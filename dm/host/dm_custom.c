@@ -170,8 +170,26 @@ static void set_toggle(uint64_t w, int on) {
     static const int32_t fr[2][4] = { { 0, 1, 3, 2 }, { 4, 5, 6, -1 } };
     *(uint8_t *)(w + 0xa88) = on != 0; memcpy((void *)(w + 0x6e8), fr[on != 0], sizeof fr[0]); *(int32_t *)(w + 0x610) = fr[on != 0][0];
 }
+// 触屏模式隐藏原版手柄焦点金框（FocusManager 的 FocusIndicator）：它是画在焦点控件上的九宫格金框、在顶层渲染、不受设置页滚动区裁剪，
+// 焦点落在轮播 / 滑条（宽而扁）上时看起来就是一条横条 —— 用户说的「条状高亮」就是它（不是控件上的 focusIndicator 悬停图）。
+// +0x50 可见位的写是登记例外（tests/native_write_scan.py）：函数里先核控件名，不是 FocusIndicator 一律不写并报红。
+// Hide the original gamepad focus gold frame in touch mode (FocusManager's FocusIndicator): it is a nine-tile gold frame drawn on the
+// focused widget in the top layer and is not clipped by the settings page's scroll view; on wide-and-short widgets (carousels /
+// sliders) it looks like a bar -- that is the "bar highlight" the user reported (not the per-widget focusIndicator hover image).
+// Writing the +0x50 visible flag is a registered exception (tests/native_write_scan.py): the function checks the widget name first and
+// never writes to anything else (it reports a failure instead).
+static void fi_show(uint64_t w, int on) {
+    const char *nm = (const char *)*(uint64_t *)(w + 8);
+    if (!nm || strcmp(nm, "FocusIndicator")) { static int lg; if (!lg) { lg = 1; LOG("【红】高亮条：要隐藏的不是 FocusManager 的 FocusIndicator（%s），不写", nm ? nm : "?"); } return; }
+    if (*(uint8_t *)(w + 0x50) != (uint8_t)on) *(uint8_t *)(w + 0x50) = (uint8_t)on;
+}
+
 void dm_custom_ui_pump(unsigned long long root) {
     if (!root || !main_base()) return;
+    // T41：触屏模式不画原版手柄焦点金框（宽控件上就是那条「高亮条」；手柄模式保留——它是手柄导航的焦点框） | T41: do not draw the original gamepad focus gold frame in touch mode (the "bar highlight" on wide widgets); keep it in controller mode, where it is the gamepad navigation focus frame
+    { int dm_padmode_current(void); if (!dm_padmode_current()) {
+        uint64_t fm = find_w(root, "FocusManager", 0), fi = fm ? find_w(fm, "FocusIndicator", 0) : 0;
+        if (fi) { static int lg; if (*(uint8_t *)(fi + 0x50) && !lg) { lg = 1; LOG("高亮条：触屏模式隐藏原版手柄焦点金框（FocusManager/FocusIndicator +0x50=0）"); } fi_show(fi, 0); } } }
     static dm_wref seen[NK];   // 每行最近见到的勾选框（带界面代号：重建后取到 0 = 页刚出现） | Most recently seen checkbox of each row (with UI generation: 0 after a rebuild = page just appeared)
     uint64_t sp = dm_ui_top(root, "VideoOptionsPanel"); if (!sp || !*(uint8_t *)(sp + 0x50)) {   // 「自定义」页 = 借来的视频页（界面根的直接子，与设置页并列）。页不在屏上：没点「应用」的勾选作废（同原版不应用就离开），下次出现重摆 | The 「自定义」(Custom) page = the borrowed video page (a direct child of the UI root, alongside the settings page). Page not on screen: checkbox changes without tapping 「应用」(Apply) are discarded (same as leaving without applying in the original game), and it is laid out again the next time it appears
         int was = 0; for (int i = 0; i < NK; i++) was |= seen[i].w != 0;
@@ -254,35 +272,40 @@ void dm_custom_ui_pump(unsigned long long root) {
         if (*(uint8_t *)(sp + 0x1a0) != dirty) { *(uint8_t *)(sp + 0x1a0) = (uint8_t)dirty; LOG("自定义设置：有未应用的改动 → %d（「应用 / 放弃」%s）", dirty, dirty ? "点亮" : "变灰"); } }
 }
 
-// ---- 游戏设置页「显示帧率」勾选框 + 「显示生命&法力文本」合并开关（T18/T19/T36）：设置 → 游戏 → 用户界面 分区。
-// touch_layout.py 不再新插表行（65.1 的新行名面板类不认识 → 不占行高，被强制显示后就叠在「易用性」标题上）；改成：
-//   · 「显示生命球文本」行文字 → 「显示生命&法力文本」，勾选框是原版 ShowLifeOrbText（状态跟随游戏），
-//     这里在它变化时替玩家补发一条 OptionsPanelMessage:SetShowManaOrbText，让法力球文本一起开关（两项自本版起一致）；
-//   · 「显示法力球文本」整行 → 「显示帧率」行（行名仍是 Row ShowManaOrbText：面板认识的表行 → 正常占行高 / 重排）；
-//     行内文字 / 勾选框控件名 TouchCustom_ShowFpsText / TouchCustom_show_fps，这里每帧强制可见并处理点击。
-//   · 「显示技能上的弹药数量」（原版行 SkillAmmoFeedback，行内容 / 勾选都不动）搬到中间 → 可见顺序 = 显示生命&法力文本、
-//     显示技能上的弹药数量、显示帧率（页打开时打一次日志，真机核对用）；「显示时钟」行原样留在后面（本平台不显示）。
-// 点一下立即生效并存盘（键 show_fps，重启保留）；设置页重建 / 重开时按生效值重摆。
-// "Show frame rate" checkbox + merged "Show Life & Mana Text" switch on the game's settings page. touch_layout.py no longer inserts a
-// new table row (65.1's new row name was unknown to the panel class: no row height, and once forced visible it overlapped the
-// 「Accessibility」header). Instead: (a) the 「Show Life Orb Text」row's text becomes 「Show Life & Mana Text」, its checkbox is the
-// original ShowLifeOrbText (state follows the game), and when it changes we send OptionsPanelMessage:SetShowManaOrbText for the player so
-// the mana orb text follows (both stay in sync from this version on); (b) the whole 「Show Mana Orb Text」row becomes the
-// 「Show Frame Rate」row (row name stays Row ShowManaOrbText, a known table row, so it gets its row height / normal re-layout), with the
-// text / checkbox inside named TouchCustom_ShowFpsText / TouchCustom_show_fps, forced visible and tap-handled here every frame;
-// (c) the 「Show Skill Ammo Feedback」row (original Row SkillAmmoFeedback, contents / checkbox unchanged) is moved between the two ->
-// visible order = Life & Mana Text, Skill Ammo Feedback, Frame Rate (logged once when the page opens); the 「Show Clock」row stays
-// where it was (not shown on this platform).
-// Tapping takes effect and saves immediately (key show_fps, kept across restarts); laid out again from the effective value when the page is
-// rebuilt / reopened.
+// ---- 游戏设置页「显示帧率」勾选框 + 生命 / 法力球文本常开（T18/T19/T41）：设置 → 游戏 → 用户界面 分区。
+// T41（用户选的方案 B）：这一分区只有两行 —— 「显示技能上的弹药数量」（原版行，内容不动）→ 「显示帧率」（复用原版法力球文本行）。
+// 帧率行为什么 67.1 看不见：选项面板按原版选项认行（行里的原版子控件名 + OptionsPanelMessage:Set<选项> 消息）；T36 把名字 / 消息
+// 都换成了我们自己的 → 面板不认这行、整行隐藏（宿主只强制子控件可见救不回来）。现在帧率行里保留原版 ShowManaOrbText 开关作隐藏锚
+// （名字 / 消息原样，rect 在布局里挪到屏外），文字框保留原名、只换文字；另挂可见的 TouchCustom_show_fps（这里每帧强制可见、处理点击）。
+// 生命球文本行整行删掉，它的原版开关也留成隐藏锚塞进帧率行；两项球文本由这里读两个锚的勾选状态（+0xa88）并置开：为关就发
+// OptionsPanelMessage:SetShowLifeOrbText / SetShowManaOrbText（每项最多 2 次、发后隔 10 帧读回），读回变开即成功；2 次仍读回关
+// 则打红字（说明消息可能是 toggle 语义或面板读不回状态——那时只能保证游戏默认开，见 dm_custom.h 的说明）。
+// 点一下帧率勾选框立即生效并存盘（键 show_fps，重启保留）；设置页重建 / 重开时按生效值重摆。
+// Two rows only in Settings > Game > User Interface (T41, scheme B): Show Skill Ammo Feedback (original row, contents untouched) ->
+// Show Frame Rate (the original mana-orb-text row reused). The frame-rate row was invisible in 67.1 because the options panel recognises
+// rows by the original option fingerprint (original child widget names + an OptionsPanelMessage:Set<option> message); T36 renamed both, so
+// the panel hid the whole row and forcing only the children visible could not bring it back. The row now keeps the original
+// ShowManaOrbText toggle as a hidden anchor (name / message untouched, rect moved off screen by the layout), the text box keeps its
+// original name and only its text changes, and a visible TouchCustom_show_fps is added (forced visible / taps handled here every frame).
+// The life-orb-text row is deleted whole and its original toggle is kept as a second hidden anchor inside the frame-rate row; both orb
+// texts are forced on here by reading the anchors' checked state (+0xa88): when off we send OptionsPanelMessage:SetShowLifeOrbText /
+// SetShowManaOrbText (at most 2 tries per item, re-read 10 frames after each); if it is still off after 2 tries a red line is logged
+// (that means the message is toggle-semantics or the panel does not reflect the state -- in that case only the game default "on" is
+// guaranteed, see dm_custom.h). Tapping the frame-rate checkbox takes effect and saves immediately (key show_fps, kept across restarts);
+// it is laid out again from the effective value when the page is rebuilt / reopened.
 void dm_show_fps_page_pump(unsigned long long root) {
     if (!root || !main_base()) return;
     static dm_wref seen; static int was_open, logged_missing, flips, logged_order; static uint64_t flip_fr;
-    static dm_wref life_seen; static int life_prev;   // 合并开关：上一次的生命球勾选状态（控件重建时重记） | merged switch: last seen life-orb checkbox state (re-recorded when the widget is rebuilt)
+    typedef struct { const char *name, *msg, *label; int tries, on, bad; uint64_t wait; } orb_fix;
+    static orb_fix fx[2] = {
+        { "ShowLifeOrbText", "OptionsPanelMessage:SetShowLifeOrbText", "生命球文本", 0, 0, 0, 0 },
+        { "ShowManaOrbText", "OptionsPanelMessage:SetShowManaOrbText", "法力球文本", 0, 0, 0, 0 } };
     uint64_t sp = find_w(root, "GameplayOptionsPanel", 1);
     int open = sp && *(uint8_t *)(sp + 0x50);
     if (!open) { was_open = 0; return; }
-    if (!was_open) { was_open = 1; dm_wref_set(&seen, 0); logged_missing = 0; flips = 0; logged_order = 0; dm_wref_set(&life_seen, 0); }   // 页刚打开：重新同步一次 | page just opened: resync once
+    if (!was_open) {   // 页刚打开：重新同步一次 | page just opened: resync once
+        was_open = 1; dm_wref_set(&seen, 0); logged_missing = 0; flips = 0; logged_order = 0;
+        for (int i = 0; i < 2; i++) { fx[i].tries = 0; fx[i].on = 0; fx[i].bad = 0; fx[i].wait = 0; } }
     load_once();
     // 新布局：帧率行沿用原版的 Row ShowManaOrbText 行名（面板认识 → 占行高 / 重排）；65.1 旧包回退到旧行名，行为不变
     // new layout: the frame-rate row keeps the original Row ShowManaOrbText name (known to the panel -> row height / re-layout); the old
@@ -290,26 +313,33 @@ void dm_show_fps_page_pump(unsigned long long root) {
     uint64_t row = find_w(sp, "Row ShowManaOrbText", 1);
     if (!row) row = find_w(sp, "TouchCustom_RowShowFps", 1);
     if (!row) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页里没找到帧率行（Row ShowManaOrbText / TouchCustom_RowShowFps），布局补丁没进包？"); } return; }
-    if (!*(uint8_t *)(row + 0x50)) { static int hlog; if (!hlog) { hlog = 1; LOG("【红】显示帧率：帧率行被原版面板隐藏（+0x50=0）——行名不是它认识的表行？控件仍会强制显示但整行可能不显示"); } }
-    {   // 原版面板会把不认识的表行整行隐藏（自定义页当年实测）：帧率行的文字 / 勾选框是我们的 Touch 控件，每帧强制可见（只在变化时写） | the original panel hides unknown table rows (measured on the custom page): the frame-rate row's text / checkbox are our Touch widgets, force them visible every frame (write only on change)
-      uint64_t txt = find_w(row, "TouchCustom_ShowFpsText", 1); if (txt) dm_ui_show_ours(txt, 1); }
+    if (!*(uint8_t *)(row + 0x50)) { static int hlog; if (!hlog) { hlog = 1; LOG("【红】显示帧率：帧率行被原版面板隐藏（+0x50=0）——行里没有面板认识的原版子控件？"); } }
     uint64_t w = find_w(row, "TouchCustom_show_fps", 1);
     if (!w) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：帧率行里没找到 TouchCustom_show_fps（布局补丁没生效？）"); } return; }
     dm_ui_show_ours(w, 1);
-    // 用户界面分区最终可见顺序（T36）：三行都在才打一次，真机核对用 | final visible order of the User Interface section (T36): logged once when all three rows exist, for real-device checks
+    // 用户界面分区最终可见顺序（T41）：两行都在才打一次，真机核对用 | final visible order of the User Interface section (T41): logged once when both rows exist, for real-device checks
     if (!logged_order) {
-        uint64_t lr = find_w(sp, "Row ShowLifeOrbText", 1), cr = find_w(sp, "Row SkillAmmoFeedback", 1), fr = find_w(sp, "Row ShowManaOrbText", 1);
-        if (lr && cr && fr) { logged_order = 1;
-            LOG("设置页用户界面分区可见开关顺序：显示生命&法力文本 → 显示技能上的弹药数量 → 显示帧率（合并后共三行；电量 / 时钟等原版行在本平台不显示）"); }
+        uint64_t ar = find_w(sp, "Row SkillAmmoFeedback", 1), fr = find_w(sp, "Row ShowManaOrbText", 1);
+        if (ar && fr) { logged_order = 1;
+            LOG("设置页用户界面分区可见开关顺序：显示技能上的弹药数量 → 显示帧率（共两行；生命球 / 法力球文本已强制常开，它们的开关不再显示）"); }
     }
-    // 合并开关：生命球文本勾选一变，就替玩家把法力球文本一起翻过去（两项始终一致） | merged switch: whenever the life-orb-text checkbox changes, toggle the mana-orb-text setting for the player too (both always match)
-    uint64_t life = find_w(sp, "ShowLifeOrbText", 1);
-    if (life) {
-        if (dm_wref_get(&life_seen) != life) { dm_wref_set(&life_seen, life); life_prev = TOGGLED(life); }   // 控件重建 / 第一次看到：只记状态，不当作玩家点了 | widget rebuilt / first sight: record the state only, do not treat it as a player tap
-        else { int on = TOGGLED(life);
-            if (on != life_prev) { LOG("显示生命&法力文本：生命球文本 → %s，替玩家同步法力球文本", on ? "开" : "关");
-                dm_ui_send_queue("OptionsPanelMessage:SetShowManaOrbText"); life_prev = on; } }
-    }
+    // 生命 / 法力球文本常开：读隐藏锚的勾选状态，为关就发对应消息（每项最多 2 次、隔 10 帧读回）
+    // Force both orb texts on: read the hidden anchors' checked state and, when off, send the matching message (at most 2 tries per item,
+    // re-read 10 frames after each)
+    { uint64_t fr = dm_guest_frame();
+      for (int i = 0; i < 2; i++) {
+        uint64_t a = find_w(row, fx[i].name, 1);
+        if (!a) { if (!fx[i].bad) { fx[i].bad = 1; LOG("【红】%s：帧率行里没有隐藏锚 %s（布局补丁没进包？）", fx[i].label, fx[i].name); } continue; }
+        if (TOGGLED(a)) { if (!fx[i].on) { fx[i].on = 1; LOG("%s：隐藏锚点读回=开（本版强制常开）", fx[i].label); } continue; }
+        if (fx[i].on) continue;   // 本页此前读回过开：不再动（等游戏重排再看） | this page reported it on before: leave it alone (look again after the next rebuild)
+        if (fx[i].tries < 2 && fr >= fx[i].wait) {
+            fx[i].tries++; fx[i].wait = fr + 10;
+            dm_ui_send_queue(fx[i].msg);
+            LOG("%s：隐藏锚点读回=关 → 发 %s（第 %d/2 次，10 帧后读回）", fx[i].label, fx[i].msg, fx[i].tries);
+        } else if (fx[i].tries >= 2 && fr >= fx[i].wait && !fx[i].bad) {
+            fx[i].bad = 1;
+            LOG("【红】%s：发了 2 次仍读回=关（消息可能是 toggle 语义或面板读不回状态）；本版只能保证游戏默认开，请在设置页手动确认一次", fx[i].label);
+        } } }
     int val = atomic_load(&g_val[K_SHOW_FPS]);
     if (dm_wref_get(&seen) != w) {   // 页刚出现 / 控件重建：先摆成生效值，这一帧不当玩家点了 | page just appeared / widget rebuilt: lay it out from the effective value, do not treat this frame as a player tap
         dm_wref_set(&seen, w); set_toggle(w, val);

@@ -55,39 +55,44 @@ assert len(defaults) == len(keys) and defaults[keys.index('touch_swap_above')] =
 assert 'TouchCustom_touch_swap_above_near' in host
 print('PASS touch layout options: generated radios (two-position switch + three-way performance mode), labels, defaults, host order and scrolling row extent')
 
-# ---- T36（65.1 实测）：设置页三行改动 / 拖动高亮 / 角色页标题字体（合成布局文本，不依赖 RomFS） ----
-# t36: settings-page three-row change / drag highlight / character-sheet title font (synthetic layout text, no RomFS needed)
-def _t36_row(name, body):
+# ---- T36/T37/T41（65.1 / 67.1 实测）：设置页行布局 / 拖动高亮 / 角色页标题字体（合成布局文本，不依赖 RomFS） ----
+# t36/t37/t41: settings-page row layout / drag highlight / character-sheet title font (synthetic layout text, no RomFS needed)
+def _t41_row(name, body):
     return '{\n  "type": "TableRowWidget", "name": "Row %s",\n  "children": [ %s ]\n}' % (name, body)
 
-_life = _t36_row('ShowLifeOrbText',
+_life = _t41_row('ShowLifeOrbText',
                  '{ "type": "TextBoxWidget", "name": "ShowLifeOrbTextText", "fields": { "text": "@OptionsMenuShowLifeOrbText", "tooltipString": "@OptionsMenuShowLifeOrbTextTooltip" } },'
-                 '{ "type": "ToggleButtonWidget", "name": "ShowLifeOrbText", "fields": { "onClickMessage": "OptionsPanelMessage:SetShowLifeOrbText" } }')
-_mana = _t36_row('ShowManaOrbText',
+                 '{ "type": "ToggleButtonWidget", "name": "ShowLifeOrbText", "fields": { "rect": "$OptionsToggleRect", "onClickMessage": "OptionsPanelMessage:SetShowLifeOrbText" } }')
+_mana = _t41_row('ShowManaOrbText',
                  '{ "type": "TextBoxWidget", "name": "ShowManaOrbTextText", "fields": { "text": "@OptionsMenuShowManaOrbText", "tooltipString": "@OptionsMenuShowManaOrbTextTooltip" } },'
-                 '{ "type": "ToggleButtonWidget", "name": "ShowManaOrbText", "fields": { "onClickMessage": "OptionsPanelMessage:SetShowManaOrbText" } }')
-_clock = _t36_row('ShowClock',
-                  '{ "type": "TextBoxWidget", "name": "ShowClockText", "fields": { "text": "@OptionsMenuShowClock" } },'
-                  '{ "type": "ToggleButtonWidget", "name": "ShowClock", "fields": { "onClickMessage": "OptionsPanelMessage:SetShowClock" } }')
-_ammo = _t36_row('SkillAmmoFeedback',
+                 '{ "type": "ToggleButtonWidget", "name": "ShowManaOrbText", "fields": { "rect": "$OptionsToggleRect", "onClickMessage": "OptionsPanelMessage:SetShowManaOrbText" } }')
+_ammo = _t41_row('SkillAmmoFeedback',
                  '{ "type": "TextBoxWidget", "name": "SkillAmmoFeedbackText", "fields": { "text": "@SkillAmmoFeedback" } },'
-                 '{ "type": "ToggleButtonWidget", "name": "SkillAmmoFeedback", "fields": { "onClickMessage": "OptionsPanelMessage:SetSkillAmmoFeedback" } }')
-# 原版顺序：生命球文本、法力球文本（→帧率）、技能弹药数量、显示时钟；变换后应为 生命&法力、技能弹药、帧率、时钟（时钟原样）
+                 '{ "type": "ToggleButtonWidget", "name": "SkillAmmoFeedback", "fields": { "rect": "$OptionsToggleRect", "onClickMessage": "OptionsPanelMessage:SetSkillAmmoFeedback" } }')
+_clock = _t41_row('ShowClock',
+                  '{ "type": "TextBoxWidget", "name": "ShowClockText", "fields": { "text": "@OptionsMenuShowClock" } },'
+                  '{ "type": "ToggleButtonWidget", "name": "ShowClock", "fields": { "rect": "$OptionsToggleRect", "onClickMessage": "OptionsPanelMessage:SetShowClock" } }')
 _page = '{\n  "children": [\n    ' + _life + ',\n    ' + _mana + ',\n    ' + _ammo + ',\n    ' + _clock + '\n  ]\n}'
-out, n = layout._orbs_merge_showfps(lambda s: (s, 0))(_page)
+out, n = layout._settings_rows_showfps(lambda s: (s, 0))(_page)
 assert n >= 4, n
-_i_life = out.index('"name": "Row ShowLifeOrbText"')
+# 生命球文本行整行删掉；可见顺序 = 技能弹药数量 → 显示帧率（时钟原样留在后面）
+assert '"name": "Row ShowLifeOrbText"' not in out
 _i_ammo = out.index('"name": "Row SkillAmmoFeedback"')
-_i_mana = out.index('"name": "Row ShowManaOrbText"')
+_i_fps = out.index('"name": "Row ShowManaOrbText"')
 _i_clock = out.index('"name": "Row ShowClock"')
-assert _i_life < _i_ammo < _i_mana, (_i_life, _i_ammo, _i_mana)   # 可见顺序：生命&法力文本 → 技能弹药数量 → 显示帧率
-assert _i_clock > _i_mana                                     # 显示时钟行原样留在后面，没有被搬
-assert _clock in out                                          # 时钟行内容一字未动
-assert '@dmCustomShowOrbTextBoth' in out and '@OptionsMenuSettingShowFrameRate' in out
-assert '"name": "TouchCustom_ShowFpsText"' in out and '"name": "TouchCustom_show_fps"' in out
-assert '"name": "ShowManaOrbTextText"' not in out and '"name": "ShowManaOrbText"' not in out
-assert 'TouchCustom_RowShowFps' not in out and 'Row ShowFrameRate' not in out
+assert _i_ammo < _i_fps < _i_clock, (_i_ammo, _i_fps, _i_clock)
+# 帧率行：文字框保留原名、text 换显示帧率；两个原版开关留成屏外隐藏锚；可见的 TouchCustom_show_fps 在正常勾选框位置
+assert '"name": "ShowManaOrbTextText"' in out and '"text": "@OptionsMenuSettingShowFrameRate"' in out
+assert '@dmCustomShowOrbTextBoth' not in out and 'TouchCustom_ShowFpsText' not in out
+assert out.count('"x": -99999') == 2, out.count('"x": -99999')
+assert '"onClickMessage": "OptionsPanelMessage:SetShowLifeOrbText"' in out
+assert '"onClickMessage": "OptionsPanelMessage:SetShowManaOrbText"' in out
+assert '"onClickMessage": "PanelManager:ClosePanel:TouchCustom_show_fps"' in out
+assert '"rect": "$OptionsToggleRect"' in out          # 可见开关用的原勾选框位置
+_fps_row = out[_i_fps:]
+assert '"name": "ShowLifeOrbText"' in _fps_row and '"name": "ShowManaOrbText"' in _fps_row and '"name": "TouchCustom_show_fps"' in _fps_row
 
+# 拖动条状高亮：只删 Carousel / Slider 的 focusIndicator 字段，开关的焦点框保留
 _bar = '''
 {
   "type": "CarouselWidget", "name": "ItemNameDisplayMode",
@@ -119,28 +124,29 @@ assert '$OptionsCarouselFocusIndicatorFilename' not in bout and '$OptionsSliderF
 assert '$OptionsToggleFocusIndicatorFilename' in bout          # 开关/按钮的焦点框不动
 assert '"focusIndicatorOffset"' not in bout
 
-def _t36_title(nm):
+def _t41_title(nm):
     return ('{\n  "type": "TextBoxWidget", "name": "%s",\n  "fields": {\n    "rect": { "x": 0, "y": 0, "width": 308, "height": 86 },\n'
             '    "style": {\n      "fontFace": "Formal",\n      "pointSize": "$SmallPanelFontSize"\n    },\n'
             '    "useAltStyleIfDoesntFit": true,\n    "altStyle": {\n      "fontFace": "Formal",\n      "pointSize": "$SmallPanelFontSize"\n    }\n'
             '  }\n}' % nm)
-_stats = '{\n  "children": [\n    ' + _t36_title('AttackDamageTitle') + ',\n    ' + _t36_title('AttackRatingTitle') + ',\n    ' + _t36_title('AttackDamageTitle') + ',\n    ' + _t36_title('AttackRatingTitle') + '\n  ]\n}'
+_stats = '{\n  "children": [\n    ' + _t41_title('AttackDamageTitle') + ',\n    ' + _t41_title('AttackRatingTitle') + ',\n    ' + _t41_title('AttackDamageTitle') + ',\n    ' + _t41_title('AttackRatingTitle') + '\n  ]\n}'
 sout, sn = layout._attack_title_font(lambda s: (s, 0))(_stats)
 assert sn == 16, sn                      # 4 个标题 × (style + altStyle) × (fontFace 去掉 + pointSize 改) = 16 处
 assert 'Formal' not in sout and sout.count('$MediumPanelFontSize') == 8, sout.count('$MediumPanelFontSize')
 assert sout.count('"pointSize"') == 8
 assert 'AttackDamageTitle' in sout and 'AttackRatingTitle' in sout
 
-# 接线：三份布局都要套上新函数；65.1 的旧插行函数已删；宿主使用新的行名并补发法力球消息
+# 接线：三份布局套新函数；旧合并函数已删；宿主有隐藏锚读状态 + 发消息 + FocusIndicator 隐藏
 assert 'gameplayoptionspanelhd.json' in layout.PRESENT and 'gameplayoptionspanelhd.json' in layout.PAD_ROOT
 assert 'soundoptionspanelhd.json' in layout.PRESENT and 'soundoptionspanelhd.json' in layout.PAD_ROOT
 assert 'characterstatspanelhd.json' in layout.PRESENT
-assert not hasattr(layout, '_add_showfps_row')
-assert 'Row ShowManaOrbText' in host and 'dm_ui_send_queue("OptionsPanelMessage:SetShowManaOrbText")' in host
-assert 'Row SkillAmmoFeedback' in host and '显示技能上的弹药数量' in host    # 顺序日志 / 三行齐全判断用 SkillAmmoFeedback，不是时钟
-assert '设置页用户界面分区可见开关顺序' in host
+assert not hasattr(layout, '_orbs_merge_showfps') and hasattr(layout, '_settings_rows_showfps')
+assert 'static void fi_show(' in host and 'FocusIndicator' in host and 'FocusManager' in host
+assert 'dm_ui_send_queue(fx[i].msg)' in host and 'OptionsPanelMessage:SetShowLifeOrbText' in host and 'OptionsPanelMessage:SetShowManaOrbText' in host
+assert '设置页用户界面分区可见开关顺序：显示技能上的弹药数量 → 显示帧率' in host
+scan = (root / 'host/tests/native_write_scan.py').read_text(encoding='utf-8')
+assert 'fi_show' in scan, 'native_write_scan 的 GUARDED 里应放行 fi_show'
 tsv = (root / 'i18n/ui_text.tsv').read_text(encoding='utf-8')
-assert 'dmCustomShowOrbTextBoth\t' in tsv and 'dmCustomShowOrbTextBothHint\t' in tsv
 tab = (root / 'host/dm_i18n_tab.h').read_text(encoding='utf-8')
-assert 'dmCustomShowOrbTextBoth' in tab and 'dmCustomShowOrbTextBothHint' in tab
-print('PASS touch layout options T36/T37: merged Life & Mana row, SkillAmmoFeedback row order, frames row reused row name, drag highlight, attack-title font, i18n keys and host wiring')
+assert 'dmCustomShowOrbTextBoth' not in tsv and 'dmCustomShowOrbTextBoth' not in tab   # 合并文案已删
+print('PASS touch layout options T36/T37/T41: two visible rows (Skill Ammo -> Frame Rate), hidden anchors, orb text force-on wiring, drag highlight, attack-title font')

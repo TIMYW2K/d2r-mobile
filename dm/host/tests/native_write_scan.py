@@ -25,7 +25,7 @@ def scan(text, where):
     return bad
 
 VIS = re.compile(r'\+\s*0x5[01]\)\s*=(?!=)')
-GUARDED = ('ui_show_ours', 'vu_show', 'kb_show')
+GUARDED = ('ui_show_ours', 'vu_show', 'kb_show', 'fi_show')   # fi_show = dm_custom.c 的 FocusManager/FocusIndicator 隐藏（先核控件名，不是它不写；T41） | fi_show = hide FocusManager/FocusIndicator in dm_custom.c (checks the widget name first; T41)
 def vis_scan(text, where):   # 直接写可见位的行；在带守卫的函数里（定义那一行或其函数体内）的不算 | lines that write the visible flag directly; those inside a guarded function (its definition line or its body) do not count
     bad, inside = [], None
     for no, line in enumerate(text.split('\n'), 1):
