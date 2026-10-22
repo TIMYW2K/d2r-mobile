@@ -338,7 +338,16 @@ with tempfile.TemporaryDirectory() as t:
     else:
         print('字体：没找到 %s，用原版字体' % _font)
     print(f'romfs_overlay：{n0} {z0} 字节，底图 {w}x{h}；前端布局 {len(tl)} 个、挪走键位提示 {ntl} 处')
-    for d in (out+'_astc',out+'_astc_variants'): shutil.rmtree(d,ignore_errors=True); os.makedirs(d)
+    for d in (out+'_astc',out+'_astc_variants'):
+        shutil.rmtree(d,ignore_errors=True); os.makedirs(d)
+        # 本地改动（T10 配套）：放弃老机型后这两套目录按上游约定仍要建（App 据此判断本包不带 ASTC 版），但构建工具会把
+        # 目录写进 dm/shell_manifest.txt，verify_payload() 要求每个目录至少有一个文件，空目录会报
+        # "Incomplete compiled payload manifest: romfs_overlay_astc/"。放一个占位文件即可（App 只认 pack.json，不影响运行时选择）。
+        # Local change (T10 companion): without the legacy pack these two directories are still created (the App uses them to
+        # decide that this package carries no ASTC set), but the build tool lists every directory in dm/shell_manifest.txt and
+        # verify_payload() requires at least one file per directory -- an empty one fails with "Incomplete compiled payload
+        # manifest: romfs_overlay_astc/". A placeholder file fixes it; the App only looks for pack.json there.
+        if not ASTC: open(os.path.join(d,'.keep'),'w').write('legacy ASTC set intentionally omitted (T10)\n')
     if ASTC:
         idx=os.path.join(ASTC,'pack_index.tsv'); assert os.path.isfile(idx) and os.path.isfile(os.path.join(ASTC,'pack.json')), 'DM_ASTC_PACK 目录里缺 pack_index.tsv / pack.json：'+ASTC
         na,za=emit(REPL,out+'_astc','astc_',idx); shutil.copyfile(os.path.join(ASTC,'pack.json'),os.path.join(out+'_astc','pack.json'))
