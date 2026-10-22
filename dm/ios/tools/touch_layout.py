@@ -998,9 +998,198 @@ def _tooltip_pad(s):
     b = '"showDelayMilliseconds": 400,'
     if s.count(b) != 1: raise SystemExit('touch_layout：说明框 showDelayMilliseconds 不是原样（原版布局变了？）')
     return s.replace(b, '"showDelayMilliseconds": 0,'), 2
+# ---------- T36（65.1 实测反馈）：设置页行布局 / 拖动高亮 / 角色页标题字体 ----------
+# A. 设置 → 游戏 → 用户界面：65.1 是「在 Row ShowBatteryLevel 后面插一整行」加「显示帧率」，面板类不认识新行名，
+#    建表时把它当隐藏行（不占行高、不参与流式重排），宿主每帧强制可见后它就叠在下一节「易用性」标题上。
+#    改法（不新增表行，只改现有行）：
+#      ① 「显示生命球文本」行文字改成「显示生命&法力文本」（@dmCustomShowOrbTextBoth，进中英表）；勾选框仍是原版
+#         ShowLifeOrbText（状态跟随游戏），宿主 dm_custom.c 在它变化时替玩家发 OptionsPanelMessage:SetShowManaOrbText，
+#         把法力球文本一起开关（两项自本版起始终一致；旧版本已拆开的情况见 dm_custom.c 的说明）。
+#      ② 「显示法力球文本」整行改成「显示帧率」行：行名保留 Row ShowManaOrbText（面板认识的表行 → 正常占行高/重排），
+#         行内文字/勾选框控件名改成 TouchCustom_ShowFpsText / TouchCustom_show_fps（宿主每帧强制可见并处理点击）。
+#      ③ 「显示技能上的弹药数量」（原版 Row SkillAmmoFeedback，行内容 / 勾选都不动）整行移到①②之间 →
+#         该分区可见顺序 = 显示生命&法力文本、显示技能上的弹药数量、显示帧率；「显示时钟」行原样留在后面（本平台不显示，不为它改顺序）。
+#    校验：三个行名各 1 处、顺序正确、65.1 的旧插行名不再出现、大括号数量不变。
+# B. 拖动时的条状高亮：CarouselWidget（「显示物品长按」那条）与 SettingsSliderWidget（音量/音效滑条）的
+#    focusIndicator*（Carousel_Hover / Slider_Hover，拖动时那条高亮）会画到头部页签上方；玩家不需要它。
+#    只去掉这两类控件的 focusIndicatorFilename/Padding/Offset，开关 / 按钮的焦点框不动（不误伤其它 focus 框）。
+# C. 角色属性页 4 个「攻击伤害 / 攻击命中值」标题（LeftSkillStats/RightSkillStats × Damage/Rating）：base HD 这份
+#    标题 style 与 altStyle 都是 fontFace "Formal"（Formal 没有中文字形 → 中文回退到别的字体）+ $SmallPanelFontSize，
+#    而同一块里的数值 AttackDamageStat/AttackRatingStat 是 $MediumPanelFontSize（无 fontFace）→ 标题字体、字号都与数值行不一致。
+#    改成与同一块数值一致：去掉 fontFace、pointSize 用 $MediumPanelFontSize（4 处全覆盖，altStyle 一起改）。
+#    Controller/xtouch 那份 4 处标题本来就是 $XMediumFontSize（与同一块数值相同、没有 Formal），只校验不写。
+# T36 (65.1 field feedback): options-page row layout / drag highlight / character-sheet title font.
+# A. Settings > Game > User Interface: 65.1 added a 「Show Frame Rate」row by inserting a new whole row after Row ShowBatteryLevel.
+#    The panel class does not know the new row name, so at build time it is treated as a hidden row (no row height, not part of
+#    the flowing re-layout); once the host forces it visible every frame it overlaps the next section header 「Accessibility」.
+#    Fix (no new table row, only existing rows are edited): (1) the 「Show Life Orb Text」row's text becomes 「Show Life & Mana Text」
+#    (@dmCustomShowOrbTextBoth, in the Chinese-English table); its checkbox stays the original ShowLifeOrbText (state follows the
+#    game) and the host dm_custom.c sends OptionsPanelMessage:SetShowManaOrbText for the player when it changes, so the mana orb text
+#    follows (from this version on both stay in sync; see dm_custom.c for the old-version split case). (2) the whole
+#    「Show Mana Orb Text」row becomes the 「Show Frame Rate」row: the row name stays Row ShowManaOrbText (a row the panel class knows,
+#    so it gets its row height / normal re-layout) while the text/checkbox inside are renamed to TouchCustom_ShowFpsText /
+#    TouchCustom_show_fps (the host forces them visible and handles taps every frame). (3) the whole 「Show Skill Ammo Feedback」row
+#    (original Row SkillAmmoFeedback, contents / checkbox unchanged) is moved between those two -> visible order = Show Life & Mana Text,
+#    Show Skill Ammo Feedback, Show Frame Rate; the 「Show Clock」row stays where it was (not shown on this platform, not reordered for it).
+#    Checks: each of the three row names exactly once,
+#    order correct, 65.1's old inserted row name gone, brace counts unchanged.
+# B. Drag-time bar highlight: the focusIndicator* of CarouselWidget (the 「display item names on hold」 one) and
+#    SettingsSliderWidget (volume / sound-effect sliders) -- the Carousel_Hover / Slider_Hover bar drawn on drag -- is painted above
+#    the header tabs and the player does not want it. Only those two widget types lose focusIndicatorFilename/Padding/Offset; the
+#    focus frames of toggles and buttons are left alone (do not break other focus boxes).
+# C. The four attack-damage / attack-rating titles of the character page (LeftSkillStats/RightSkillStats x Damage/Rating): in the base
+#    HD layout both style and altStyle use fontFace "Formal" (Formal has no Chinese glyphs, so Chinese falls back to another font) +
+#    $SmallPanelFontSize, while the value widgets in the same block (AttackDamageStat/AttackRatingStat) use $MediumPanelFontSize
+#    without fontFace -> the titles' font and size do not match the value rows. Change them to match the values in the same block:
+#    drop fontFace and use $MediumPanelFontSize (all four, altStyle included). The Controller/xtouch copy's four titles are already
+#    $XMediumFontSize (same as its value widgets, no Formal), so they are only verified, not rewritten.
+def _identity(s):
+    return s, 0
+
+def _row_span(s, row):
+    """「Row <row>」这个 TableRowWidget 在文本里的 [start, end)（end 指向配对 '}' 之后）。 | [start, end) of the TableRowWidget named Row <row> (end after the matching '}')."""
+    m = re.search(r'\{\s*"type"\s*:\s*"TableRowWidget"\s*,\s*"name"\s*:\s*"Row %s"' % re.escape(row), s)
+    if not m: raise SystemExit('touch_layout：选项表里没有 Row %s（原版布局变了？）' % row)
+    return m.start(), _block_end(s, m.start()) + 1
+
+def _move_row_after(s, row, after):
+    """把整行 row 按大括号配对整块搬到 after 行之后（行名与内容不变）。 | Move the whole Row <row> block (matched by braces) right after Row <after>; names and contents unchanged."""
+    a, b = _row_span(s, row)
+    indent = s[s.rfind('\n', 0, a) + 1:a]
+    block = s[a:b]
+    j = b
+    while j < len(s) and s[j] in ' \t\r\n': j += 1
+    if j < len(s) and s[j] == ',': j += 1
+    rest = s[:a] + s[j:]
+    _, b2 = _row_span(rest, after)
+    sep = ',\n\n' + indent if '\n\n' in s[a:b] else ',\n' + indent
+    new = rest[:b2] + sep + block + rest[b2:]
+    if new.count('{') != s.count('{') or new.count('}') != s.count('}'):
+        raise SystemExit('touch_layout：搬 Row %s 后大括号数量不对，没写回' % row)
+    return new
+
+def _drop_row_fields(block, keys):
+    """删掉控件 block 里整行的字段（原版布局缩进式，每行一个字段）；返回 (新文本, 删了几处)。 | Delete whole-line fields from a widget block (the original layouts are indented one field per line); returns (new text, number deleted)."""
+    n = 0
+    for k in keys:
+        pat = re.compile(r'(?m)^[ \t]*(?://)?[ \t]*"%s"\s*:\s*(\{[^{}]*\}|"[^"]*"|[^,\n]+)[ \t]*,\s*\n' % re.escape(k))
+        block, c = pat.subn('', block)
+        n += c
+    return block, n
+
+def _orbs_merge_showfps(fn):
+    def g(text):
+        text, n = fn(text)
+        # ① 生命球文本行 → 合并文案（tooltip 一起换）。| (1) life-orb-text row -> merged label (tooltip too).
+        a, b = _row_span(text, 'ShowLifeOrbText')
+        blk = text[a:b]
+        if blk.count('"text": "@OptionsMenuShowLifeOrbText"') != 1:
+            raise SystemExit('touch_layout：生命球文本行的文字不是原样（原版布局变了？）')
+        blk = blk.replace('"text": "@OptionsMenuShowLifeOrbText"', '"text": "@dmCustomShowOrbTextBoth"')
+        if blk.count('"tooltipString": "@OptionsMenuShowLifeOrbTextTooltip"') == 1:
+            blk = blk.replace('"tooltipString": "@OptionsMenuShowLifeOrbTextTooltip"', '"tooltipString": "@dmCustomShowOrbTextBothHint"')
+        text = text[:a] + blk + text[b:]; n += 1
+        # ② 法力球文本行整行 → 显示帧率行（行名保留：面板认识的表行才会正常占行高/重排）。| (2) the whole mana-orb-text row -> Show Frame Rate row (row name kept: only known table rows get a row height / normal re-layout).
+        a, b = _row_span(text, 'ShowManaOrbText')
+        blk = text[a:b]
+        for old, new in (
+                ('"text": "@OptionsMenuShowManaOrbText"', '"text": "@OptionsMenuSettingShowFrameRate"'),
+                ('"name": "ShowManaOrbTextText"', '"name": "TouchCustom_ShowFpsText"'),
+                ('"name": "ShowManaOrbText"', '"name": "TouchCustom_show_fps"'),
+                ('"onClickMessage": "OptionsPanelMessage:SetShowManaOrbText"', '"onClickMessage": "PanelManager:ClosePanel:TouchCustom_show_fps"')):
+            if blk.count(old) != 1:
+                raise SystemExit('touch_layout：法力球文本行里「%s」不是恰好 1 处（原版布局变了？）' % old)
+            blk = blk.replace(old, new)
+        # tooltip：_drop_rows 会先把整页的 tooltipString 清掉（触摸没有悬停），套过它的页面这里可能已经没有；有才换
+        # tooltip: _drop_rows already strips every tooltipString on the page (no hover under touch), so a page that ran it first may no
+        # longer have this field; replace it only when it is still there
+        if blk.count('"tooltipString": "@OptionsMenuShowManaOrbTextTooltip"') == 1:
+            blk = blk.replace('"tooltipString": "@OptionsMenuShowManaOrbTextTooltip"', '"tooltipString": "@OptionsMenuSettingShowFrameRateTooltip"')
+        text = text[:a] + blk + text[b:]; n += 2
+        # ③ 技能弹药数量行（原版 Row SkillAmmoFeedback，内容 / 勾选都不动）搬到合并行之后：
+        #    可见顺序 = 生命&法力文本、技能弹药数量、显示帧率；显示时钟行原样留在后面（本平台不显示）。
+        # (3) move the original Show Skill Ammo Feedback row (contents / checkbox unchanged) after the merged row: visible order =
+        #    Life & Mana Text, Skill Ammo Feedback, Frame Rate. The Show Clock row stays where it was (not shown on this platform).
+        text = _move_row_after(text, 'SkillAmmoFeedback', 'ShowLifeOrbText'); n += 1
+        # ④ 校验。| (4) checks.
+        for nm in ('ShowLifeOrbText', 'SkillAmmoFeedback', 'ShowManaOrbText'):
+            if text.count('"name": "Row %s"' % nm) != 1:
+                raise SystemExit('touch_layout：用户界面里 Row %s 应恰好 1 处' % nm)
+        if text.count('"name": "Row ShowClock"') != 1:
+            raise SystemExit('touch_layout：显示时钟行应原样保留 1 处')
+        order = [text.index('"name": "Row %s"' % x) for x in ('ShowLifeOrbText', 'SkillAmmoFeedback', 'ShowManaOrbText')]
+        if order != sorted(order):
+            raise SystemExit('touch_layout：用户界面三行顺序不对（%r）' % order)
+        for old in ('Row ShowFrameRate', 'TouchCustom_RowShowFps', '"name": "ShowManaOrbText"'):
+            if old in text:
+                raise SystemExit('touch_layout：还留着旧行名 / 旧控件名「%s」' % old)
+        return text, n
+    return g
+
+_BAR_WIDGETS = ('CarouselWidget', 'SettingsSliderWidget')
+def _hide_drag_highlight(fn):
+    def g(text):
+        text, n = fn(text); hits = 0
+        for typ in _BAR_WIDGETS:
+            pos = 0
+            while True:
+                m = re.compile(r'\{\s*"type"\s*:\s*"%s"\s*,\s*"name"\s*:\s*"[^"]*"' % typ).search(text, pos)
+                if not m: break
+                end = _block_end(text, m.start()) + 1
+                blk, k = _drop_row_fields(text[m.start():end], ('focusIndicatorFilename', 'focusIndicatorPadding', 'focusIndicatorOffset'))
+                if k:
+                    text = text[:m.start()] + blk + text[end:]
+                    end = m.start() + len(blk); hits += k
+                pos = end
+        if hits < 2:
+            raise SystemExit('touch_layout：设置页里没删到拖动高亮字段（原版布局变了？）')
+        for typ in _BAR_WIDGETS:
+            for m in re.finditer(r'\{\s*"type"\s*:\s*"%s"' % typ, text):
+                if 'focusIndicator' in text[m.start():_block_end(text, m.start()) + 1]:
+                    raise SystemExit('touch_layout：%s 里还有 focusIndicator 字段（原版布局变了？）' % typ)
+        return text, n + hits
+    return g
+
+def _attack_title_font(fn):
+    """base HD 人物页 4 个攻击标题：去掉 Formal、字号改成与同一块数值一致的 $MediumPanelFontSize（style 与 altStyle 都改）。 | Base-HD character page: the four attack titles lose Formal and use the same $MediumPanelFontSize as the value widgets in the same block (style and altStyle)."""
+    def g(text):
+        text, n = fn(text); hits = 0
+        for nm in ('AttackDamageTitle', 'AttackRatingTitle'):
+            pos = 0; cnt = 0
+            while True:
+                m = re.compile(r'\{\s*"type"\s*:\s*"TextBoxWidget"\s*,\s*"name"\s*:\s*"%s"' % nm).search(text, pos)
+                if not m: break
+                end = _block_end(text, m.start()) + 1
+                blk, k = _drop_row_fields(text[m.start():end], ('fontFace',))
+                if k == 0: raise SystemExit('touch_layout：%s 没有 fontFace "Formal"（原版布局变了？）' % nm)
+                nb, c = re.subn(r'"pointSize"\s*:\s*"\$[A-Za-z]+"', '"pointSize": "$MediumPanelFontSize"', blk)
+                if c == 0: raise SystemExit('touch_layout：%s 没有 pointSize（原版布局变了？）' % nm)
+                text = text[:m.start()] + nb + text[end:]
+                pos = m.start() + len(nb); hits += k + c; cnt += 1
+            if cnt != 2: raise SystemExit('touch_layout：%s 应恰好 2 处（左右 SkillStats），找到 %d' % (nm, cnt))
+        if hits < 4: raise SystemExit('touch_layout：攻击标题只改到 %d 处（应 ≥ 4）' % hits)
+        return text, hits
+    return g
+
+def _controller_stats_check(fn):
+    """Controller/xtouch 人物页：4 个攻击标题必须已无 Formal、字号与同一块数值一致（$XMediumFontSize）；只校验不写。 | Controller/xtouch character page: the four attack titles must already have no Formal and use $XMediumFontSize like their value widgets; verify only, never rewrite."""
+    def g(text):
+        text, n = fn(text)
+        for nm in ('AttackDamageTitle', 'AttackRatingTitle'):
+            seen = 0
+            for m in re.finditer(r'\{\s*"type"\s*:\s*"TextBoxWidget"\s*,\s*"name"\s*:\s*"%s"' % nm, text):
+                blk = text[m.start():_block_end(text, m.start()) + 1]
+                if 'fontFace' in blk: raise SystemExit('touch_layout：Controller 人物页 %s 还有 fontFace（原版布局变了？）' % nm)
+                if '"pointSize": "$XMediumFontSize"' not in blk: raise SystemExit('touch_layout：Controller 人物页 %s 字号不是 $XMediumFontSize（原版布局变了？）' % nm)
+                seen += 1
+            if seen != 2: raise SystemExit('touch_layout：Controller 人物页 %s 应恰好 2 处，找到 %d' % (nm, seen))
+        return text, n
+    return g
+
 PRESENT = {
     'controller/uiswitcherhd.json': lambda s: offscreen(s, types=(), names=('CycleLeftIndicator', 'CycleRightIndicator')),   # 页签条两端的 L / R 字形 | The L / R glyphs at the two ends of the tab strip
-    'controller/characterstatspanelhd.json': _char_no_stamina,
+    'controller/characterstatspanelhd.json': _controller_stats_check(_char_no_stamina),   # T36：耐力行搬走后顺手校验 4 个攻击标题字号（这份 65.1 实测不是字体问题） | T36: after the stamina-row move, verify the four attack titles' font size (not the font problem seen in 65.1)
+    'characterstatspanelhd.json': _attack_title_font(_identity),   # T36：base HD 人物页 4 个攻击标题字体/字号（Formal→游戏默认字体、SmallPanel→MediumPanel） | T36: base-HD character page: the four attack titles' font and size (Formal -> game default font, SmallPanel -> MediumPanel)
     'controller/tooltipspanelhd.json': _tooltip_pad,
     'controller/dropgoldmodalhd.json': lambda s: offscreen(s),   # 金币数量框：原版大小与样子（去掉 − / + / 一半 / 全部，只留数字框、好、取消）；这里只挪走「好 / 取消」上的手柄键位提示 | Gold amount box: the original game's size and look (− / + / half / all removed, keeping only the number box, OK and Cancel); here only the controller button prompts on 「好 / 取消」(OK / Cancel) are moved away
     'controller/bankexpansionlayouthd.json': lambda s: offscreen(s, types=(), names=('gold_max',)),   # 储藏箱「金币最大数: N」这行去掉（40 号字在框内放不下） | The stash line 「金币最大数: N」(Max gold: N) is removed (40-point text does not fit inside the frame)
@@ -1363,7 +1552,7 @@ PRESENT['controller/settingspanelhd.json'] = _settings_no_legend
 # game, without hand-editing Settings.json. Since v1.0.15 the host no longer mistakes a panel rebuild for a
 # player tap (dm_wref in dm_custom.c), so the Custom page keeps its language row as upstream has it. To match
 # upstream again, add the three names back in both places.
-PRESENT['soundoptionspanelhd.json'] = _drop_rows('Controller Feedback')
+PRESENT['soundoptionspanelhd.json'] = _hide_drag_highlight(_drop_rows('Controller Feedback'))   # T36：音量/音效滑条拖动时的高亮条去掉 | T36: drop the drag-time highlight bar of the volume / sound-effect sliders
 PRESENT['hireablespanelhd.json'] = _merc_health_bar   # 本地改动：佣兵头像栏血条随头像一起放大（布局里那行的 rect 必须与游戏文件逐字一致） | local change: the merc health bar scales with the portrait (the rect text must match the game file exactly)
 PRESENT['gameplayoptionspanelhd.json'] = _drop_rows('AutoPartyInvite', 'ItemHotkeyTooltipAppender', 'ChatFontSize', 'ChatBackground', 'Controller Options', 'ControllerCursorSpeed',
                                                     'ControllerWeaponSwapSeparateBindings', 'ControllerRumbleEnabled', 'ControllerSwapThumbsticks', 'ShowParty', 'ShowNames', 'ShowRoomName',
@@ -1383,13 +1572,13 @@ PRESENT['onlinegameoptionspanelhd.json'] = _drop_rows('OfflineDifficultyScaling'
 # The three options pages for controller mode (placed at the original path and loaded by controller mode; the touch copy is moved to the touch side by the generator): the original with the rows that neither mode supports removed -- language, online, chat, keyboard-and-mouse hotkey hints, offline /players setting,
 # and large font mode (applying it swaps in another set of layout profiles, and touching the screen to switch back to touch then breaks). The rows controller mode keeps beyond touch are listed below
 PAD_ROOT = {
-    'soundoptionspanelhd.json': _drop_rows('Controller Feedback'),   # 同上：语言的三个名字已取出，两行保留 | same as above: the three language names are no longer dropped
+    'soundoptionspanelhd.json': _hide_drag_highlight(_drop_rows('Controller Feedback')),   # 同上：语言的三个名字已取出，两行保留；T36 拖动高亮条也去掉 | same as above: the three language names are no longer dropped; T36 also removes the drag-time highlight bar
     # 手柄设置里只恢复实跑证实生效的：「互换左右摇杆」（开了之后左摇杆不走路、右摇杆走路）；色盲校准（手柄能进能出）。
     # 不恢复：震动（宿主不支持震动，hle_hid.c 里是空实现）、手柄反馈与光标速度（改了值、没量出效果：面板里手柄光标是按格吸附的）、切换武器分开绑定（没验）
     # Of the controller settings only those confirmed effective in actual runs are restored: 「互换左右摇杆」(Swap Sticks) (when on, the left stick no longer walks and the right stick does); colorblind calibration (the controller can get in and out).
     # Not restored: vibration (the host does not support vibration; it is an empty implementation in hle_hid.c), controller feedback and cursor speed (the value changed but no effect was measured: in panels the controller cursor snaps cell by cell), separate binding for weapon swap (not verified)
-    'gameplayoptionspanelhd.json': _drop_rows('AutoPartyInvite', 'ItemHotkeyTooltipAppender', 'ChatFontSize', 'ChatBackground', 'ShowParty', 'ShowNames', 'ShowRoomName', 'LowVisionMode',
-                                              'ControllerCursorSpeed', 'ControllerWeaponSwapSeparateBindings', 'ControllerRumbleEnabled'),
+    'gameplayoptionspanelhd.json': _hide_drag_highlight(_orbs_merge_showfps(_drop_rows('AutoPartyInvite', 'ItemHotkeyTooltipAppender', 'ChatFontSize', 'ChatBackground', 'ShowParty', 'ShowNames', 'ShowRoomName', 'LowVisionMode',
+                                              'ControllerCursorSpeed', 'ControllerWeaponSwapSeparateBindings', 'ControllerRumbleEnabled'))),   # T36：生命/法力合并 + 显示帧率行替换 + 高亮条去掉 | T36: merge life/mana text, replace the row with Show Frame Rate, drop the highlight bar
     'onlinegameoptionspanelhd.json': _drop_rows('OfflineDifficultyScaling', 'OfflineSettingsEffectNote'),
 }
 def build_pad_root(romfs, outdir):
@@ -1410,62 +1599,13 @@ def _row_height(fn):
 for _k in ('soundoptionspanelhd.json', 'gameplayoptionspanelhd.json', 'onlinegameoptionspanelhd.json'): PRESENT[_k] = _row_height(PRESENT[_k])
 
 
-# 本地改动（T18/T19/T26）：游戏 设置 → 游戏 → 用户界面 分区插一行「显示帧率」。借「显示电量」那一行整块（Row ShowBatteryLevel）：
-# 复制它的排版字段，改名字 / 文本 / 消息 / tooltip；勾选框控件名 TouchCustom_show_fps（宿主 dm_custom.c 键 show_fps）。
-# 文本与 tooltip 直接用游戏自带本地化串 @OptionsMenuSettingShowFrameRate[Tooltip]（中英自动跟随），所以不进中英表。
-# T26 证据：原版 RomFS 里「设置→游戏」只有这一份 GameplayOptionsPanelHD.json（没有 Controller 变体，tmp/hostdev/layouts 全查过），
-# 所以行看不到不是补丁打错文件，而是面板类把不认识的表行隐藏了（自定义页当年同样实测：不认识的表行 +0x50=0）。
-# 对策：行 / 文字控件名也改成 Touch 开头（宿主 dm_cursor.c 的 ui_show_ours 只允许写 Touch 控件），由 dm_custom.c 每帧强制可见。
-# 插在原行之后；插入前用行块配对找边界，插入后校验大括号数量不变，避免弄坏整份布局（坏 JSON = 面板不显示且不报错）。
-# Local change (T18/T19/T26): insert a 「显示帧率」(Show Frame Rate) row into the game's Settings > Game > User Interface
-# section. It copies the whole 「ShowBatteryLevel」 row (same table/layout fields) and only changes the name / text /
-# message / tooltip; the checkbox widget is TouchCustom_show_fps (host key show_fps in dm_custom.c). The text and tooltip
-# use the game's own localised strings (@OptionsMenuSettingShowFrameRate[Tooltip], language follows automatically), so no
-# entry in the Chinese-English table. T26 evidence: the original RomFS has only this one gameplay-options layout (no Controller
-# variant -- tmp/hostdev/layouts was checked completely), so the row not showing was not a wrong-file patch: the panel class hides
-# table rows it does not know (measured on the custom page: unknown rows get +0x50 = 0). The row / text controls therefore also use
-# Touch-prefixed names (ui_show_ours in dm_cursor.c only writes Touch widgets) and dm_custom.c forces them visible every frame.
-# Inserted right after the original row; the row block is found by brace matching and
-# the brace counts are checked afterwards, so a broken script can never corrupt the whole layout (broken JSON = the panel
-# silently stops showing).
-def _add_showfps_row(fn):
-    def g(text):
-        text, n = fn(text)
-        if n == 0: return text, 0
-        m = re.search(r'\{\s*"type"\s*:\s*"[A-Za-z]+"\s*,\s*"name"\s*:\s*"Row ShowBatteryLevel"', text)
-        if not m: raise SystemExit('touch_layout：游戏设置页里没有 Row ShowBatteryLevel（原版布局变了？），显示帧率行没插')
-        st = m.start(); en = _block_end(text, st)
-        row = ('\n\n                        {\n'
-               '                            "type": "TableRowWidget", "name": "TouchCustom_RowShowFps",\n'
-               '                            "children": [\n'
-               '                                { "type": "TextBoxWidget", "name": "TouchCustom_ShowFpsText", "fields": { "text": "@OptionsMenuSettingShowFrameRate", "style": "$StyleSettingsText" } },\n'
-               '                                {\n'
-               '                                    "type": "ToggleButtonWidget", "name": "TouchCustom_show_fps",\n'
-               '                                    "fields": {\n'
-               '                                        "rect": "$OptionsToggleRect",\n'
-               '                                        "sound": "cursor_menu_select_hd",\n'
-               '                                        "focusIndicatorPadding": "$OptionsToggleFocusIndicatorPadding",\n'
-               '                                        "focusIndicatorFilename": "$OptionsToggleFocusIndicatorFilename",\n'
-               '                                        "filename": "Lobby\\\\CreateGame\\\\CreateGame_AdvancedCheckbox",\n'
-               '                                        "focusIndicatorOffset": { "x": 0, "y": -4 },\n'
-               '                                        "untoggledFrame": 0, "untoggledPressedFrame": 1, "untoggledHoveredFrame": 3, "untoggledDisabledFrame": 2,\n'
-               '                                        "toggledFrame": 4, "toggledPressedFrame": 5, "toggledHoveredFrame": 6,\n'
-               '                                        "onClickMessage": "PanelManager:ClosePanel:TouchCustom_show_fps",\n'
-               '                                        "tooltipString": "@OptionsMenuSettingShowFrameRateTooltip",\n'
-               '                                        "tooltipStyle": { "showAfterDelay": true }\n'
-               '                                    }\n'
-               '                                }\n'
-               '                            ]\n'
-               '                        }')
-        new = text[:en + 1] + ',' + row + text[en + 1:]
-        if new.count('{') != text.count('{') + row.count('{') or new.count('}') != text.count('}') + row.count('}'):
-            raise SystemExit('touch_layout：显示帧率行插入后大括号数量不对，没写回')
-        if new.count('"TouchCustom_RowShowFps"') != 1 or new.count('"TouchCustom_ShowFpsText"') != 1 or new.count('"TouchCustom_show_fps"') != 1:
-            raise SystemExit('touch_layout：显示帧率行的行 / 文字 / 勾选框名字应各恰好 1 处')
-        if '"Row ShowFrameRate"' in new: raise SystemExit('touch_layout：显示帧率行还留着旧行名 Row ShowFrameRate')
-        return new, n + 1
-    return g
-PRESENT['gameplayoptionspanelhd.json'] = _add_showfps_row(PRESENT['gameplayoptionspanelhd.json'])
+# T36：游戏 设置 → 游戏 → 用户界面 的三行改动（合并生命&法力文本、把「显示法力球文本」行改成「显示帧率」、把「显示时钟」行
+# 搬到两者之间）全部由上面的 _orbs_merge_showfps 在布局层完成；不再像 65.1 那样新插一行（新行名面板类不认识 → 叠在「易用性」标题上）。
+# T36: the three-row change of Settings > Game > User Interface (merge Life & Mana Text, turn the 「Show Mana Orb Text」row into
+# 「Show Frame Rate」, move 「Show Clock」between them) is done entirely in the layout by _orbs_merge_showfps above; no new row is
+# inserted any more (65.1's inserted row name was unknown to the panel class, so it overlapped the 「Accessibility」header).
+PRESENT['gameplayoptionspanelhd.json'] = _hide_drag_highlight(_orbs_merge_showfps(PRESENT['gameplayoptionspanelhd.json']))
+
 
 
 def _widget_block(s, name):

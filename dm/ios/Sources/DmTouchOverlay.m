@@ -9,6 +9,11 @@
 #include "../../host/dm_i18n.h"
 
 static UIColor *bronze(CGFloat a) { return [UIColor colorWithRed:.66 green:.53 blue:.32 alpha:a]; }
+// 本地改动（T38）：灵动岛回城胶囊按钮相对岛中心的偏移（点）。用户要求右移 5、下移 2，想再调只改这两个数。
+// Local change (T38): offset (points) of the Dynamic-Island town-portal capsule button from the island centre.
+// The user asked for +5 right / +2 down; retune with these two constants only.
+static const CGFloat kIslandBtnDx = 5.0;
+static const CGFloat kIslandBtnDy = 2.0;
 // 外观按落指立即反馈，不等待游戏按键判定；取消瞄准的手指不再点亮槽框。
 // Visual feedback starts on contact without waiting for game input; a cancelled aim finger no longer lights the frame.
 static BOOL button_held(const dm_tc_state *s, int target) {
@@ -245,28 +250,44 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
       CGContextFillRect(c, CGRectMake(0, 0, 2, bb.size.height));
       CGContextFillRect(c, CGRectMake(0, 0, bb.size.width, 1));
       CGContextFillRect(c, CGRectMake(0, bb.size.height - 1, bb.size.width, 1)); }
-    // 本地改动：灵动岛外圈画一圈和按钮同款金属边缘纹理（局内才画，菜单页不画）。
-    // 轮廓按用户给的 SwiftUI 参数重生成：岛 125×36、圆角 18 = 标准胶囊；金属环宽 5 点，外沿 135×46、圆角 23，
-    // 内外圆角都取各自「短边的一半」（= 胶囊半径），所以是两段半圆接直线、不会出现直线接圆角的错位。
-    // 中间挖空（内路径反向），金属纹理只出现在 5 点宽的环带里，不盖住岛本身。
-    // Local change: draw a ring around the Dynamic Island using the same metal-rim texture as the buttons (in-game only).
-    // The outline follows the user's SwiftUI parameters: island 125x36, corner radius 18 = a standard capsule; the metal
-    // ring is 5 pt wide, outer 135x46 with radius 23. Both corner radii are half of their own short side (= capsule
-    // radius), so the outline is two semicircles joined by straight segments, with no straight-to-arc mismatch. The
-    // middle is cut out (inner path reversed), so the metal texture only shows in the 5 pt band and does not cover the island.
+    // 本地改动（T38）：左侧回城键改成「灵动岛壳体的完整胶囊按钮」——之前只画 5 点金属环再把内胶囊挖空（内路径反向），
+    // 看上去就是被切掉一大块的椭圆空轮廓；用户要的是完整胶囊按钮。按用户给的 SwiftUI 参数：内胶囊 125×36、圆角 18，
+    // 金属环 5 点、外沿 135×46、圆角 23；内胶囊用与圆钮同款的深色面板（dm_button_draw 的 well 渐变）填满，外圈才是
+    // _socketV[0] 金属环带。位置以岛中心 +5 点右 / +2 点下（kIslandBtnDx/Dy）；岛在右侧时水平镜像向内，避免推出屏幕。
+    // Local change (T38): the left town-portal key becomes a COMPLETE capsule button in the Dynamic Island shell. Before, only
+    // a 5 pt metal ring was drawn and the inner capsule was punched out (reversed inner path), so it read as a clipped/empty
+    // ellipse outline; the user wants a complete capsule button. Per the user's SwiftUI parameters: inner capsule 125x36 with
+    // radius 18, metal ring 5 pt, outer 135x46 with radius 23; the inner capsule is filled with the same dark face as the round
+    // buttons (dm_button_draw's well gradient) and only the outer band uses the _socketV[0] metal. The button is offset from the
+    // island centre by +5 pt right / +2 pt down (kIslandBtnDx/Dy); for a right-side island X is mirrored inward so it never
+    // leaves the screen.
     if (!self.navigationMode && self->_socketV[0]) {
         extern CGRect dm_island_rect_export(UIView *v);
         CGRect ir = dm_island_rect_export(self);
         if (ir.size.width > 2 && ir.size.height > 2) {
-            CGFloat w = 5.0;                                     // 环宽 | ring width
-            CGRect outer = CGRectInset(ir, -w, -w);
-            CGFloat ro = MIN(outer.size.width, outer.size.height) * 0.5;   // 外胶囊半径 | outer capsule radius
-            CGFloat ri = MIN(ir.size.width, ir.size.height) * 0.5;         // 内胶囊半径 = 18（125×36） | inner capsule radius = 18 (125x36)
-            UIBezierPath *po = [UIBezierPath bezierPathWithRoundedRect:outer cornerRadius:ro];
-            UIBezierPath *pi = [UIBezierPath bezierPathWithRoundedRect:ir cornerRadius:ri];
-            [po appendPath:[pi bezierPathByReversingPath]];       // 内路径反向 → 中间成洞 | reversed inner path -> hole in the middle
-            CGContextSaveGState(c); [po addClip];
+            const CGFloat ring = 5.0;                                   // 金属环宽（点） | metal ring width (points)
+            CGFloat dx = kIslandBtnDx, dy = kIslandBtnDy;
+            if (CGRectGetMidX(ir) > self.bounds.size.width * 0.5) dx = -dx;   // 岛在右：镜像向内 | right-side island: mirror inward
+            CGRect inner = CGRectOffset(ir, dx, dy);                    // 内胶囊（125×36 竖/横，视方向） | inner capsule (125x36, orientation-dependent)
+            CGRect outer = CGRectInset(inner, -ring, -ring);            // 外沿 135×46 | outer 135x46
+            CGFloat ri = MIN(inner.size.width, inner.size.height) * 0.5;   // 内圆角 18 = 胶囊半径 | inner radius 18 = capsule radius
+            CGFloat ro = MIN(outer.size.width, outer.size.height) * 0.5;   // 外圆角 23 | outer radius 23
+            UIBezierPath *face = [UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:ri];
+            UIBezierPath *outerPath = [UIBezierPath bezierPathWithRoundedRect:outer cornerRadius:ro];
+            UIBezierPath *band = (UIBezierPath *)[outerPath copy];
+            [band appendPath:[face bezierPathByReversingPath]];         // 只留 5 点环带；内胶囊画面板，不再挖空 | only the 5 pt band; the inner capsule gets a face instead of a hole
+            CGContextSaveGState(c);
+            CGContextSaveGState(c); [face addClip];                     // ① 面板：圆钮同款深色渐变，填满内胶囊 | (1) face: same dark gradient as the round buttons, fills the inner capsule
+            const CGFloat well[] = {.021,.021,.021,0.94, .050,.050,.050,0.94};
+            dm_button_gradient(c, inner, well, 2);
+            CGContextRestoreGState(c);
+            CGContextSaveGState(c); [band addClip];                     // ② 金属环带：贴 _socketV[0]，环宽在四周都正好 5 点 | (2) metal band: the _socketV[0] texture exactly in the 5 pt band
             [self->_socketV[0] drawInRect:outer];
+            CGContextRestoreGState(c);
+            CGContextSetRGBStrokeColor(c,.008,.012,.015,.90);           // 铁边外沿，与圆钮外描边一致 | iron outer edge, like the round buttons' outer stroke
+            CGContextSetLineWidth(c,1.2); [outerPath stroke];
+            CGContextSetRGBStrokeColor(c,.26,.29,.28,.55);              // 面板细边，与圆钮 face 描边一致 | face hairline, like the round buttons' face stroke
+            CGContextSetLineWidth(c,1.0); [face stroke];
             CGContextRestoreGState(c);
         }
     }
@@ -374,7 +395,12 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                 NSUInteger li = 0;
                 for (NSString *ln in body) {
                     BOOL blue = li < bodyBlue.count && [bodyBlue[li] boolValue];
-                    UIColor *lc = blue ? [UIColor colorWithRed:.55 green:.78 blue:1.0 alpha:0.96] : [UIColor colorWithWhite:0.90 alpha:0.96];   // 技能行蓝色，其余行保持原色 | skill lines blue, other lines keep the old colour
+                    // 技能行蓝色 = 游戏装备说明框的魔法物品蓝：profileHD 的 FontColorBlue r/g/b = 110/110/255，MagicColor 就映射到它
+                    // （tmp/hostdev/layouts/global_ui_Layouts__profileHD.json L87 定义、L679 "MagicColor": "$FontColorBlue"；SD 档是 99/99/252，iPhone 用 HD）
+                    // Skill-line blue = the magic-item blue of the game's equipment tooltip: profileHD FontColorBlue = 110/110/255, which
+                    // MagicColor maps to (tmp/hostdev/layouts/global_ui_Layouts__profileHD.json L87 defines it, L679 maps MagicColor to it;
+                    // the SD profile uses 99/99/252 and the iPhone uses HD).
+                    UIColor *lc = blue ? [UIColor colorWithRed:110.0 / 255.0 green:110.0 / 255.0 blue:1.0 alpha:0.96] : [UIColor colorWithWhite:0.90 alpha:0.96];   // 技能行蓝色，其余行保持原色 | skill lines blue, other lines keep the old colour
                     [ln drawInRect:CGRectMake(bx + pad, ty, boxW - pad * 2, lineH)
                         withAttributes:@{NSFontAttributeName:bf, NSForegroundColorAttributeName:lc, NSParagraphStyleAttributeName:ps}];
                     ty += lineH; li++;

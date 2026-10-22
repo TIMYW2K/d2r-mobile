@@ -254,34 +254,62 @@ void dm_custom_ui_pump(unsigned long long root) {
         if (*(uint8_t *)(sp + 0x1a0) != dirty) { *(uint8_t *)(sp + 0x1a0) = (uint8_t)dirty; LOG("自定义设置：有未应用的改动 → %d（「应用 / 放弃」%s）", dirty, dirty ? "点亮" : "变灰"); } }
 }
 
-// ---- 游戏设置页「显示帧率」勾选框（T18/T19）：设置 → 游戏 → 用户界面 分区（touch_layout.py 插入的 TouchCustom_RowShowFps，
-// 控件名 TouchCustom_show_fps；文字 / tooltip 用游戏原版串 @OptionsMenuSettingShowFrameRate[Tooltip]，中英自动跟随）。
-// 点一下立即生效并存盘（键 show_fps，重启保留）；设置页重建 / 重开时按生效值重摆。原版面板不认识我们这行，
-// 所以同步与点击处理都在这里做（和自定义页同一套 set_toggle）。T26：面板类会隐藏不认识的表行，这行 / 文字 / 勾选框都改成
-// Touch 开头的控件名，这里每帧强制它们可见（原版面板若每帧再隐藏，下一帧也会被我们摆回来）。
-// "Show frame rate" checkbox on the game's settings page (inserted by touch_layout.py): takes effect and saves immediately
-// on tap (key show_fps, kept across restarts); laid out again from the effective value when the page is rebuilt / reopened.
-// The original panel does not know our row, so both the sync and the tap handling live here (the same set_toggle as the custom page).
-// T26: the panel class hides unknown table rows, so the row / text / checkbox all use Touch-prefixed names and are forced visible
-// every frame here (if the panel hides them again, the next frame puts them back).
+// ---- 游戏设置页「显示帧率」勾选框 + 「显示生命&法力文本」合并开关（T18/T19/T36）：设置 → 游戏 → 用户界面 分区。
+// touch_layout.py 不再新插表行（65.1 的新行名面板类不认识 → 不占行高，被强制显示后就叠在「易用性」标题上）；改成：
+//   · 「显示生命球文本」行文字 → 「显示生命&法力文本」，勾选框是原版 ShowLifeOrbText（状态跟随游戏），
+//     这里在它变化时替玩家补发一条 OptionsPanelMessage:SetShowManaOrbText，让法力球文本一起开关（两项自本版起一致）；
+//   · 「显示法力球文本」整行 → 「显示帧率」行（行名仍是 Row ShowManaOrbText：面板认识的表行 → 正常占行高 / 重排）；
+//     行内文字 / 勾选框控件名 TouchCustom_ShowFpsText / TouchCustom_show_fps，这里每帧强制可见并处理点击。
+//   · 「显示技能上的弹药数量」（原版行 SkillAmmoFeedback，行内容 / 勾选都不动）搬到中间 → 可见顺序 = 显示生命&法力文本、
+//     显示技能上的弹药数量、显示帧率（页打开时打一次日志，真机核对用）；「显示时钟」行原样留在后面（本平台不显示）。
+// 点一下立即生效并存盘（键 show_fps，重启保留）；设置页重建 / 重开时按生效值重摆。
+// "Show frame rate" checkbox + merged "Show Life & Mana Text" switch on the game's settings page. touch_layout.py no longer inserts a
+// new table row (65.1's new row name was unknown to the panel class: no row height, and once forced visible it overlapped the
+// 「Accessibility」header). Instead: (a) the 「Show Life Orb Text」row's text becomes 「Show Life & Mana Text」, its checkbox is the
+// original ShowLifeOrbText (state follows the game), and when it changes we send OptionsPanelMessage:SetShowManaOrbText for the player so
+// the mana orb text follows (both stay in sync from this version on); (b) the whole 「Show Mana Orb Text」row becomes the
+// 「Show Frame Rate」row (row name stays Row ShowManaOrbText, a known table row, so it gets its row height / normal re-layout), with the
+// text / checkbox inside named TouchCustom_ShowFpsText / TouchCustom_show_fps, forced visible and tap-handled here every frame;
+// (c) the 「Show Skill Ammo Feedback」row (original Row SkillAmmoFeedback, contents / checkbox unchanged) is moved between the two ->
+// visible order = Life & Mana Text, Skill Ammo Feedback, Frame Rate (logged once when the page opens); the 「Show Clock」row stays
+// where it was (not shown on this platform).
+// Tapping takes effect and saves immediately (key show_fps, kept across restarts); laid out again from the effective value when the page is
+// rebuilt / reopened.
 void dm_show_fps_page_pump(unsigned long long root) {
     if (!root || !main_base()) return;
-    static dm_wref seen; static int was_open, logged_missing, flips; static uint64_t flip_fr;
+    static dm_wref seen; static int was_open, logged_missing, flips, logged_order; static uint64_t flip_fr;
+    static dm_wref life_seen; static int life_prev;   // 合并开关：上一次的生命球勾选状态（控件重建时重记） | merged switch: last seen life-orb checkbox state (re-recorded when the widget is rebuilt)
     uint64_t sp = find_w(root, "GameplayOptionsPanel", 1);
     int open = sp && *(uint8_t *)(sp + 0x50);
     if (!open) { was_open = 0; return; }
-    if (!was_open) { was_open = 1; dm_wref_set(&seen, 0); logged_missing = 0; flips = 0; }   // 页刚打开：重新同步一次 | page just opened: resync once
+    if (!was_open) { was_open = 1; dm_wref_set(&seen, 0); logged_missing = 0; flips = 0; logged_order = 0; dm_wref_set(&life_seen, 0); }   // 页刚打开：重新同步一次 | page just opened: resync once
     load_once();
-    uint64_t row = find_w(sp, "TouchCustom_RowShowFps", 1);
-    if (!row) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页里没找到 TouchCustom_RowShowFps 行（布局补丁没进包，或面板把整行删了？）"); } return; }
-    {   // 原版面板会把不认识的表行整行隐藏（自定义页当年实测）：这行 / 文字 / 勾选框都是我们的 Touch 控件，每帧强制可见（只在变化时写） | the original panel hides unknown table rows (measured on the custom page years ago): the row / text / checkbox are all our Touch widgets, force them visible every frame (write only on change)
-      int was = *(uint8_t *)(row + 0x50);
-      dm_ui_show_ours(row, 1);
-      uint64_t txt = find_w(row, "TouchCustom_ShowFpsText", 1); if (txt) dm_ui_show_ours(txt, 1);
-      if (!was) { static int rlg; if (!rlg) { rlg = 1; LOG("显示帧率：设置页行原先被原版面板隐藏（+0x50=0），已强制显示"); } } }
+    // 新布局：帧率行沿用原版的 Row ShowManaOrbText 行名（面板认识 → 占行高 / 重排）；65.1 旧包回退到旧行名，行为不变
+    // new layout: the frame-rate row keeps the original Row ShowManaOrbText name (known to the panel -> row height / re-layout); the old
+    // 65.1 package falls back to the old row name, same behaviour
+    uint64_t row = find_w(sp, "Row ShowManaOrbText", 1);
+    if (!row) row = find_w(sp, "TouchCustom_RowShowFps", 1);
+    if (!row) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页里没找到帧率行（Row ShowManaOrbText / TouchCustom_RowShowFps），布局补丁没进包？"); } return; }
+    if (!*(uint8_t *)(row + 0x50)) { static int hlog; if (!hlog) { hlog = 1; LOG("【红】显示帧率：帧率行被原版面板隐藏（+0x50=0）——行名不是它认识的表行？控件仍会强制显示但整行可能不显示"); } }
+    {   // 原版面板会把不认识的表行整行隐藏（自定义页当年实测）：帧率行的文字 / 勾选框是我们的 Touch 控件，每帧强制可见（只在变化时写） | the original panel hides unknown table rows (measured on the custom page): the frame-rate row's text / checkbox are our Touch widgets, force them visible every frame (write only on change)
+      uint64_t txt = find_w(row, "TouchCustom_ShowFpsText", 1); if (txt) dm_ui_show_ours(txt, 1); }
     uint64_t w = find_w(row, "TouchCustom_show_fps", 1);
-    if (!w) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页行里没找到 TouchCustom_show_fps（布局补丁没生效？）"); } return; }
+    if (!w) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：帧率行里没找到 TouchCustom_show_fps（布局补丁没生效？）"); } return; }
     dm_ui_show_ours(w, 1);
+    // 用户界面分区最终可见顺序（T36）：三行都在才打一次，真机核对用 | final visible order of the User Interface section (T36): logged once when all three rows exist, for real-device checks
+    if (!logged_order) {
+        uint64_t lr = find_w(sp, "Row ShowLifeOrbText", 1), cr = find_w(sp, "Row SkillAmmoFeedback", 1), fr = find_w(sp, "Row ShowManaOrbText", 1);
+        if (lr && cr && fr) { logged_order = 1;
+            LOG("设置页用户界面分区可见开关顺序：显示生命&法力文本 → 显示技能上的弹药数量 → 显示帧率（合并后共三行；电量 / 时钟等原版行在本平台不显示）"); }
+    }
+    // 合并开关：生命球文本勾选一变，就替玩家把法力球文本一起翻过去（两项始终一致） | merged switch: whenever the life-orb-text checkbox changes, toggle the mana-orb-text setting for the player too (both always match)
+    uint64_t life = find_w(sp, "ShowLifeOrbText", 1);
+    if (life) {
+        if (dm_wref_get(&life_seen) != life) { dm_wref_set(&life_seen, life); life_prev = TOGGLED(life); }   // 控件重建 / 第一次看到：只记状态，不当作玩家点了 | widget rebuilt / first sight: record the state only, do not treat it as a player tap
+        else { int on = TOGGLED(life);
+            if (on != life_prev) { LOG("显示生命&法力文本：生命球文本 → %s，替玩家同步法力球文本", on ? "开" : "关");
+                dm_ui_send_queue("OptionsPanelMessage:SetShowManaOrbText"); life_prev = on; } }
+    }
     int val = atomic_load(&g_val[K_SHOW_FPS]);
     if (dm_wref_get(&seen) != w) {   // 页刚出现 / 控件重建：先摆成生效值，这一帧不当玩家点了 | page just appeared / widget rebuilt: lay it out from the effective value, do not treat this frame as a player tap
         dm_wref_set(&seen, w); set_toggle(w, val);
