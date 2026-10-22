@@ -296,7 +296,9 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                               : band == 0 ? [UIColor colorWithRed:.9 green:.2 blue:.15 alpha:1]
                                           : [UIColor whiteColor];
                 if (dm_hud_names_dim()) col = [col colorWithAlphaComponent:0.45];   // 菜单打开时变暗 | dimmed under menus
-                UIFont *f = dm_game_font(MAX(8, MIN(16, rr.size.height * 0.85))); if (!f) f = [UIFont systemFontOfSize:11];
+                // 本地改动（用户要求）：名字小一号——兜底路径字号同步 ×0.90（0.85 → 0.765）；游戏本体路径改的是 Name 控件 +0x80
+                // Local change (user request): names one size smaller -- the fallback path's font size is scaled by 0.90 too (0.85 -> 0.765); the native path scales the Name widget's +0x80 instead
+                UIFont *f = dm_game_font(MAX(8, MIN(16, rr.size.height * 0.765))); if (!f) f = [UIFont systemFontOfSize:11];
                 // 本地改动（T19；task-20 用户确认取消像素偏移）：名字首尾空白（含全角空格）再去一次；文本中心严格取头像矩形中心
                 // （宿主发布的 rect 就是头像槽矩形，中心 = 头像中心）。不做上下像素偏移。打一次限频布局日志（中心 / 文本宽）供真机核对。
                 // Local change (T19; task-20: the user asked to drop the pixel offset): trim the name's padding whitespace again

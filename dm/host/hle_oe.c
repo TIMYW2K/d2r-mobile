@@ -134,15 +134,19 @@ HLE_FORCE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", "前后台
 // 界面层与 Final Result 仍按输出尺寸（+0xee88 / +0xee8c）建，末端由游戏自己的放大着色器 ps_upsample_p 放回输出尺寸。
 // 启动流程不调 0x8582f0，所以要主动调一次；调用点必须是游戏主线程取系统通知处——游戏自己处理模式切换的同一上下文
 // （在出图 HLE 里调会自锁：渲染锁已被出图路径持有）。
-// 缺省：iOS 0.80（控制 3D GPU 负载与发热），Mac 宿主 1.0；DM_3D_SCALE=0.5–1.0 覆盖。
-// 例外（F1a）：性能模式「画质优先（强制）」档（q3d=2）把比例钉到 1.00 原生 —— 阴影边缘锯齿闪专项分析的结论是
-// 「默认 0.80 渲染再经 ps_upsample 放大」为主因；默认「流畅优先」与「画质优先」两档完全不变。DM_3D_SCALE 环境变量仍优先（测试用）。
-// Exception (F1a): performance mode "quality first (forced)" (q3d=2) pins the scale at 1.00 native -- the shadow-edge
-// crawl analysis concluded that the default 0.80 render upscaled by ps_upsample is the main cause; the default
-// "smoothness first" and the "quality first" tiers are unchanged. DM_3D_SCALE still wins (for testing).
+// 缺省（T30 实验）：iOS 1.00（接近原生像素）—— 阴影边缘锯齿闪专项分析的结论是「0.80 渲染 + ps_upsample 放大 + 无时域 AA」
+// 为主因，所以默认改成原生像素做对照；拉近公式保留但封顶 1.00。Mac 宿主 1.0；DM_3D_SCALE=0.5–1.0 覆盖（回退旧基准用 0.8）。
+// 性能模式三档：q3d=0 流畅优先 = 1.00 基准 + 掉帧动态降档（最低 0.8000）；q3d=1 画质优先 = 固定 1.00（过热仍可降）；
+// q3d=2 画质优先（强制）= 固定 1.00 + 忽略温控（F1a 保留）。DM_3D_SCALE 环境变量仍最优先（测试 / 回退用）。
+// Default (T30 experiment): iOS 1.00 (close to native pixels) -- the shadow-edge crawl analysis concluded that the
+// "0.80 render + ps_upsample + no temporal AA" chain is the main cause, so the default becomes native pixels for an A/B;
+// the zoom formula is kept but capped at 1.00. Mac host 1.0; DM_3D_SCALE=0.5-1.0 overrides (use 0.8 to roll back).
+// Performance modes: q3d=0 smoothness first = 1.00 baseline + dropped-frame tiers (floor 0.8000); q3d=1 quality first =
+// fixed 1.00 (thermal may still lower it); q3d=2 quality first (forced) = fixed 1.00 + ignores thermal (F1a kept).
+// DM_3D_SCALE still wins (for testing / rollback).
 // 视觉尺子真值阶段（DM_NVN_RULER=1 的 A / B）强制 1.0，切到被测模式后才生效。
 // 动态比例（系统降频看的是占用率，温控档位只是粗信号 → 按实际掉帧调）：控制器吃出图线程报来的实际上屏间隔
-// （与 perf.txt 同源）；iOS 动态档位按 0.80 基准下调，默认下限 0.64。规则见 scale3d_ctl_step。
+// （与 perf.txt 同源）；iOS 动态档位从 1.00 基准按下表逐档降，默认下限 0.8000。规则见 scale3d_ctl_step。
 // 开关：DM_3D_SCALE_DYN=0 关；DM_THERMAL_NOFALLBACK=1（功耗 / 帧时间测量）也关——测量时比例必须钉住。
 // DM_3D_SCALE_DYN_INJECT=帧起-帧止（按 dm_nvn_frame_count 计）：诊断，这段帧里把喂给控制器的间隔一律当两个周期（掉帧），段外当一个周期
 // （Mac 上没有上屏时刻，用它验降级 / 回升的整条链）。只在局内生效（不在局内不判），满 10 秒（5 窗）降第一档。
@@ -153,19 +157,24 @@ HLE_FORCE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", "前后台
 // while the UI layer and Final Result are still built at the output size (+0xee88 / +0xee8c), and at the end the game's own upscale shader ps_upsample_p scales back to the output size.
 // The startup flow does not call 0x8582f0, so it must be called once proactively; the call site must be where the game main thread fetches system notifications, the same context in which the game itself handles mode switches
 // (calling it inside the present HLE self-deadlocks: the render lock is already held by the present path).
-// Default: iOS 0.80 (limits 3D GPU load and heat), Mac host 1.0; DM_3D_SCALE=0.5–1.0 overrides.
+// Default (T30): iOS 1.00 native (shadow-edge crawl experiment; DM_3D_SCALE=0.8 rolls back), Mac host 1.0; DM_3D_SCALE=0.5–1.0 overrides.
 // During the visual ruler ground-truth phase (A / B of DM_NVN_RULER=1) it is forced to 1.0 and takes effect only after switching to the mode under test.
 // Dynamic scale (system throttling looks at utilization and the thermal level is only a coarse signal → adjust by actual dropped frames): the controller consumes the actual present intervals reported by the present thread
-// (same source as perf.txt); iOS dynamic levels step down from 0.80, with a default 0.64 floor. Rules: see scale3d_ctl_step.
+// (same source as perf.txt); iOS dynamic levels now step down from the 1.00 baseline (0.9333/0.8667/0.8000/0.7333/0.6667), with a default 0.8000 floor. Rules: see scale3d_ctl_step.
 // Switches: DM_3D_SCALE_DYN=0 disables it; DM_THERMAL_NOFALLBACK=1 (power / frame-time measurement) also disables it, since the scale must be pinned during measurement.
 // DM_3D_SCALE_DYN_INJECT=start frame-end frame (counted by dm_nvn_frame_count): diagnostics; within that frame range every interval fed to the controller is treated as two periods (dropped), outside it as one period
 // (the Mac has no present timestamps, so this verifies the whole downgrade / recovery chain). Active only in-game (no judging outside a game); the first level drops after a full 10 s (5 windows).
 #include <TargetConditionals.h>
-// 3D 比例的档位表：iOS 基准为 0.80，动态档与默认下限按同一比例调整以控制负载；Mac 对照档不变。
-// 3D scale tiers: the iOS baseline is 0.80; dynamic tiers and the default floor scale with it to control load; Mac comparison tiers stay unchanged.
+// 3D 比例的档位表（T30）：iOS 基准 1.00（原生像素），动态档与默认下限按旧 0.80 基准的同一比例 ×1.25 换算 ——
+// 旧表 {0.7467, 0.6933, 0.6400, 0.5867, 0.5333} ×1.25 = {0.9333, 0.8667, 0.8000, 0.7333, 0.6667}，下限 0.8000（仍是基准 80%）；
+// 温控 serious = 第 3 档 0.8000、critical = 第 4 档 0.7333。Mac 对照档不变。
+// 3D scale tiers (T30): the iOS baseline is 1.00 native, so the dynamic tiers and default floor are the old
+// 0.80-baseline values x1.25 -- {0.7467,0.6933,0.6400,0.5867,0.5333} x1.25 = {0.9333,0.8667,0.8000,0.7333,0.6667},
+// floor 0.8000 (still 80% of the baseline); thermal serious = level 3 (0.8000), critical = level 4 (0.7333).
+// Mac comparison tiers stay unchanged.
 #if TARGET_OS_IPHONE
-static const float g_s3_levels[] = {0.7467f, 0.6933f, 0.6400f, 0.5867f, 0.5333f};
-#define S3_FLOOR_DEF 0.6400f
+static const float g_s3_levels[] = {0.9333f, 0.8667f, 0.8000f, 0.7333f, 0.6667f};
+#define S3_FLOOR_DEF 0.8000f
 #else
 static const float g_s3_levels[] = {0.70f, 0.65f, 0.60f, 0.55f, 0.50f};
 #define S3_FLOOR_DEF 0.60f
@@ -231,7 +240,14 @@ void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_per
         if (j) { inj0 = atol(j); inj1 = strchr(j, '-') ? atol(strchr(j, '-') + 1) : inj0; }
         const char *fe = getenv("DM_3D_SCALE_FLOOR"); float fl = fe ? strtof(fe, NULL) : S3_FLOOR_DEF;   // 下限：档位表里不低于它的最深一档 | Floor: the deepest level in the level table that is not below it
         for (int k = 0; k < S3_NLV; k++) if (g_s3_levels[k] >= fl - 1e-4f) c.max_level = k + 1;
-        LOG("3D 比例控制：%s，下限 %.2f（第 %d 档）", on ? "开" : "关", c.max_level ? g_s3_levels[c.max_level - 1] : 0.0f, c.max_level); }
+#if TARGET_OS_IPHONE
+        LOG("3D 比例控制：%s，iOS 基准 1.00（原生像素），下限 %.4f（第 %d 档）", on ? "开" : "关", c.max_level ? g_s3_levels[c.max_level - 1] : 0.0f, c.max_level);
+        LOG("3D 比例控制：动态档位 %.4f / %.4f / %.4f / %.4f / %.4f（温控 serious=第 3 档 = 0.8000、critical=第 4 档 = 0.7333）",
+            g_s3_levels[0], g_s3_levels[1], g_s3_levels[2], g_s3_levels[3], g_s3_levels[4]);
+#else
+        LOG("3D 比例控制：%s，Mac 基准 1.00，下限 %.4f（第 %d 档）", on ? "开" : "关", c.max_level ? g_s3_levels[c.max_level - 1] : 0.0f, c.max_level);
+#endif
+        }
     if (!on) return;
     if (atomic_load(&g_3d_quality_mode) >= 1) { if (c.level) { c.level = 0; LOG("3D 比例控制：画质优先（含强制），回到配置值"); } atomic_store(&g_scale3d_level, 0); return; }
     uint64_t now = now_ns();
@@ -265,36 +281,35 @@ static void scale3d_tick(void) {
         if (end == e || *end || !(v >= 0.5f && v <= 1.0f)) die("DM_3D_SCALE 非法：%s（要求 0.5–1.0）", e);
         want_cfg = v;   // 测试环境变量优先（强制档也照它，便于对照） | the test env var wins (also in forced mode, for A/B)
     } else if (force_q) {
-        // F1a：画质优先（强制）档把 3D 渲染比例钉在 1.00 原生 —— 默认 0.80 渲染再经 ps_upsample 放大是阴影边缘锯齿闪的主因
-        // （阴影专项分析 8.2 节）。掉帧控制器对 mode>=1 已在 dm_3d_scale_feed 里直接回配置值、温控下限也被 forced 跳过，
-        // 所以这里只改基准值并保证重建一次（下面 force_applied）。
-        // F1a: in forced-quality mode pin the 3D render scale at 1.00 native -- the default 0.80 render upscaled by
-        // ps_upsample is the main cause of the shadow-edge crawl (analysis section 8.2). The dropped-frame controller
-        // already snaps back to the configured value for mode >= 1 in dm_3d_scale_feed and the thermal floor is skipped
-        // when forced, so only the base value changes here, plus one guaranteed rebuild (force_applied below).
+        // F1a（T30 后基准已是 1.00，本档保留「强制」语义）：q3d=2 固定 1.00 原生 + 忽略温控降档 —— 掉帧控制器对
+        // mode>=1 已在 dm_3d_scale_feed 里直接回配置值、温控下限也被 forced 跳过，所以这里只把基准钉成 1.00。
+        // F1a (the T30 baseline is already 1.00; this tier keeps the "forced" semantics): q3d=2 pins 1.00 native and
+        // ignores the thermal downgrade -- the dropped-frame controller already snaps back to the configured value for
+        // mode >= 1 in dm_3d_scale_feed and the thermal floor is skipped when forced.
         want_cfg = 1.0f;
         if (!force_logged) { force_logged = 1; LOG("3D 比例控制：画质优先（强制）→ 固定 1.00（原生分辨率）"); }
     } else {
 #if TARGET_OS_IPHONE
-        // 本地改动：没有拉近镜头时（原始视野 1.0），3D 分辨率为原生分辨率 0.80，减少手机发烫；
-        // 放大镜头时（拉近视野 0.80，画面放大 1.25x），3D 分辨率提到原生 1.00 —— 放大后仍完全清晰。
-        // Local change: 0.80 native when not zoomed in (less heat); a full 1.00 when zoomed in, so the
-        // 1.25x magnified close-up stays perfectly sharp.
-        // 本地改动：3D 渲染比例跟随视野**连续**变化 —— 最远(1.00) 用原生 0.80 省电降温，
-        // 最近(0.80) 用原生 1.00 保证特写清晰；中间线性过渡。
-        // Local change: the 3D render scale follows the view extent continuously -- 0.80 native at the widest
-        // view (less heat) up to 1.00 native at the closest view (sharp close-up), linear in between.
+        // T30 实验：3D 渲染倍率基准 0.80 → 1.00（接近原生像素），拉近公式保留但封顶 1.00。
+        // 旧行为（0.80 基准、0.80+(1-z)*0.5 → 0.80~0.90）是省电降温手段；阴影边缘锯齿闪专项分析认为
+        // 「0.80 渲染 + ps_upsample 放大 + 无时域 AA」是主因，所以默认改成原生像素做对照。
+        // 回退：DM_3D_SCALE=0.8（环境变量最优先，行为约等于旧基准）。
+        // T30 experiment: the iOS 3D render baseline goes 0.80 -> 1.00 (close to native pixels); the zoom formula is
+        // kept but capped at 1.00. The old behaviour (0.80 baseline, 0.80+(1-z)*0.5 -> 0.80..0.90) was a heat measure;
+        // the shadow-edge crawl analysis points at "0.80 render + ps_upsample + no temporal AA" as the main cause, so the
+        // default becomes native pixels for the A/B. Rollback: DM_3D_SCALE=0.8 (the env var wins; roughly the old baseline).
         { float z = dm_cam_zoom_factor(); if (z > 1.0f) z = 1.0f; if (z < 0.80f) z = 0.80f;
-          want_cfg = 0.80f + (1.0f - z) * 0.5f; }   // 拉近时 0.90（原来 1.00；降 19% 像素换来明显降温）
+          want_cfg = 1.00f + (1.0f - z) * 0.5f;   // 基准 1.00：原 0.80+(1-z)*0.5 随基准上调 | baseline 1.00 (the old formula shifted up by 0.20)
+          if (want_cfg > 1.0f) want_cfg = 1.0f; }   // 拉近也不能超过原生像素：封顶 1.00 | never exceed native pixels: cap at 1.00
 #else
         want_cfg = 1.0f;
 #endif
     }
     int lv = force_q ? 0 : atomic_load(&g_scale3d_level);   // 动态档：0 = 配置值，k = g_s3_levels[k − 1]（都不高于配置值）；强制档忽略动态档 | Dynamic level: 0 = configured value, k = g_s3_levels[k - 1] (never above the configured value); forced mode ignores it
-    // 本地改动：温控下限档（T8，无 UI）——严重（1）不低于第 3 档（0.64）、危急（2）不低于第 4 档（0.59）；只更深不更浅，
+    // 本地改动：温控下限档（T8，无 UI）——严重（1）不低于第 3 档（0.8000）、危急（2）不低于第 4 档（0.7333）；只更深不更浅，
     // 温控解除后交回掉帧控制器的档位。帧率上限由 dm_custom.c 的 dm_fps_setting 同步生效（30）。
-    // Local change: thermal floor (T8, no UI) -- serious (1) is at least level 3 (0.64), critical (2) at least level 4
-    // (0.59); only deeper, never shallower, and after recovery the dropped-frame controller's level takes over again. The
+    // Local change: thermal floor (T8, no UI) -- serious (1) is at least level 3 (0.8000), critical (2) at least level 4
+    // (0.7333); only deeper, never shallower, and after recovery the dropped-frame controller's level takes over again. The
     // frame-rate cap (30) takes effect in dm_fps_setting in dm_custom.c at the same time.
     { int tl = dm_perf_thermal_level(), tf = force_q ? 0 : tl >= 2 ? 4 : tl == 1 ? 3 : 0;   // force_q 在外层（F1a） | force_q comes from the outer scope (F1a)
       if (tf > lv) lv = tf;   // 强制画质（q3d=2）：不做温控下限 | forced quality (q3d=2): no thermal floor
@@ -307,8 +322,7 @@ static void scale3d_tick(void) {
     float want = dm_nvn_ruler_truth() ? 1.0f : dyn;
     if (!(want >= 0.5f)) want = 0.5f;   // 兜底：非法值钳回下限 | safety: clamp an invalid value to the lower bound
     { static int lg; if (want > 1.0f) { if (!lg++) LOG("3D 比例控制：比例 %.3f 超过 1.00 → 钳到原生 1.00", want); want = 1.0f; } }
-    static int force_applied;   // 强制档已按 1.00 重建过一次（cur 初值就是 1.00，不置位会被 want==cur 提前返回而错过重建） | forced mode already rebuilt at 1.00 (cur starts at 1.00; without this the want==cur early return would skip the rebuild)
-    if (!force_q) force_applied = 0;
+    static int applied_once;   // 基准是否真的落地过一次：cur 初值就是 1.00，首拍 want==cur 会跳过重建（T30 基准 1.00 也靠它保证至少应用/记一次） | whether the baseline has actually been applied once: cur starts at 1.00 so the first tick's want==cur would skip the rebuild (also guarantees one apply/log for the T30 1.00 baseline)
     if (!main || dm_nvn_frame_count() < 30) return;
     uintptr_t renderer = *(uintptr_t *)(main->base + 0x31e0848); if (!renderer) return;
     uint32_t ow = *(uint32_t *)(renderer + 0xee88), oh = *(uint32_t *)(renderer + 0xee8c); if (!ow || !oh) return;
@@ -321,12 +335,11 @@ static void scale3d_tick(void) {
       if ((float)ow * mx > lim) mx = lim / (float)ow;
       if ((float)oh * mx > lim) mx = lim / (float)oh;
       if (want > mx) { LOG("3D 比例控制：%.2f 会让 3D 目标超过纹理上限 16384（输出 %ux%u）→ 钳到 %.3f", want, ow, oh, mx); want = mx; } }
-    if (want == cur && !(force_q && !force_applied)) return;   // 钳制后再比，避免「钳到上限后每拍都重建」 | compare after clamping so a clamped value does not rebuild every tick
+    if (want == cur && applied_once) return;   // 钳制后再比，避免「钳到上限后每拍都重建」；首拍即使相等也重建一次让基准落地 | compare after clamping so a clamped value does not rebuild every tick; the first tick rebuilds even when equal so the baseline really lands
     { extern void mtl_rt_force_full(int) __attribute__((weak)); if (mtl_rt_force_full) mtl_rt_force_full(4); }   // 运行时外推：换比例前后几帧一律全画（主通道换尺寸那帧不能外推） | runtime extrapolation: the few frames before and after a scale change are all drawn in full (the frame where the main pass changes size cannot be extrapolated)
     float *scale = (float *)(renderer + 0x66a4); dm_guest_write_prepare(scale, sizeof *scale); *scale = want;
     ((void (*)(uint32_t, uint32_t))(main->base + 0x8582f0))(ow, oh);
-    cur = want; atomic_store(&g_scale3d_cur, want);
-    if (force_q) force_applied = 1;   // dm_3d_scale_cur() 随 g_scale3d_cur 变为 1.00 | dm_3d_scale_cur() follows g_scale3d_cur to 1.00
+    cur = want; atomic_store(&g_scale3d_cur, want); applied_once = 1;   // dm_3d_scale_cur() 反映实际比例 | dm_3d_scale_cur() reflects the applied scale
     LOG("3D 渲染比例 %.2f%s：3D 目标 %ux%u，输出 %ux%u（帧 %llu，镜头视野 %.2f）", want, force_q ? "（画质优先（强制）档：原生）" : "", *(uint32_t *)(renderer + 0xee78), *(uint32_t *)(renderer + 0xee7c),
         *(uint32_t *)(renderer + 0xee88), *(uint32_t *)(renderer + 0xee8c), (unsigned long long)dm_nvn_frame_count(), (double)dm_cam_zoom_factor());
 }
