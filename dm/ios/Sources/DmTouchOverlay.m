@@ -62,7 +62,7 @@ static dm_ta_glyph shown_glyph(const dm_tg_snapshot *n, uint64_t button, uint64_
     return g;
 }
 @implementation DmTouchOverlay {
-    UIImage *_circle, *_socketV[6], *_socket, *_map, *_menu, *_nativeAtlases[DM_TA_ATLASES], *_silAtlases[DM_TA_ATLASES];   // _sil：同帧位的银色剪影图集（gen_hud_v4.py） | _sil: silver silhouette atlas at the same frame positions (gen_hud_v4.py)
+    UIImage *_circle, *_socketV[6], *_socket, *_map, *_menu, *_portalCapsule, *_nativeAtlases[DM_TA_ATLASES], *_silAtlases[DM_TA_ATLASES];   // _sil：同帧位的银色剪影图集（gen_hud_v4.py） | _sil: silver silhouette atlas at the same frame positions (gen_hud_v4.py)
     NSMutableDictionary<NSString *,UIImage *> *_glyphFrames, *_buttonFrames;
     dm_ta_glyph _nativeVisualGlyphs[5];
 }
@@ -78,6 +78,7 @@ static dm_ta_glyph shown_glyph(const dm_tg_snapshot *n, uint64_t button, uint64_
     _socketV[0]=_socket;
     for(int vi=1;vi<6;vi++) { _socketV[vi]=[UIImage imageNamed:[NSString stringWithFormat:@"dm_mobile_socket_%d",vi]];
         if(!_socketV[vi]) _socketV[vi]=_socket; }
+    _portalCapsule=[UIImage imageNamed:@"portal_capsule"];
     _map=[UIImage imageNamed:@"dm_native_map"]; _menu=[UIImage imageNamed:@"dm_native_menu"];
     _glyphFrames=[NSMutableDictionary dictionary]; _buttonFrames=[NSMutableDictionary dictionary];
     for(int i=0;i<DM_TA_ATLASES;i++) _nativeAtlases[i]=[UIImage imageNamed:[NSString stringWithUTF8String:dm_ta_atlases[i].asset]];
@@ -275,20 +276,25 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             UIBezierPath *face = [UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:ri];
             UIBezierPath *outerPath = [UIBezierPath bezierPathWithRoundedRect:outer cornerRadius:ro];
             UIBezierPath *band = (UIBezierPath *)[outerPath copy];
-            [band appendPath:[face bezierPathByReversingPath]];         // 只留 5 点环带；内胶囊画面板，不再挖空 | only the 5 pt band; the inner capsule gets a face instead of a hole
-            CGContextSaveGState(c);
-            CGContextSaveGState(c); [face addClip];                     // ① 面板：圆钮同款深色渐变，填满内胶囊 | (1) face: same dark gradient as the round buttons, fills the inner capsule
-            const CGFloat well[] = {.021,.021,.021,0.94, .050,.050,.050,0.94};
-            dm_button_gradient(c, inner, well, 2);
-            CGContextRestoreGState(c);
-            CGContextSaveGState(c); [band addClip];                     // ② 金属环带：贴 _socketV[0]，环宽在四周都正好 5 点 | (2) metal band: the _socketV[0] texture exactly in the 5 pt band
-            [self->_socketV[0] drawInRect:outer];
-            CGContextRestoreGState(c);
-            CGContextSetRGBStrokeColor(c,.008,.012,.015,.90);           // 铁边外沿，与圆钮外描边一致 | iron outer edge, like the round buttons' outer stroke
-            CGContextSetLineWidth(c,1.2); [outerPath stroke];
-            CGContextSetRGBStrokeColor(c,.26,.29,.28,.55);              // 面板细边，与圆钮 face 描边一致 | face hairline, like the round buttons' face stroke
-            CGContextSetLineWidth(c,1.0); [face stroke];
-            CGContextRestoreGState(c);
+            [band appendPath:[face bezierPathByReversingPath]];
+            if (self->_portalCapsule) {
+                // The bundled capsule art already contains the metal ring and the dark face.
+                [self->_portalCapsule drawInRect:outer];
+            } else {         // 只留 5 点环带；内胶囊画面板，不再挖空 | only the 5 pt band; the inner capsule gets a face instead of a hole
+                CGContextSaveGState(c);
+                CGContextSaveGState(c); [face addClip];                     // ① 面板：圆钮同款深色渐变，填满内胶囊 | (1) face: same dark gradient as the round buttons, fills the inner capsule
+                const CGFloat well[] = {.021,.021,.021,0.94, .050,.050,.050,0.94};
+                dm_button_gradient(c, inner, well, 2);
+                CGContextRestoreGState(c);
+                CGContextSaveGState(c); [band addClip];                     // ② 金属环带：贴 _socketV[0]，环宽在四周都正好 5 点 | (2) metal band: the _socketV[0] texture exactly in the 5 pt band
+                [self->_socketV[0] drawInRect:outer];
+                CGContextRestoreGState(c);
+                CGContextSetRGBStrokeColor(c,.008,.012,.015,.90);           // 铁边外沿，与圆钮外描边一致 | iron outer edge, like the round buttons' outer stroke
+                CGContextSetLineWidth(c,1.2); [outerPath stroke];
+                CGContextSetRGBStrokeColor(c,.26,.29,.28,.55);              // 面板细边，与圆钮 face 描边一致 | face hairline, like the round buttons' face stroke
+                CGContextSetLineWidth(c,1.0); [face stroke];
+                CGContextRestoreGState(c);
+            }
         }
     }
 
