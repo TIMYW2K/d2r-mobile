@@ -998,21 +998,22 @@ def _tooltip_pad(s):
     b = '"showDelayMilliseconds": 400,'
     if s.count(b) != 1: raise SystemExit('touch_layout：说明框 showDelayMilliseconds 不是原样（原版布局变了？）')
     return s.replace(b, '"showDelayMilliseconds": 0,'), 2
-# ---------- T36/T37/T41（65.1 / 67.1 实测反馈）：设置页行布局 / 拖动高亮 / 角色页标题字体 ----------
-# A. 设置 → 游戏 → 用户界面（T41 = 用户选的方案 B：这一分区只留「显示技能上的弹药数量」「显示帧率」两行）：
+# ---------- T36/T37/T42（65.1 / 67.1 / 70.1 实测反馈）：设置页行布局 / 拖动高亮 / 角色页标题字体 ----------
+# A. 设置 → 游戏 → 用户界面（T41 = 用户选的方案 B，已被 T42 方案 C 取代：这一分区只留「显示技能上的弹药数量」「显示帧率」两行）：
 #    · 生命球文本行整行删掉（不留空行、不错位）；法力球文本行改成「显示帧率」行（行名保留 Row ShowManaOrbText）。
-#    · 67.1 帧率行看不见的根因：面板是按原版选项（行里的原版子控件名 + OptionsPanelMessage:Set<选项> 消息）认行并排版的；
-#      T36 把行里的控件名 / 消息全换成我们自己的，面板不认这行 → 整行隐藏，宿主只强制子控件可见救不回来。
-#      修法：帧率行里保留原版 ShowManaOrbText 开关作「隐藏锚」（控件名、onClickMessage 原样，只把 rect 挪到屏外 x=-99999），
-#      文字框保留原名 ShowManaOrbTextText、只把 text 换成 @OptionsMenuSettingShowFrameRate；同一行再挂一个**可见**的
-#      TouchCustom_show_fps（复制原开关的 rect / frame / focus 字段，消息仍是 PanelManager:ClosePanel:TouchCustom_show_fps）。
-#      面板因此把这行当 mana 选项行正常排版；宿主每帧强制我们的开关可见并处理点击（dm_custom.c）。
-#    · 生命球文本的开关同样留成隐藏锚（名字 / 消息原样、rect 挪到屏外）放进这一行：宿主每帧读两个锚的勾选状态（+0xa88），
+#    · 67.1 帧率行看不见的根因：面板按原版选项（行里的原版子控件名）认行并排版；
+#      T36 把行里的控件名换成我们自己的，面板不认这行 → 整行隐藏，宿主只强制子控件可见救不回来。
+#    · 68.1 的修法（方案 B）在行里塞了 4 个子控件（文字框 + 2 个隐藏锚 + 可见开关），但原版 TableRowWidget 按表格列数（2 列）
+#      排版：子控件数 > 列数时整行跳过排版、行高算成 0 → 真机上这行仍然错位 / 看不见。T42 改成方案 C：
+#      帧率行只留 2 个子控件（文字框 + 原版 ShowManaOrbText 开关本身），名字 / rect / 位置都和原版一样，只把 onClickMessage
+#      换成空操作 PanelManager:ClosePanel:TouchCustom_show_fps，宿主把这颗开关当帧率勾选框用（不再另插可见控件）。
+#    · 两颗原版球文本开关留成屏外隐藏锚（名字 / 消息原样，rect x=-99999），放到面板根 children 的最前面：
+#      面板按名字找控件时先找到锚 → 选项绑在锚上，行里那颗同名开关不会被面板重置；宿主读锚的勾选状态（+0xa88），
 #      为关就发 OptionsPanelMessage:SetShowLifeOrbText / SetShowManaOrbText（每项最多 2 次、发后隔 10 帧读回确认），
 #      把生命 / 法力球文本强制为常开（这两项不再出现在界面上；游戏默认就是开）。
 #    · 最终可见顺序（本平台）：Row SkillAmmoFeedback（原版行，内容不动）→ 帧率行；Row ShowClock 原样保留（本平台不显示）。
-#    · 校验：Row ShowLifeOrbText 0 处、Row SkillAmmoFeedback / Row ShowManaOrbText 各 1 处且顺序正确、两个隐藏锚都在、
-#      可见开关恰好 1 个、旧合并文案 / 旧插行名不再出现。
+#    · 校验：Row ShowLifeOrbText 0 处、Row SkillAmmoFeedback / Row ShowManaOrbText 各 1 处且顺序正确、帧率行恰好 2 个直接子控件、
+#      两颗隐藏锚在面板根且顺序在 ScrollBarBackground 之前、旧合并文案 / 旧插行名 / TouchCustom_show_fps 不再出现。
 # B. 拖动时的条状高亮：CarouselWidget（「显示物品长按」那条）与 SettingsSliderWidget（音量/音效滑条）的
 #    focusIndicator*（Carousel_Hover / Slider_Hover，拖动时那条高亮）会画到头部页签上方；玩家不需要它。
 #    只去掉这两类控件的 focusIndicatorFilename/Padding/Offset，开关 / 按钮的焦点框不动（不误伤其它 focus 框）。
@@ -1021,26 +1022,30 @@ def _tooltip_pad(s):
 #    而同一块里的数值 AttackDamageStat/AttackRatingStat 是 $MediumPanelFontSize（无 fontFace）→ 标题字体、字号都与数值行不一致。
 #    改成与同一块数值一致：去掉 fontFace、pointSize 用 $MediumPanelFontSize（4 处全覆盖，altStyle 一起改）。
 #    Controller/xtouch 那份 4 处标题本来就是 $XMediumFontSize（与同一块数值相同、没有 Formal），只校验不写。
-# A. Settings > Game > User Interface (T41 = scheme B chosen by the user: this section keeps only 「Show Skill Ammo Feedback」and
+# A. Settings > Game > User Interface (T41 = scheme B chosen by the user, superseded by T42 scheme C: this section keeps only
+#    「Show Skill Ammo Feedback」and
 #    「Show Frame Rate」).
 #    The life-orb-text row is deleted whole (no empty row / no misalignment); the mana-orb-text row becomes the frame-rate row
 #    (row name kept: Row ShowManaOrbText).
-#    Why the frame-rate row was invisible in 67.1: the panel recognises and lays out rows by the original option fingerprint inside
-#    them (original child widget names + an OptionsPanelMessage:Set<option> message). T36 renamed both, so the panel did not recognise
-#    the row and hid it; forcing the children visible from the host cannot bring a hidden row back.
-#    Fix: the frame-rate row keeps the original ShowManaOrbText toggle as a hidden anchor (name and onClickMessage untouched, only its
-#    rect moved off screen, x=-99999); the text box keeps its original name ShowManaOrbTextText and only its text becomes
-#    @OptionsMenuSettingShowFrameRate; the same row also gets a visible TouchCustom_show_fps (copy of the original toggle's
-#    rect / frame / focus fields, message still PanelManager:ClosePanel:TouchCustom_show_fps). The panel therefore treats the row as
-#    the mana option row and lays it out normally, and the host forces our toggle visible / handles its taps every frame (dm_custom.c).
-#    The life-orb-text toggle is kept as a second hidden anchor (name / message untouched, rect moved off screen) in the same row: the
-#    host reads both anchors' checked state (+0xa88) every frame and, when one is off, sends OptionsPanelMessage:SetShowLifeOrbText /
-#    SetShowManaOrbText (at most 2 tries per item, re-read 10 frames after each) to force both orb texts on. These two options no longer
-#    appear in the UI (the game defaults them on).
-#    Final visible order on this platform: Row SkillAmmoFeedback (original row, contents untouched) -> frame-rate row; Row ShowClock is
-#    left exactly as it was (not shown on this platform).
-#    Checks: Row ShowLifeOrbText zero times, Row SkillAmmoFeedback / Row ShowManaOrbText exactly once and in that order, both hidden
-#    anchors present, exactly one visible toggle, the old merged label / old inserted row name gone.
+#    Why the frame-rate row was invisible in 67.1: the panel recognises and lays out rows by the original child widget names inside
+#    them. T36 renamed them, so the panel did not recognise the row and hid it; forcing the children visible from the host cannot
+#    bring a hidden row back.
+#    Scheme B (68.1) put four children in the row (text box + two hidden anchors + a visible toggle), but the original TableRowWidget
+#    lays children out by the table's column count (two columns): when the child count exceeds the column count it skips the whole
+#    row layout and computes a zero row height, so on the device the row is still misplaced / invisible. T42 uses scheme C: the
+#    frame-rate row keeps exactly two children (the text box + the original ShowManaOrbText toggle itself), with the original
+#    name / rect / position; only onClickMessage becomes the no-op PanelManager:ClosePanel:TouchCustom_show_fps, and the host uses
+#    that toggle as the frame-rate checkbox (no extra visible widget).
+#    Both original orb-text toggles stay as off-screen hidden anchors (name / message untouched, rect x=-99999) placed at the very
+#    front of the panel root's children: the panel's name lookup finds the anchor first, so the option binds to the anchor and the
+#    same-named toggle inside the row is never reset by the panel; the host reads the anchors' checked state (+0xa88) every frame
+#    and, when one is off, sends OptionsPanelMessage:SetShowLifeOrbText / SetShowManaOrbText (at most 2 tries per item, re-read 10
+#    frames after each) to force both orb texts on. These two options no longer appear in the UI (the game defaults them on).
+#    Final visible order on this platform: Row SkillAmmoFeedback (original row, contents untouched) -> frame-rate row; Row ShowClock
+#    is left exactly as it was (not shown on this platform).
+#    Checks: Row ShowLifeOrbText zero times, Row SkillAmmoFeedback / Row ShowManaOrbText exactly once and in that order, the
+#    frame-rate row has exactly two direct children, both hidden anchors sit at the panel root before ScrollBarBackground, and the
+#    old merged label / old inserted row name / TouchCustom_show_fps are gone.
 # B. Drag-time bar highlight: the focusIndicator* of CarouselWidget (the 「display item names on hold」 one) and
 #    SettingsSliderWidget (volume / sound-effect sliders) -- the Carousel_Hover / Slider_Hover bar drawn on drag -- is painted above
 #    the header tabs and the player does not want it. Only those two widget types lose focusIndicatorFilename/Padding/Offset; the
@@ -1086,18 +1091,20 @@ def _drop_row_fields(block, keys):
     return block, n
 
 def _settings_rows_showfps(fn):
-    """T41（方案 B）：设置 → 游戏 → 用户界面 = 技能弹药数量（原行不动）→ 显示帧率（复用 mana 行 + 原版隐藏锚）。
+    """T42（方案 C）：设置 → 游戏 → 用户界面 = 技能弹药数量（原行不动）→ 显示帧率（复用 mana 行，行里只留 2 个控件）。
 
     - 删掉生命球文本行；把原版 ShowLifeOrbText / ShowManaOrbText 两个开关都留成隐藏锚（名字 / 消息原样，rect 挪出屏），
-      前者塞进帧率行，用来让宿主读状态并强制两项文本常开；
-    - 帧率行保留原版 mana 开关作锚（面板据此认行），文字框保留原名、text 换成显示帧率，另挂可见的 TouchCustom_show_fps；
+      放到面板根 children 最前面，让面板的按名查找先找到锚（选项绑在锚上，行里的同名开关不会被重置）；
+    - 帧率行 = 原版文字框（改名文字）+ 原版 mana 开关本身（名字 / rect 原样，onClickMessage 换成空操作），行里恰好 2 个子控件，
+      原版 TableRowWidget 按 2 列正常排版；
     - 帧率行排在技能弹药数量行之后。
-    | Scheme B for Settings > Game > User Interface: Show Skill Ammo Feedback (original row untouched) -> Show Frame Rate (the mana row
-      reused, with the original toggles kept as hidden anchors). The life-orb-text row is deleted; both original orb-text toggles stay as
-      hidden anchors (names and messages untouched, rect moved off screen), the life one inside the frame-rate row so that the host can
-      read their state and force both orb texts on. The frame-rate row keeps the original mana toggle as its anchor (so the panel
-      recognises the row), the text box keeps its original name with the text switched to Show Frame Rate, and a visible
-      TouchCustom_show_fps is added. The frame-rate row is ordered right after the skill-ammo row."""
+    | Scheme C for Settings > Game > User Interface: Show Skill Ammo Feedback (original row untouched) -> Show Frame Rate (the mana row
+      reused, with exactly two children). The life-orb-text row is deleted; both original orb-text toggles stay as hidden anchors (names
+      and messages untouched, rect moved off screen) at the very front of the panel root's children so the panel's name lookup finds the
+      anchors first (the option binds to the anchor, and the same-named toggle in the row is never reset). The frame-rate row is the
+      original text box (text switched to Show Frame Rate) plus the original mana toggle itself (name / rect untouched, onClickMessage
+      replaced with a no-op), exactly two children, so the original TableRowWidget lays it out with the normal two columns. The row is
+      ordered right after the skill-ammo row."""
     def g(text):
         text, n = fn(text)
         OFF = '"rect": { "x": -99999, "y": 0, "width": 1, "height": 1 }'
@@ -1120,6 +1127,7 @@ def _settings_rows_showfps(fn):
         if life_toggle.count('"rect": "$OptionsToggleRect"') != 1:
             raise SystemExit('touch_layout：生命球开关的 rect 不是 $OptionsToggleRect（原版布局变了？）')
         life_anchor = life_toggle.replace('"rect": "$OptionsToggleRect"', OFF)
+        life_ind = indent_of(life_row, ls)
         j = b
         while j < len(text) and text[j] in ' \t\r\n':
             j += 1
@@ -1128,7 +1136,7 @@ def _settings_rows_showfps(fn):
         text = text[:a] + text[j:]
         n += 2
 
-        # 2) 法力球文本行 → 显示帧率行
+        # 2) 法力球文本行 → 显示帧率行：只留文字框 + 原版开关（2 个子控件 = 表格 2 列）
         a, b = _row_span(text, 'ShowManaOrbText')
         blk = text[a:b]
         if blk.count('"text": "@OptionsMenuShowManaOrbText"') != 1:
@@ -1141,19 +1149,42 @@ def _settings_rows_showfps(fn):
             raise SystemExit('touch_layout：法力球开关的 rect 不是 $OptionsToggleRect（原版布局变了？）')
         if mana_toggle.count('"name": "ShowManaOrbText"') != 1 or mana_toggle.count('"onClickMessage": "OptionsPanelMessage:SetShowManaOrbText"') != 1:
             raise SystemExit('touch_layout：法力球开关的名字 / 消息不是原样（原版布局变了？）')
+        mana_ind = indent_of(blk, ms)
         anchor_mana = mana_toggle.replace('"rect": "$OptionsToggleRect"', OFF)
-        fps_toggle = mana_toggle.replace('"name": "ShowManaOrbText"', '"name": "TouchCustom_show_fps"').replace(
+        fps_toggle = mana_toggle.replace(
             '"onClickMessage": "OptionsPanelMessage:SetShowManaOrbText"', '"onClickMessage": "PanelManager:ClosePanel:TouchCustom_show_fps"')
-        ind = indent_of(blk, ms)
-        blk = blk[:ms] + anchor_mana + ',\n\n' + ind + fps_toggle + ',\n\n' + ind + life_anchor + blk[me:]
+        blk = blk[:ms] + fps_toggle + blk[me:]
         text = text[:a] + blk + text[b:]
-        n += 4
+        n += 2
 
-        # 3) 帧率行排到技能弹药数量行后面（可见顺序 = 技能弹药数量 → 显示帧率）
+        # 3) 两个隐藏锚放到面板根 children 最前面：面板按名字找控件时先找到锚（选项绑在锚上），行里那颗同名开关不会被重置。
+        #    Anchors go first at the panel root: the panel's name lookup finds them first (the option binds to the anchor), so the
+        #    same-named toggle inside the row is never reset by the panel.
+        root = re.search(r'"children"\s*:\s*\[', text)
+        if not root:
+            raise SystemExit('touch_layout：面板根没有 children（原版布局变了？）')
+        pos = root.end()
+        m = re.search(r'\n([ \t]*)\{', text[pos:])
+        if not m:
+            raise SystemExit('touch_layout：面板根子控件不是多行缩进格式（原版布局变了？）')
+        rind = m.group(1)
+
+        def at_root(block, old_ind):
+            lines = block.split('\n')
+            out = [lines[0]]
+            for line in lines[1:]:
+                out.append(rind + (line[len(old_ind):] if line.startswith(old_ind) else line.lstrip(' \t')))
+            return '\n'.join(out)
+
+        text = (text[:pos] + '\n' + rind + at_root(anchor_mana, mana_ind) + ',\n' + rind
+                + at_root(life_anchor, life_ind) + ',' + text[pos:])
+        n += 2
+
+        # 4) 帧率行排到技能弹药数量行后面（可见顺序 = 技能弹药数量 → 显示帧率）
         text = _move_row_after(text, 'ShowManaOrbText', 'SkillAmmoFeedback')
         n += 1
 
-        # 4) 校验
+        # 5) 校验
         if text.count('"name": "Row ShowLifeOrbText"') != 0:
             raise SystemExit('touch_layout：生命球文本行没删掉（应 0 处）')
         for nm in ('SkillAmmoFeedback', 'ShowManaOrbText', 'ShowClock'):
@@ -1169,14 +1200,29 @@ def _settings_rows_showfps(fn):
             raise SystemExit('touch_layout：帧率行的文字框应保留原名 ShowManaOrbTextText')
         if text.count('"text": "@OptionsMenuSettingShowFrameRate"') != 1:
             raise SystemExit('touch_layout：帧率文字没写上')
-        if text.count('"name": "TouchCustom_show_fps"') != 1:
-            raise SystemExit('touch_layout：可见的 TouchCustom_show_fps 应恰好 1 个')
-        if text.count('"name": "ShowManaOrbText"') != 1 or text.count('"name": "ShowLifeOrbText"') != 1:
-            raise SystemExit('touch_layout：两个隐藏锚应各恰好 1 个')
+        if text.count('"name": "TouchCustom_show_fps"') != 0:
+            raise SystemExit('touch_layout：方案 C 不再插可见的 TouchCustom_show_fps')
+        if text.count('"name": "ShowManaOrbText"') != 2:
+            raise SystemExit('touch_layout：ShowManaOrbText 应 2 处（面板根隐藏锚 + 行里可见开关）')
+        if text.count('"name": "ShowLifeOrbText"') != 1:
+            raise SystemExit('touch_layout：ShowLifeOrbText 隐藏锚应恰好 1 个')
         if text.count(OFF) != 2:
             raise SystemExit('touch_layout：两个隐藏锚的屏外 rect 应各 1 处（找到 %d）' % text.count(OFF))
-        if text.count('"rect": "$OptionsToggleRect"') < 1:
-            raise SystemExit('touch_layout：可见开关没放在原勾选框位置')
+        if text.count('"onClickMessage": "OptionsPanelMessage:SetShowManaOrbText"') != 1:
+            raise SystemExit('touch_layout：ShowManaOrbText 隐藏锚的原版消息应恰好 1 处')
+        ra, rb = _row_span(text, 'ShowManaOrbText')
+        row_blk = text[ra:rb]
+        if row_blk.count('"type":') != 3:   # 行自身 TableRowWidget + 2 个子控件 | the row itself + two children
+            raise SystemExit('touch_layout：帧率行应恰好 2 个直接子控件（原版表格 2 列）')
+        if row_blk.count('"rect": "$OptionsToggleRect"') != 1:
+            raise SystemExit('touch_layout：行里可见开关应恰好 1 个 $OptionsToggleRect')
+        if row_blk.count('"onClickMessage": "PanelManager:ClosePanel:TouchCustom_show_fps"') != 1:
+            raise SystemExit('touch_layout：可见开关的空操作消息应恰好 1 处')
+        a1 = text.index('"name": "ShowManaOrbText"')
+        a2 = text.index('"name": "ShowLifeOrbText"')
+        first = text.index('"name": "ScrollBarBackground"')
+        if not (a1 < a2 < first):
+            raise SystemExit('touch_layout：隐藏锚顺序不对（ShowManaOrbText / ShowLifeOrbText 应在 ScrollBarBackground 之前）')
         return text, n
     return g
 
@@ -1633,7 +1679,7 @@ PAD_ROOT = {
     # Of the controller settings only those confirmed effective in actual runs are restored: 「互换左右摇杆」(Swap Sticks) (when on, the left stick no longer walks and the right stick does); colorblind calibration (the controller can get in and out).
     # Not restored: vibration (the host does not support vibration; it is an empty implementation in hle_hid.c), controller feedback and cursor speed (the value changed but no effect was measured: in panels the controller cursor snaps cell by cell), separate binding for weapon swap (not verified)
     'gameplayoptionspanelhd.json': _hide_drag_highlight(_settings_rows_showfps(_drop_rows('AutoPartyInvite', 'ItemHotkeyTooltipAppender', 'ChatFontSize', 'ChatBackground', 'ShowParty', 'ShowNames', 'ShowRoomName', 'LowVisionMode',
-                                              'ControllerCursorSpeed', 'ControllerWeaponSwapSeparateBindings', 'ControllerRumbleEnabled'))),   # T41（方案 B）：技能弹药数量行不动 + 帧率行（复用 mana 行 + 原版隐藏锚）+ 高亮条去掉 | T41 (scheme B): skill-ammo row untouched + frame-rate row (mana row reused, original toggles kept as hidden anchors) + drop the highlight bar
+                                              'ControllerCursorSpeed', 'ControllerWeaponSwapSeparateBindings', 'ControllerRumbleEnabled'))),   # T42（方案 C）：技能弹药数量行不动 + 帧率行（复用 mana 行，行里只留 2 个控件，原版开关当勾选框）+ 高亮条去掉 | T42 (scheme C): skill-ammo row untouched + frame-rate row (mana row reused with exactly two children, original toggle as the checkbox) + drop the highlight bar
     'onlinegameoptionspanelhd.json': _drop_rows('OfflineDifficultyScaling', 'OfflineSettingsEffectNote'),
 }
 def build_pad_root(romfs, outdir):
@@ -1654,11 +1700,13 @@ def _row_height(fn):
 for _k in ('soundoptionspanelhd.json', 'gameplayoptionspanelhd.json', 'onlinegameoptionspanelhd.json'): PRESENT[_k] = _row_height(PRESENT[_k])
 
 
-# T41（方案 B）：设置 → 游戏 → 用户界面 = 技能弹药数量（原版行不动）→ 显示帧率（复用 mana 行 + 原版隐藏锚），
-# 生命球文本行整行删掉；两项球文本由宿主读隐藏锚的勾选状态并置开。布局变换全部在 _settings_rows_showfps 里做。
-# T41 (scheme B): Settings > Game > User Interface = Show Skill Ammo Feedback (original row untouched) -> Show Frame Rate (the mana
-# row reused, with the original toggles kept as hidden anchors); the life-orb-text row is deleted whole, and the host reads the
-# hidden anchors to force both orb texts on. All layout work happens in _settings_rows_showfps above.
+# T42（方案 C）：设置 → 游戏 → 用户界面 = 技能弹药数量（原版行不动）→ 显示帧率（复用 mana 行，行里只留 2 个控件），
+# 生命球文本行整行删掉；两颗原版开关留成面板根的屏外隐藏锚，两项球文本由宿主读锚的勾选状态并置开。
+# 布局变换全部在 _settings_rows_showfps 里做。
+# T42 (scheme C): Settings > Game > User Interface = Show Skill Ammo Feedback (original row untouched) -> Show Frame Rate (the mana
+# row reused, with exactly two children); the life-orb-text row is deleted whole, and the two original toggles are kept as off-screen
+# hidden anchors at the panel root. The host reads the anchors to force both orb texts on. All layout work happens in
+# _settings_rows_showfps above.
 PRESENT['gameplayoptionspanelhd.json'] = _hide_drag_highlight(_settings_rows_showfps(PRESENT['gameplayoptionspanelhd.json']))
 
 

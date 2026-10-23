@@ -55,7 +55,7 @@ assert len(defaults) == len(keys) and defaults[keys.index('touch_swap_above')] =
 assert 'TouchCustom_touch_swap_above_near' in host
 print('PASS touch layout options: generated radios (two-position switch + three-way performance mode), labels, defaults, host order and scrolling row extent')
 
-# ---- T36/T37/T41（65.1 / 67.1 实测）：设置页行布局 / 拖动高亮 / 角色页标题字体（合成布局文本，不依赖 RomFS） ----
+# ---- T36/T37/T42（65.1 / 67.1 / 70.1 实测）：设置页行布局 / 拖动高亮 / 角色页标题字体（合成布局文本，不依赖 RomFS） ----
 # t36/t37/t41: settings-page row layout / drag highlight / character-sheet title font (synthetic layout text, no RomFS needed)
 def _t41_row(name, body):
     return '{\n  "type": "TableRowWidget", "name": "Row %s",\n  "children": [ %s ]\n}' % (name, body)
@@ -72,7 +72,8 @@ _ammo = _t41_row('SkillAmmoFeedback',
 _clock = _t41_row('ShowClock',
                   '{ "type": "TextBoxWidget", "name": "ShowClockText", "fields": { "text": "@OptionsMenuShowClock" } },'
                   '{ "type": "ToggleButtonWidget", "name": "ShowClock", "fields": { "rect": "$OptionsToggleRect", "onClickMessage": "OptionsPanelMessage:SetShowClock" } }')
-_page = '{\n  "children": [\n    ' + _life + ',\n    ' + _mana + ',\n    ' + _ammo + ',\n    ' + _clock + '\n  ]\n}'
+_scroll = '{ "type": "ImageWidget", "name": "ScrollBarBackground", "fields": { "rect": "$OptionsScrollBarBackgroundRect" } }'
+_page = '{\n  "children": [\n    ' + _life + ',\n    ' + _mana + ',\n    ' + _ammo + ',\n    ' + _clock + ',\n    ' + _scroll + '\n  ]\n}'
 out, n = layout._settings_rows_showfps(lambda s: (s, 0))(_page)
 assert n >= 4, n
 # 生命球文本行整行删掉；可见顺序 = 技能弹药数量 → 显示帧率（时钟原样留在后面）
@@ -81,16 +82,20 @@ _i_ammo = out.index('"name": "Row SkillAmmoFeedback"')
 _i_fps = out.index('"name": "Row ShowManaOrbText"')
 _i_clock = out.index('"name": "Row ShowClock"')
 assert _i_ammo < _i_fps < _i_clock, (_i_ammo, _i_fps, _i_clock)
-# 帧率行：文字框保留原名、text 换显示帧率；两个原版开关留成屏外隐藏锚；可见的 TouchCustom_show_fps 在正常勾选框位置
+# 方案 C 帧率行：文字框保留原名、text 换显示帧率；原版 ShowManaOrbText 开关本身就是可见勾选框（2 个子控件）
 assert '"name": "ShowManaOrbTextText"' in out and '"text": "@OptionsMenuSettingShowFrameRate"' in out
 assert '@dmCustomShowOrbTextBoth' not in out and 'TouchCustom_ShowFpsText' not in out
 assert out.count('"x": -99999') == 2, out.count('"x": -99999')
 assert '"onClickMessage": "OptionsPanelMessage:SetShowLifeOrbText"' in out
 assert '"onClickMessage": "OptionsPanelMessage:SetShowManaOrbText"' in out
 assert '"onClickMessage": "PanelManager:ClosePanel:TouchCustom_show_fps"' in out
-assert '"rect": "$OptionsToggleRect"' in out          # 可见开关用的原勾选框位置
-_fps_row = out[_i_fps:]
-assert '"name": "ShowLifeOrbText"' in _fps_row and '"name": "ShowManaOrbText"' in _fps_row and '"name": "TouchCustom_show_fps"' in _fps_row
+assert '"name": "TouchCustom_show_fps"' not in out
+_ra, _rb = layout._row_span(out, 'ShowManaOrbText')
+_fps_row = out[_ra:_rb]
+assert _fps_row.count('"type":') == 3, _fps_row          # 行自身 + 文字框 + 开关
+assert '"name": "ShowManaOrbText"' in _fps_row and '"name": "ShowLifeOrbText"' not in _fps_row
+# 两颗原版开关作屏外隐藏锚，放在面板根最前面（面板按名字查找先找到锚）
+assert out.index('"name": "ShowManaOrbText"') < out.index('"name": "ShowLifeOrbText"') < out.index('"name": "ScrollBarBackground"')
 
 # 拖动条状高亮：只删 Carousel / Slider 的 focusIndicator 字段，开关的焦点框保留
 _bar = '''
@@ -143,10 +148,11 @@ assert 'characterstatspanelhd.json' in layout.PRESENT
 assert not hasattr(layout, '_orbs_merge_showfps') and hasattr(layout, '_settings_rows_showfps')
 assert 'static void fi_show(' in host and 'FocusIndicator' in host and 'FocusManager' in host
 assert 'dm_ui_send_queue(fx[i].msg)' in host and 'OptionsPanelMessage:SetShowLifeOrbText' in host and 'OptionsPanelMessage:SetShowManaOrbText' in host
+assert 'find_w_off(sp, fx[i].name, 1)' in host          # 只认面板根的屏外锚，别拿到行里同名开关
 assert '设置页用户界面分区可见开关顺序：显示技能上的弹药数量 → 显示帧率' in host
 scan = (root / 'host/tests/native_write_scan.py').read_text(encoding='utf-8')
 assert 'fi_show' in scan, 'native_write_scan 的 GUARDED 里应放行 fi_show'
 tsv = (root / 'i18n/ui_text.tsv').read_text(encoding='utf-8')
 tab = (root / 'host/dm_i18n_tab.h').read_text(encoding='utf-8')
 assert 'dmCustomShowOrbTextBoth' not in tsv and 'dmCustomShowOrbTextBoth' not in tab   # 合并文案已删
-print('PASS touch layout options T36/T37/T41: two visible rows (Skill Ammo -> Frame Rate), hidden anchors, orb text force-on wiring, drag highlight, attack-title font')
+print('PASS touch layout options T36/T37/T42: two visible rows (Skill Ammo -> Frame Rate), 2-child row + root anchors, orb text force-on wiring, drag highlight, attack-title font')

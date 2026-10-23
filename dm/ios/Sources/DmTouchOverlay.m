@@ -501,12 +501,12 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     [self drawV4:c];   // 底栏：它自己按面板栈 / 死亡判显隐（dm_hud_bar_visible）。原先放在摇杆之后，被下面「面板开着就不画摇杆」的提前返回一起跳过—— | Bottom bar: it decides its own visibility from the panel stack / death (dm_hud_bar_visible). It used to come after the joystick and was skipped along with the early return below for "don't draw the joystick while a panel is open" —
                        // 只开着 NPC 对话菜单 / 说话框时（设计上底栏照常显示）UIKit 底栏不画，露出游戏层那份：没有数值和经验条、难度格空、十字位写着「功能」
                        // When only the NPC dialog menu / speech box is open (by design the bottom bar stays visible), the UIKit bottom bar is not drawn and the game-layer copy shows through: no values or experience bar, the difficulty cell empty, and "功能" (Functions) written in the cross slot
-    // 本地改动（T18/T19）：局内左下角显示帧率。游戏 设置 → 游戏 → 用户界面 分区勾上「显示帧率」（TouchCustom_show_fps，
+    // 本地改动（T18/T19）：局内左下角显示帧率。游戏 设置 → 游戏 → 用户界面 分区勾上「显示帧率」（原版 ShowManaOrbText 开关，
     // 宿主键 show_fps）后，在原版本号的位置用游戏字体 11pt、暖白半透明画「FPS 60」；近 1 秒平均、约每 0.5 秒刷新。
     // 仅局内：主菜单 / 选角不画（dm_ingame_now 为假；覆盖层此时本来也隐藏），掌机模式（opmode 0）也不画。
     // Local change (T18/T19): show the in-game FPS at the bottom-left. With "Show Frame Rate" checked on the game's
-    // Settings > Game > User Interface section (TouchCustom_show_fps, host key show_fps), draw "FPS 60" in the position of
-    // the version label, game font 11 pt, warm-white translucent; about a 1-second average refreshed every ~0.5 s.
+    // Settings > Game > User Interface section (the original ShowManaOrbText toggle, host key show_fps), draw "FPS 60" in the
+    // position of the version label, game font 11 pt, warm-white translucent; about a 1-second average refreshed every ~0.5 s.
     // In a run only: no main menu / character select (dm_ingame_now is false; the overlay is hidden there anyway), and no
     // handheld mode (opmode 0).
     {

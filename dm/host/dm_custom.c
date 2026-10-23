@@ -157,6 +157,13 @@ static uint64_t find_w(uint64_t w, const char *name, int dep) {   // 按名字�
     for (uint64_t i = 0; i < n; i++) { uint64_t r = find_w(*(uint64_t *)(ch + 8 * i), name, dep + 1); if (r) return r; }
     return 0;
 }
+static uint64_t find_w_off(uint64_t w, const char *name, int dep) {   // 按名字找屏外控件（rect x < -1000），隐藏锚专用：行里那颗同名开关不能当成锚 | find an off-screen widget by name (rect x < -1000), for hidden anchors only: the same-named toggle in the row must not be mistaken for the anchor
+    if (!w || dep > 14) return 0; const char *nm = (const char *)*(uint64_t *)(w + 8);
+    if (nm && !strcmp(nm, name) && ((int32_t *)(w + 0x70))[0] < -1000) return w;
+    uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60); if (!ch || n > 256) return 0;
+    for (uint64_t i = 0; i < n; i++) { uint64_t r = find_w_off(*(uint64_t *)(ch + 8 * i), name, dep + 1); if (r) return r; }
+    return 0;
+}
 // 勾选框的状态（本机逐字节差分，点一下只变这几处）：+0xa88 是它自己的「勾上」标志（点击按它翻转）；
 // +0x6e8..+0x6f4 是「常态 / 按下 / 悬停 / 禁用」四个帧号，勾上 = 4 5 6 -1、没勾 = 0 1 3 2（= 布局里 toggled* / untoggled* 那几项）；+0x610 是此刻画的帧
 // 读写这几处之前核控件是勾选框那个类（dm_widget.h）：不是就当没勾、不写，并记红
@@ -272,27 +279,33 @@ void dm_custom_ui_pump(unsigned long long root) {
         if (*(uint8_t *)(sp + 0x1a0) != dirty) { *(uint8_t *)(sp + 0x1a0) = (uint8_t)dirty; LOG("自定义设置：有未应用的改动 → %d（「应用 / 放弃」%s）", dirty, dirty ? "点亮" : "变灰"); } }
 }
 
-// ---- 游戏设置页「显示帧率」勾选框 + 生命 / 法力球文本常开（T18/T19/T41）：设置 → 游戏 → 用户界面 分区。
-// T41（用户选的方案 B）：这一分区只有两行 —— 「显示技能上的弹药数量」（原版行，内容不动）→ 「显示帧率」（复用原版法力球文本行）。
-// 帧率行为什么 67.1 看不见：选项面板按原版选项认行（行里的原版子控件名 + OptionsPanelMessage:Set<选项> 消息）；T36 把名字 / 消息
-// 都换成了我们自己的 → 面板不认这行、整行隐藏（宿主只强制子控件可见救不回来）。现在帧率行里保留原版 ShowManaOrbText 开关作隐藏锚
-// （名字 / 消息原样，rect 在布局里挪到屏外），文字框保留原名、只换文字；另挂可见的 TouchCustom_show_fps（这里每帧强制可见、处理点击）。
-// 生命球文本行整行删掉，它的原版开关也留成隐藏锚塞进帧率行；两项球文本由这里读两个锚的勾选状态（+0xa88）并置开：为关就发
+// ---- 游戏设置页「显示帧率」勾选框 + 生命 / 法力球文本常开（T18/T19/T42）：设置 → 游戏 → 用户界面 分区。
+// T42（方案 C）：这一分区只有两行 —— 「显示技能上的弹药数量」（原版行，内容不动）→ 「显示帧率」（复用原版法力球文本行）。
+// 67.1 帧率行看不见：面板按原版选项认行（行里的原版子控件名）；T36 把名字都换了 → 整行隐藏。68.1（方案 B）在行里塞了
+// 4 个子控件（文字框 + 2 个隐藏锚 + 可见开关），但原版 TableRowWidget 按表格列数（2 列）排版，子控件数 > 列数时整行跳过排版、
+// 行高算成 0 → 真机上仍然错位 / 看不见。方案 C：帧率行只留 2 个子控件 —— 原版文字框（只换文字）+ 原版 ShowManaOrbText 开关
+// 本身（名字 / rect 原样，onClickMessage 换成空操作 PanelManager:ClosePanel:TouchCustom_show_fps），宿主把这颗开关当帧率勾选框。
+// 两颗原版球文本开关留成屏外隐藏锚（名字 / 消息原样，rect x=-99999），放在面板根 children 最前面：面板按名字找控件时先找到锚
+// → 选项绑在锚上，行里那颗同名开关不会被面板重置。两项球文本由这里读两个锚的勾选状态（+0xa88）并置开：为关就发
 // OptionsPanelMessage:SetShowLifeOrbText / SetShowManaOrbText（每项最多 2 次、发后隔 10 帧读回），读回变开即成功；2 次仍读回关
 // 则打红字（说明消息可能是 toggle 语义或面板读不回状态——那时只能保证游戏默认开，见 dm_custom.h 的说明）。
 // 点一下帧率勾选框立即生效并存盘（键 show_fps，重启保留）；设置页重建 / 重开时按生效值重摆。
-// Two rows only in Settings > Game > User Interface (T41, scheme B): Show Skill Ammo Feedback (original row, contents untouched) ->
-// Show Frame Rate (the original mana-orb-text row reused). The frame-rate row was invisible in 67.1 because the options panel recognises
-// rows by the original option fingerprint (original child widget names + an OptionsPanelMessage:Set<option> message); T36 renamed both, so
-// the panel hid the whole row and forcing only the children visible could not bring it back. The row now keeps the original
-// ShowManaOrbText toggle as a hidden anchor (name / message untouched, rect moved off screen by the layout), the text box keeps its
-// original name and only its text changes, and a visible TouchCustom_show_fps is added (forced visible / taps handled here every frame).
-// The life-orb-text row is deleted whole and its original toggle is kept as a second hidden anchor inside the frame-rate row; both orb
-// texts are forced on here by reading the anchors' checked state (+0xa88): when off we send OptionsPanelMessage:SetShowLifeOrbText /
-// SetShowManaOrbText (at most 2 tries per item, re-read 10 frames after each); if it is still off after 2 tries a red line is logged
-// (that means the message is toggle-semantics or the panel does not reflect the state -- in that case only the game default "on" is
-// guaranteed, see dm_custom.h). Tapping the frame-rate checkbox takes effect and saves immediately (key show_fps, kept across restarts);
-// it is laid out again from the effective value when the page is rebuilt / reopened.
+// Two rows only in Settings > Game > User Interface (T42, scheme C): Show Skill Ammo Feedback (original row, contents untouched) ->
+// Show Frame Rate (the original mana-orb-text row reused). The frame-rate row was invisible in 67.1 because the options panel
+// recognises rows by the original option fingerprint (original child widget names); T36 renamed them, so the panel hid the whole row.
+// Scheme B (68.1) put four children in the row (text box + two hidden anchors + a visible toggle), but the original TableRowWidget
+// lays children out by the table's column count (two columns): when the child count exceeds the column count it skips the whole row
+// layout and computes a zero row height, so on the device the row is still misplaced / invisible. Scheme C keeps exactly two
+// children -- the original text box (text changed only) + the original ShowManaOrbText toggle itself (name / rect untouched,
+// onClickMessage replaced with the no-op PanelManager:ClosePanel:TouchCustom_show_fps) -- and the host uses that toggle as the
+// frame-rate checkbox. Both original orb-text toggles stay as off-screen hidden anchors (name / message untouched, rect x=-99999)
+// at the very front of the panel root's children: the panel's name lookup finds the anchor first, so the option binds to the anchor
+// and the same-named toggle inside the row is never reset by the panel. Both orb texts are forced on here by reading the anchors'
+// checked state (+0xa88): when off we send OptionsPanelMessage:SetShowLifeOrbText / SetShowManaOrbText (at most 2 tries per item,
+// re-read 10 frames after each); if it is still off after 2 tries a red line is logged (that means the message is toggle-semantics
+// or the panel does not reflect the state -- in that case only the game default "on" is guaranteed, see dm_custom.h). Tapping the
+// frame-rate checkbox takes effect and saves immediately (key show_fps, kept across restarts); it is laid out again from the
+// effective value when the page is rebuilt / reopened.
 void dm_show_fps_page_pump(unsigned long long root) {
     if (!root || !main_base()) return;
     static dm_wref seen; static int was_open, logged_missing, flips, logged_order; static uint64_t flip_fr;
@@ -314,10 +327,11 @@ void dm_show_fps_page_pump(unsigned long long root) {
     if (!row) row = find_w(sp, "TouchCustom_RowShowFps", 1);
     if (!row) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：设置页里没找到帧率行（Row ShowManaOrbText / TouchCustom_RowShowFps），布局补丁没进包？"); } return; }
     if (!*(uint8_t *)(row + 0x50)) { static int hlog; if (!hlog) { hlog = 1; LOG("【红】显示帧率：帧率行被原版面板隐藏（+0x50=0）——行里没有面板认识的原版子控件？"); } }
-    uint64_t w = find_w(row, "TouchCustom_show_fps", 1);
-    if (!w) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：帧率行里没找到 TouchCustom_show_fps（布局补丁没生效？）"); } return; }
-    dm_ui_show_ours(w, 1);
-    // 用户界面分区最终可见顺序（T41）：两行都在才打一次，真机核对用 | final visible order of the User Interface section (T41): logged once when both rows exist, for real-device checks
+    // 方案 C：行里那颗原版 ShowManaOrbText 开关本身就是帧率勾选框（不再另插 TouchCustom_show_fps）
+    // scheme C: the original ShowManaOrbText toggle in the row is the frame-rate checkbox itself (no extra TouchCustom_show_fps)
+    uint64_t w = find_w(row, "ShowManaOrbText", 1);
+    if (!w) { if (!logged_missing) { logged_missing = 1; LOG("显示帧率：帧率行里没找到 ShowManaOrbText（布局补丁没生效？）"); } return; }
+    // 用户界面分区最终可见顺序（T42）：两行都在才打一次，真机核对用 | final visible order of the User Interface section (T42): logged once when both rows exist, for real-device checks
     if (!logged_order) {
         uint64_t ar = find_w(sp, "Row SkillAmmoFeedback", 1), fr = find_w(sp, "Row ShowManaOrbText", 1);
         if (ar && fr) { logged_order = 1;
@@ -328,8 +342,8 @@ void dm_show_fps_page_pump(unsigned long long root) {
     // re-read 10 frames after each)
     { uint64_t fr = dm_guest_frame();
       for (int i = 0; i < 2; i++) {
-        uint64_t a = find_w(row, fx[i].name, 1);
-        if (!a) { if (!fx[i].bad) { fx[i].bad = 1; LOG("【红】%s：帧率行里没有隐藏锚 %s（布局补丁没进包？）", fx[i].label, fx[i].name); } continue; }
+        uint64_t a = find_w_off(sp, fx[i].name, 1);   // 锚在面板根最前面，按屏外 rect 认，别拿到行里那颗同名开关 | anchors are at the panel root; match the off-screen rect so the same-named toggle in the row is never taken
+        if (!a) { if (!fx[i].bad) { fx[i].bad = 1; LOG("【红】%s：面板根没有屏外隐藏锚 %s（布局补丁没进包？）", fx[i].label, fx[i].name); } continue; }
         if (TOGGLED(a)) { if (!fx[i].on) { fx[i].on = 1; LOG("%s：隐藏锚点读回=开（本版强制常开）", fx[i].label); } continue; }
         if (fx[i].on) continue;   // 本页此前读回过开：不再动（等游戏重排再看） | this page reported it on before: leave it alone (look again after the next rebuild)
         if (fx[i].tries < 2 && fr >= fx[i].wait) {

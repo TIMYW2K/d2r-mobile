@@ -3546,6 +3546,8 @@ static struct { float r[4]; char title[64]; int nlines; unsigned mask; char line
 static _Atomic uint64_t g_hire_last_fr, g_hire_last_row;   // 上一次点中的帧与行控件：同一条目 1.5 秒内再点放行原点击（不能把招募弄成永远点不了） | frame/row widget of the last row tap: a second tap on the same row within 1.5 s lets the original click through (hiring must never become impossible)
 static char g_hire_last_name[64];   // 上一次点中行的名称（列表复用行控件时也能认出是否同一条目） | name of the last tapped row (recognises the same entry even if the list reuses row widgets)
 static _Atomic uint64_t g_hire_click_xy;   // 第二次点要补发的点击位置 | point of the deferred click for the second tap
+static _Atomic uint64_t g_hire_click_row;  // 补发点击的目标行控件（每帧重测时按它 + 名字找回） | target row widget of the replay (re-resolved by it + name every frame)
+static char g_hire_click_name[64];         // 补发点击的目标行名（行控件被复用时按名字校验） | target row name for the replay (row widgets get reused)
 static int g_hire_click_step;              // 0 空闲；1..3 悬停；4 按下；5 抬起 | 0 idle; 1..3 hover; 4 press; 5 release
 static uint64_t g_hire_click_t0;           // 补发序列开始的帧（超时复位用） | frame the replayed sequence started (for the timeout reset)
 int dm_hire_info_get(float r[4], char *title, int *nlines, char lines[8][96]) {   // 覆盖层查询（接口见上，ui-dev 按此实现） | queried by the overlay (interface above)
@@ -3598,20 +3600,55 @@ static int hire_row_rect(module_t *m, uint64_t row, float rect[4]) {   // 行矩
 // (ListWidget, selectorName=Selection) holds cloned ListItemWidgets (template OptionTemplate), but other layout profiles / deeper
 // nesting put rows below wrapper containers, so find HireName's **parent** recursively instead of assuming one level (64.1 only
 // looked at direct children; with wrappers every child was the same container -> always the first row).
-typedef struct { uint64_t row, name; int32_t y, h; } hire_row_ref;
+// ---------- 行选择（65.2：按实际画出来的控件矩形选行） ----------
+// 65.1 的行表用三种「+0x74 到底是什么坐标」的猜测模型换算屏幕 y；三个模型互相矛盾时会选到邻行，信息栏就显示成另一个佣兵。
+// 现在不再猜：每行直接量它自己的可见控件（行控件 / HireName / DialogBackground / HireLevel）的**屏幕矩形**——量法就是游戏自己
+// 的命中函数（dm_widget_rect_ui），滚动、缩放、列表内边距都由原版父链算进去。选行只用这些实测矩形；+0x74 只在所有控件都量不到
+// 时按行序兜底，并写日志说明。
+// 65.1's row table converted screen y with three guessed models of "what coordinate +0x74 is"; when they disagreed the pick landed on a
+// neighbouring row and the info bar described another mercenary. No more guessing: each row measures the real screen rects of its own
+// visible widgets (the row widget / HireName / DialogBackground / HireLevel) through the game's own hit-test (dm_widget_rect_ui), so
+// scrolling, scaling and list padding are all accounted for by the original parent chain. Picking uses only these measured rects; +0x74 is
+// a last-resort list-order fallback and says so in the log.
+typedef struct {
+    uint64_t row, name, level, cost, bg;
+    float band[4];       // 归一化屏幕矩形：选行与信息栏都用它 | normalized screen rect: used for picking and the info bar
+    float name_r[4];     // HireName 的矩形（补发点击取名字中心） | HireName rect (replayed click uses the name centre)
+    int anchor;          // 1 行控件 / 2 HireName / 3 HireLevel / 4 DialogBackground / 5 行序兜底 | 1 row widget / 2 HireName / 3 HireLevel / 4 DialogBackground / 5 list-order fallback
+    int visible;         // 行中心落在列表可见范围内 | row centre is inside the visible list
+    int32_t rawy, rawh;  // 行控件 +0x74 / +0x7c（只用于兜底与诊断） | row widget +0x74 / +0x7c (fallback and diagnostics only)
+    int cx, cy;          // 屏幕像素：补发点击 / 悬停高亮落点 | screen pixels: replayed click / hover highlight point
+    char text[64];       // HireName 原文：列表复用控件时按名字认同一条目 | HireName text: identifies the same entry when the list reuses widgets
+} hire_row_ref;
 #define HIRE_ROWS_MAX 64
-static hire_row_ref g_hire_rows[HIRE_ROWS_MAX]; static int g_hire_nrows;
-static float g_hire_pick_rect[4]; static int g_hire_pick_ok, g_hire_pick_model;   // 选中的行矩形估计（归一化）与用的模型；发布兜底用 | estimated rect of the picked row (normalized) and the model; publish fallback
-static int g_hire_seen_rows;   // 诊断：seen a non-zero row count once | diagnostics: seen a non-zero row count once
+typedef struct {
+    uint64_t gen, pn, lst, built_fr;
+    int ok, n;
+    hire_row_ref rows[HIRE_ROWS_MAX];
+    float lr[4]; int haveL;
+    int32_t vw, vh;
+    float pitch;         // 归一化行距（相邻行中心差的中间值） | normalized row pitch (median of adjacent centre gaps)
+} hire_cache_t;
+static hire_cache_t g_hire_cache;
+static int g_hire_seen_rows;   // 诊断：第一次扫到行时打一行行表摘要 | diagnostics: log a row-table summary the first time rows are seen
 static void hire_collect_rows(uint64_t w, uint64_t parent, int dep) {
-    if (!w || dep > 8 || g_hire_nrows >= HIRE_ROWS_MAX) return;
+    hire_cache_t *c = &g_hire_cache;
+    if (!w || dep > 8 || c->n >= HIRE_ROWS_MAX) return;
     const char *nm = (const char *)*(uint64_t *)(uintptr_t)(w + 8);
     if (nm && !strcmp(nm, "HireName")) {
-        if (!parent) return;
-        { char tbuf[64]; if (!hire_widget_text(w, tbuf, sizeof tbuf)) return; }   /* no text = the list template OptionTemplate (hidden), not a real row */
-        for (int i = 0; i < g_hire_nrows; i++) if (g_hire_rows[i].row == parent) return;   // 一行只有一个 HireName | one HireName per row
-        hire_row_ref *e = &g_hire_rows[g_hire_nrows++];
-        e->row = parent; e->name = w; e->y = *(int32_t *)(uintptr_t)(parent + 0x74); e->h = *(int32_t *)(uintptr_t)(parent + 0x7c);
+        if (!parent || !*(uint8_t *)(uintptr_t)(parent + 0x50)) return;   // 隐藏的模板行不算 | a hidden template row is not a row
+        char tbuf[64];
+        if (!hire_widget_text(w, tbuf, sizeof tbuf)) return;   /* no text = the list template OptionTemplate (hidden), not a real row */
+        for (int i = 0; i < c->n; i++) if (c->rows[i].row == parent) return;   // 一行只有一个 HireName | one HireName per row
+        hire_row_ref *e = &c->rows[c->n++];
+        memset(e, 0, sizeof *e);
+        e->row = parent; e->name = w;
+        snprintf(e->text, sizeof e->text, "%s", tbuf);
+        e->level = ui_find(parent, "HireLevel", 1);
+        e->cost = ui_find(parent, "HireCost", 1);
+        e->bg = ui_find(parent, "DialogBackground", 1);
+        e->rawy = *(int32_t *)(uintptr_t)(parent + 0x74);
+        e->rawh = *(int32_t *)(uintptr_t)(parent + 0x7c);
         return;
     }
     uint64_t ch = *(uint64_t *)(uintptr_t)(w + 0x58), n = *(uint64_t *)(uintptr_t)(w + 0x60);
@@ -3625,153 +3662,189 @@ static int hire_list_rect(module_t *m, uint64_t lst, float r[4]) {   // ListWidg
     r[0] = r[1] = r[2] = r[3] = 0; dm_widget_rect_ui(lst, vw, vh, r);
     return r[2] > r[0] && r[3] > r[1];
 }
-// ---------- 行表缓存（65.1 卡顿/高亮修复） ----------
-// 65.1 的问题：hover 路径每个鼠标移动事件都调 hire_would_show_info → hire_row_at：递归收集行 + 每行 dm_widget_rect_ui
-// （40×40 网格找命中点 + 二分探边界，每行上百次原生控件调用），拖动 / 滚动时每事件一次 → 界面卡、高亮跟不上、第一下要等。
-// 现在缓存「面板 / 列表 / 行 + 位置参数」（键 = UI 代号 + 面板/列表地址；面板重建、滚动后重算），hover 只做纯算术 O(行数)，
-// 不碰控件、不发布信息栏；点击路径也先查缓存，未命中才走完整识别（滚动后第一次点击多一次重建，可接受）。
-// ---------- row-table cache (65.1 lag / highlight fix) ----------
-// 65.1 problem: every mouse-move event on the hover path called hire_would_show_info -> hire_row_at: recursive row collection plus
-// dm_widget_rect_ui per row (40x40 hit grid + binary-search edge probing, hundreds of native widget calls per row), once per event
-// while dragging/scrolling -> laggy UI, trailing highlight, delayed first tap. The panel/list/rows and their position parameters are
-// now cached (key = UI generation + panel/list pointers; rebuilt after a rebuild or a scroll); hover is pure arithmetic over the row
-// count (no widget calls, no publishing), and the click path checks the cache first and only runs the full scan on a miss.
-typedef struct {
-    uint64_t gen, pn, lst, built_fr;
-    int n;
-    hire_row_ref rows[HIRE_ROWS_MAX];
-    float lr[4]; int haveL; float listTop; float rh;
-    int havey, ysame; int32_t firsty; int32_t vw, vh;
-} hire_cache_t;
-static hire_cache_t g_hire_cache; static int g_hire_cache_ok;
-static void hire_cache_build(module_t *m, uint64_t root) {   // 重算一次缓存（只在面板打开时值钱） | rebuild the cache (only worth it while the panel is open)
-    g_hire_cache_ok = 0;
-    if (!m || !root) return;
-    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
-    if (!pn || !*(uint8_t *)(pn + 0x50)) return;
-    uint64_t lst = ui_find(pn, "ListContainer", 1);
-    if (!lst || !*(uint8_t *)(lst + 0x50)) return;
-    uint64_t ch = *(uint64_t *)(uintptr_t)(lst + 0x58), n = *(uint64_t *)(uintptr_t)(lst + 0x60);
-    if (!ch || n > 256) return;
+// ---------- 行表：实测矩形 + 20 帧缓存 ----------
+// 65.1 的卡顿来自 hover 每个鼠标事件都量每行矩形。现在只在建表时量一次，hover 只做纯算术；点击路径**强制重测**，
+// 不拿 20 帧前的旧行表做「点哪一行」的决定（滚动后旧表正是选错行的来源）。
+// 65.1's lag came from measuring every row on every mouse event. The table is measured once when built and hover is pure arithmetic;
+// the click path **forces a fresh measurement** and never lets a 20-frame-old table decide which row was tapped (that stale table is
+// exactly what picked the wrong row after a scroll).
+static int hire_rect_ok(const float r[4]) { return r[2] > r[0] + 0.0005f && r[3] > r[1] + 0.0005f; }
+static int hire_widget_hit(uint64_t w, int x, int y) {   // 原版命中函数：自己算父链、缩放、滚动 | the original hit-test: walks the parent chain, scale and scroll
+    if (!w) return 0;
+    uint64_t fn = *(uint64_t *)(*(uint64_t *)w + 0x48);
+    return fn && (((int (*)(uint64_t, uint64_t))fn)(w, (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32)) & 1);
+}
+static int hire_rect_from_hit(uint64_t w, int32_t vw, int32_t vh, int sx, int sy, float out[4]) {   // 已知一个命中点，二分出四边 | four edges by binary search from a known hit point
+    if (!hire_widget_hit(w, sx, sy)) return 0;
+    int x0 = 0, x1 = vw - 1, y0 = 0, y1 = vh - 1;
+    { int lo = 0, hi = sx; while (lo < hi) { int m = (lo + hi) / 2; if (hire_widget_hit(w, m, sy)) hi = m; else lo = m + 1; } x0 = lo; }
+    { int lo = sx, hi = vw - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hire_widget_hit(w, m, sy)) lo = m; else hi = m - 1; } x1 = lo; }
+    { int lo = 0, hi = sy; while (lo < hi) { int m = (lo + hi) / 2; if (hire_widget_hit(w, sx, m)) hi = m; else lo = m + 1; } y0 = lo; }
+    { int lo = sy, hi = vh - 1; while (lo < hi) { int m = (lo + hi + 1) / 2; if (hire_widget_hit(w, sx, m)) lo = m; else hi = m - 1; } y1 = lo; }
+    out[0] = (float)x0 / (float)vw; out[1] = (float)y0 / (float)vh; out[2] = (float)x1 / (float)vw; out[3] = (float)y1 / (float)vh;
+    return hire_rect_ok(out);
+}
+static int hire_measure_rect(module_t *m, uint64_t w, float out[4], int hx, int hy) {   // 先试提示点，失败再走完整网格 | try the hint first, fall back to the full grid
+    out[0] = out[1] = out[2] = out[3] = 0;
+    if (!m || !w || !*(uint8_t *)(w + 0x50)) return 0;
     int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
-    if (vw <= 0 || vh <= 0) return;
-    g_hire_nrows = 0;
-    for (uint64_t i = 0; i < n; i++) hire_collect_rows(*(uint64_t *)(uintptr_t)(ch + 8 * i), lst, 1);
-    if (!g_hire_nrows) return;
-    hire_cache_t *c = &g_hire_cache;
-    c->gen = dm_ui_gen(); c->pn = pn; c->lst = lst; c->built_fr = dm_guest_frame(); c->n = 0; c->vw = vw; c->vh = vh;
-    c->haveL = hire_list_rect(m, lst, c->lr); c->listTop = c->haveL ? c->lr[1] * (float)vh : 0.0f;
-    float rh = 0; int visn = 0, havey = 0, ysame = 1; int32_t firsty = 0;
-    for (int i = 0; i < g_hire_nrows; i++) { hire_row_ref *e = &g_hire_rows[i]; if (!*(uint8_t *)(uintptr_t)(e->row + 0x50)) continue;
-        visn++; if (e->h > 0) rh = (float)e->h; if (!havey) { firsty = e->y; havey = 1; } else if (e->y != firsty) ysame = 0; }
-    if (visn <= 0) return;
-    if (rh <= 0) rh = c->haveL ? (c->lr[3] - c->lr[1]) * (float)vh / (float)visn : 102.0f;
-    if (rh < 8) rh = 8;
-    c->rh = rh; c->havey = havey; c->ysame = ysame; c->firsty = firsty;
-    for (int i = 0; i < g_hire_nrows; i++) { hire_row_ref *e = &g_hire_rows[i]; if (!*(uint8_t *)(uintptr_t)(e->row + 0x50)) continue; c->rows[c->n++] = *e; }
-    g_hire_cache_ok = 1;
+    if (vw <= 0 || vh <= 0) return 0;
+    if (hx > 0 && hy > 0 && hx < vw - 1 && hy < vh - 1 && hire_rect_from_hit(w, vw, vh, hx, hy, out)) return 1;
+    dm_widget_rect_ui(w, vw, vh, out);
+    return hire_rect_ok(out);
 }
-static int hire_cache_valid(module_t *m, uint64_t root) {   // 便宜的时效检查；不成立就重建 | cheap freshness check; rebuild when it fails
-    if (!g_hire_cache_ok || !m || !root) return 0;
-    if (g_hire_cache.gen != dm_ui_gen()) return 0;
-    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
-    if (!pn || pn != g_hire_cache.pn || !*(uint8_t *)(pn + 0x50)) return 0;
-    uint64_t lst = ui_find(pn, "ListContainer", 1);
-    if (!lst || lst != g_hire_cache.lst || !*(uint8_t *)(lst + 0x50)) return 0;
-    return dm_guest_frame() - g_hire_cache.built_fr <= 20;   // 最多 ~1/3 秒重算一次（滚动让行位置变） | recompute at most ~3 times a second (scrolling moves the rows)
-}
-static uint64_t hire_cache_pick(int x, int y) {   // 纯算术：三种模型任一区间含住触点即命中；命中时写好发布兜底矩形 | pure arithmetic: the first model interval containing the point wins; fills the publish fallback rect
-    (void)x;
-    hire_cache_t *c = &g_hire_cache; if (!c->n) return 0;
-    int tryC = !(c->havey && !c->ysame && c->firsty != 0);
-    for (int mm = 1; mm <= 3; mm++) {
-        if (mm == 3 && !tryC) continue;
-        int idx = 0;
-        for (int i = 0; i < c->n; i++) { hire_row_ref *e = &c->rows[i];
-            float top = mm == 1 ? c->listTop + (float)e->y : mm == 2 ? (float)e->y : c->listTop + c->rh * (float)idx;
-            if ((float)y >= top - 2 && (float)y <= top + c->rh + 2) {
-                g_hire_pick_model = mm; g_hire_pick_ok = 1;
-                g_hire_pick_rect[0] = c->haveL ? c->lr[0] : 0.03f; g_hire_pick_rect[1] = top / (float)c->vh;
-                g_hire_pick_rect[2] = c->haveL ? c->lr[2] : 0.97f; g_hire_pick_rect[3] = (top + c->rh) / (float)c->vh;
-                return e->row; }
-            idx++; }
+static void hire_sort_rows(hire_cache_t *c) {   // 按行中心从上到下排；相邻行距的中间值就是行高（滚到一半时也成立） | sort by centre; the median adjacent gap is the row pitch (even mid-scroll)
+    for (int i = 1; i < c->n; i++) {
+        hire_row_ref v = c->rows[i]; float vc = v.band[1] + v.band[3]; int j = i - 1;
+        while (j >= 0 && c->rows[j].band[1] + c->rows[j].band[3] > vc) { c->rows[j + 1] = c->rows[j]; j--; }
+        c->rows[j + 1] = v;
     }
-    return 0;
 }
-static uint64_t hire_cache_lookup(module_t *m, uint64_t root, int x, int y) {   // hover / 点击共用：列表外快速 false；列表内一次重建后再试 | shared by hover and click: fast false outside the list; one rebuild and retry inside it
-    if (!m || !root) return 0;
-    if (!hire_cache_valid(m, root)) hire_cache_build(m, root);
-    if (!g_hire_cache_ok) return 0;
+static float hire_median_gap(const hire_cache_t *c) {
+    float d[HIRE_ROWS_MAX]; int n = 0;
+    for (int i = 1; i < c->n; i++) {
+        float a = (c->rows[i - 1].band[1] + c->rows[i - 1].band[3]) * 0.5f;
+        float b = (c->rows[i].band[1] + c->rows[i].band[3]) * 0.5f;
+        if (b - a > 0.0005f) d[n++] = b - a;
+    }
+    for (int i = 1; i < n; i++) { float v = d[i]; int j = i - 1; while (j >= 0 && d[j] > v) { d[j + 1] = d[j]; j--; } d[j + 1] = v; }
+    if (!n) return 0;
+    return (n & 1) ? d[n / 2] : (d[n / 2 - 1] + d[n / 2]) * 0.5f;
+}
+static int hire_scan(module_t *m, uint64_t root) {   // 重测整张行表；成功返回 1 | re-measure the whole row table; returns 1 on success
     hire_cache_t *c = &g_hire_cache;
-    if (c->haveL) { int x0 = (int)(c->lr[0] * (float)c->vw), x1 = (int)(c->lr[2] * (float)c->vw), y0 = (int)(c->lr[1] * (float)c->vh), y1 = (int)(c->lr[3] * (float)c->vh);
-        if (x < x0 - 2 || x > x1 + 2 || y < y0 - 2 || y > y1 + 2) return 0; }
-    uint64_t r = hire_cache_pick(x, y);
-    if (!r && dm_guest_frame() - c->built_fr > 2) { hire_cache_build(m, root); if (g_hire_cache_ok) r = hire_cache_pick(x, y); }   // 落空：可能滚动了，重建一次 | miss: maybe scrolled; rebuild once and retry
-    return r;
-}
-static uint64_t hire_row_at(module_t *m, uint64_t lst, uint64_t xy_hit) {   // 点在哪个列表行上 | which list row was hit
-    // 选法（64.1 反馈后重写）：① 在 ListContainer 子树里递归收集行；② 行位置按三种模型之一换算成屏幕 y（A 行 +0x74 是列表内容坐标、
-    // B 已是屏幕坐标、C ListWidget 自己摆放（+0x74 全一样/为 0）时按行顺序 + 点击 y），取中心最近且在一行高内的行；
-    // ③ 都不成再逐行 hit、最后回到旧的直接子控件 hit 兜底。选中的行矩形同时算好给 info 发布兜底（见 hire_info_publish）。
-    // Picking (rewritten after the 64.1 report): (1) collect the rows recursively under ListContainer; (2) map a row's position to screen y
-    // with one of three models (A: row +0x74 is list-content y; B: it is already screen y; C: the ListWidget positions items itself --
-    // +0x74 all equal/zero -- use child order + tap y), take the row whose centre is nearest and within one row height; (3) otherwise
-    // fall back to per-row hit-testing and finally to the old direct-child hit loop. The picked row's rect estimate is kept for the
-    // info-publish fallback (see hire_info_publish).
-    int32_t vw = m ? *(int32_t *)(m->base + 0x211da38) : 0, vh = m ? *(int32_t *)(m->base + 0x211da3c) : 0;
-    if (!m || !lst || vw <= 0 || vh <= 0) return 0;
-    g_hire_nrows = 0; g_hire_pick_ok = 0; g_hire_pick_model = 0;
+    c->ok = 0; c->n = 0;
+    if (!m || !root) return 0;
+    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
+    if (!pn || !*(uint8_t *)(pn + 0x50)) return 0;
+    uint64_t lst = ui_find(pn, "ListContainer", 1);
+    if (!lst || !*(uint8_t *)(lst + 0x50)) return 0;
     uint64_t ch = *(uint64_t *)(uintptr_t)(lst + 0x58), n = *(uint64_t *)(uintptr_t)(lst + 0x60);
     if (!ch || n > 256) return 0;
+    int32_t vw = *(int32_t *)(m->base + 0x211da38), vh = *(int32_t *)(m->base + 0x211da3c);
+    if (vw <= 0 || vh <= 0) return 0;
     for (uint64_t i = 0; i < n; i++) hire_collect_rows(*(uint64_t *)(uintptr_t)(ch + 8 * i), lst, 1);
-    if (!g_hire_nrows) { g_hire_seen_rows = 0; return 0; }
-    float lr[4] = {0, 0, 0, 0}; int haveL = hire_list_rect(m, lst, lr);
-    float listTop = haveL ? lr[1] * (float)vh : 0.0f;
-    int y = (int)(xy_hit >> 32);
-    float rh = 0; int visn = 0, havey = 0, ysame = 1; int32_t firsty = 0;
-    for (int i = 0; i < g_hire_nrows; i++) { hire_row_ref *e = &g_hire_rows[i]; if (!*(uint8_t *)(uintptr_t)(e->row + 0x50)) continue;
-        visn++; if (e->h > 0) rh = (float)e->h; if (!havey) { firsty = e->y; havey = 1; } else if (e->y != firsty) ysame = 0; }
-    if (visn <= 0) return 0;
-    if (rh <= 0) rh = haveL ? (lr[3] - lr[1]) * (float)vh / (float)visn : 102.0f;
-    if (rh < 8) rh = 8;
-    if (!g_hire_seen_rows) { g_hire_seen_rows = 1; LOG("招募信息：列表行 %d 个（+0x74 同值=%d，行高 %.0f，列表矩形=%d）", visn, ysame, (double)rh, haveL); }
-    uint64_t best = 0; int model = 0; float best_top = 0;
-    {   // 三个模型一起评分：先看行区间「真的含住触点」（inside=0 最好），再比中心距离；避免模型 A 偏移一行却被先试先得 | score all three models together: prefer a row interval that really contains the tap (inside=0), then the nearest centre, so a one-row offset in model A cannot win just because it is tried first
-        float best_inside = 1e30f, best_center = 1e30f;
-        int tryC = !(havey && !ysame && firsty != 0);   // +0x74 有区分度：C 不适用 | +0x74 differs: model C does not apply
-        for (int mm = 1; mm <= 3; mm++) {
-            if (mm == 3 && !tryC) continue;
-            int idx = 0;
-            for (int i = 0; i < g_hire_nrows; i++) { hire_row_ref *e = &g_hire_rows[i]; if (!*(uint8_t *)(uintptr_t)(e->row + 0x50)) continue;
-                float top = mm == 1 ? listTop + (float)e->y : mm == 2 ? (float)e->y : listTop + rh * (float)idx;
-                float bot = top + rh; float inside = (float)y < top ? top - (float)y : (float)y > bot ? (float)y - bot : 0.0f;
-                float center = (top + bot) * 0.5f - (float)y; if (center < 0) center = -center;
-                if (inside < best_inside - 0.01f || (inside <= best_inside + 0.01f && center < best_center)) { best_inside = inside; best_center = center; best = e->row; model = mm; best_top = top; }
-                idx++; }
+    if (!c->n) return 0;
+    c->gen = dm_ui_gen(); c->pn = pn; c->lst = lst; c->built_fr = dm_guest_frame(); c->vw = vw; c->vh = vh;
+    c->haveL = hire_list_rect(m, lst, c->lr);
+    float lx0 = c->haveL ? c->lr[0] * (float)vw : 0.03f * (float)vw;
+    float lx1 = c->haveL ? c->lr[2] * (float)vw : 0.97f * (float)vw;
+    float ly0 = c->haveL ? c->lr[1] * (float)vh : 0.0f;
+    float ly1 = c->haveL ? c->lr[3] * (float)vh : (float)vh;
+    int32_t design_h = *(int32_t *)(lst + 0x7c); if (design_h <= 0) design_h = vh;   // 列表自身高度（设计单位） | the list's own design height
+    int nrows = c->n;
+    for (int i = 0; i < nrows; i++) {
+        hire_row_ref *e = &c->rows[i];
+        // +0x74 是列表内容坐标（设计单位）：按列表屏幕高度/设计高度换算成期望的屏幕 y，只作提示与兜底 | +0x74 is a list-content coord
+        // (design units): scale by the list's screen/design height for the hint and the last-resort fallback
+        float rawcy = (float)e->rawy + (e->rawh > 0 ? (float)e->rawh * 0.5f : 0.0f);
+        if (rawcy < 0 || rawcy > (float)design_h) rawcy = (float)design_h * ((float)i + 0.5f) / (float)nrows;
+        int hy = (int)(ly0 + rawcy / (float)design_h * (ly1 - ly0));
+        if (hy < 1) hy = 1; if (hy > vh - 2) hy = vh - 2;
+        int hx = (int)(lx0 + (lx1 - lx0) * 0.08f); if (hx < 1) hx = 1; if (hx > vw - 2) hx = vw - 2;
+        int hxm = (int)((lx0 + lx1) * 0.5f); if (hxm < 1) hxm = 1; if (hxm > vw - 2) hxm = vw - 2;
+        float rrow[4], rname[4], rbg[4], rlv[4];
+        int have_row = hire_measure_rect(m, e->row, rrow, hxm, hy);
+        int have_name = hire_measure_rect(m, e->name, rname, hx, hy);
+        for (int k = 1; k <= 3 && !have_name; k++) {   // 名字不在最左：再试约 20% / 35% / 50% 处 | name not at the far left: also try ~20% / 35% / 50%
+            int hx2 = (int)(lx0 + (lx1 - lx0) * (0.05f + 0.15f * (float)k));
+            if (hx2 > 0 && hx2 < vw - 1) have_name = hire_measure_rect(m, e->name, rname, hx2, hy);
         }
-        if (best && (best_inside <= 2.0f || best_center <= rh)) {
-            g_hire_pick_rect[0] = haveL ? lr[0] : 0.03f; g_hire_pick_rect[1] = best_top / (float)vh;
-            g_hire_pick_rect[2] = haveL ? lr[2] : 0.97f; g_hire_pick_rect[3] = (best_top + rh) / (float)vh;
-            g_hire_pick_ok = 1;
-        } else best = 0, model = 0;
+        int have_bg = e->bg ? hire_measure_rect(m, e->bg, rbg, hxm, hy) : 0;
+        if (have_row && c->haveL && (rrow[3] - rrow[1]) > (c->lr[3] - c->lr[1]) * 0.85f) have_row = 0;   // 行 hit 矩形退回整个列表：不用 | the row hit rect fell back to the whole list: discard
+        if (have_bg && c->haveL && (rbg[3] - rbg[1]) > (c->lr[3] - c->lr[1]) * 0.85f) have_bg = 0;
+        if (have_row) { memcpy(e->band, rrow, sizeof rrow); e->anchor = 1; }
+        else if (have_name) { memcpy(e->band, rname, sizeof rname); e->anchor = 2; }
+        else if (have_bg) { memcpy(e->band, rbg, sizeof rbg); e->anchor = 4; }
+        else {
+            int have_lv = e->level ? hire_measure_rect(m, e->level, rlv, hxm, hy) : 0;
+            if (have_lv) { memcpy(e->band, rlv, sizeof rlv); e->anchor = 3; }
+            else {   // 全都量不到：按行序 + 列表矩形兜底，并标记出来 | nothing measured: list-order + list rect fallback, flagged as such
+                float cy = ly0 + rawcy / (float)design_h * (ly1 - ly0);
+                float hh = (ly1 - ly0) / (float)(nrows > 0 ? nrows : 1); if (hh < 8) hh = 8;
+                e->band[1] = (cy - hh * 0.5f) / (float)vh; e->band[3] = (cy + hh * 0.5f) / (float)vh;
+                e->anchor = 5;
+            }
+        }
+        if (c->haveL) { e->band[0] = c->lr[0]; e->band[2] = c->lr[2]; }   // 信息栏按整行宽度摆 | the info bar is placed against the full row width
+        memcpy(e->name_r, rname, sizeof rname);
     }
-    if (!best) {   // 次选：逐行 hit（行 hit 可能对整个列表都成立，但此时 rect 模型已经失败，只能兜底） | runner-up: per-row hit (the row hit may cover the whole list, but the rect models already failed, so this is only a fallback)
-        for (int i = 0; i < g_hire_nrows && !best; i++) { hire_row_ref *e = &g_hire_rows[i]; if (!*(uint8_t *)(uintptr_t)(e->row + 0x50)) continue;
-            uint64_t fn = *(uint64_t *)(*(uint64_t *)e->row + 0x48);
-            if (((int (*)(uint64_t, uint64_t))fn)(e->row, xy_hit) & 1) { best = e->row; model = 4; } }
+    hire_sort_rows(c);
+    c->pitch = hire_median_gap(c);
+    if (c->pitch < 8.0f / (float)vh) c->pitch = (ly1 - ly0) / (float)(c->n > 0 ? c->n : 1) / (float)vh;
+    if (c->pitch <= 0) c->pitch = 1.0f;
+    for (int i = 0; i < c->n; i++) {
+        hire_row_ref *e = &c->rows[i];
+        float y0 = e->band[1], y1 = e->band[3];
+        float cy = (y0 + y1) * 0.5f, h = y1 - y0;
+        if (h < c->pitch * 0.9f) { y0 = cy - c->pitch * 0.5f; y1 = cy + c->pitch * 0.5f; }   // 文字框比行矮：按行距补成整行 | the text box is shorter than the row: expand to the row pitch
+        e->visible = 0;
+        if (c->haveL) {
+            if (cy >= c->lr[1] && cy <= c->lr[3]) {   // 只有行中心在列表里才算可见；滚出去的行不能抢触点 | only rows whose centre is inside the list count; scrolled-out rows must not steal taps
+                if (y0 < c->lr[1]) y0 = c->lr[1];
+                if (y1 > c->lr[3]) y1 = c->lr[3];
+                if (y1 > y0 + 0.0005f) e->visible = 1;
+            }
+        } else e->visible = y1 > y0;
+        e->band[1] = y0; e->band[3] = y1;
+        if (!(e->band[2] > e->band[0])) { e->band[0] = 0.03f; e->band[2] = 0.97f; }
+        if (hire_rect_ok(e->name_r)) {
+            e->cx = (int)((e->name_r[0] + e->name_r[2]) * 0.5f * (float)vw);
+            e->cy = (int)((e->name_r[1] + e->name_r[3]) * 0.5f * (float)vh);
+        } else {
+            e->cx = (int)((e->band[0] + (e->band[2] - e->band[0]) * 0.10f) * (float)vw);
+            e->cy = (int)((e->band[1] + e->band[3]) * 0.5f * (float)vh);
+        }
+        if (e->cx < 1) e->cx = 1; if (e->cx > vw - 2) e->cx = vw - 2;
+        if (e->cy < 1) e->cy = 1; if (e->cy > vh - 2) e->cy = vh - 2;
     }
-    if (!best) {   // 旧兜底：直接子控件里找带 HireName 的行 | old fallback: a direct child that carries HireName
-        for (uint64_t i = 0; i < n; i++) { uint64_t c = *(uint64_t *)(uintptr_t)(ch + 8 * i); if (!c || !*(uint8_t *)(uintptr_t)(c + 0x50)) continue;
-            if (!ui_find(c, "HireName", 1)) continue;
-            uint64_t fn = *(uint64_t *)(*(uint64_t *)c + 0x48);
-            if (((int (*)(uint64_t, uint64_t))fn)(c, xy_hit) & 1) { best = c; model = 5; break; } }
-    }
-    if (best) g_hire_pick_model = model;
-    return best;
+    c->ok = 1;
+    { static uint64_t lg; uint64_t fr = dm_guest_frame(); if (!g_hire_seen_rows || fr - lg > 300) { lg = fr;
+        int na[6] = {0, 0, 0, 0, 0, 0}; for (int i = 0; i < c->n; i++) { int a = c->rows[i].anchor; if (a >= 0 && a < 6) na[a]++; }
+        LOG("招募信息：行表 %d 行（锚点 行/名字/等级/背景/兜底 = %d/%d/%d/%d/%d），行距 %.1f 像素，列表矩形=%d", c->n,
+            na[1], na[2], na[3], na[4], na[5], (double)(c->pitch * (float)vh), c->haveL); } }
+    g_hire_seen_rows = 1;
+    return 1;
 }
-
-static int hire_would_show_info(module_t *m, uint64_t root, int x, int y) {   // 这一点在不在招募列表行上（hover 用：只查缓存 + 纯算术，不碰控件树、不发布；65.1 之前这里每次鼠标移动都递归扫一遍列表） | is the point on a hire-list row (hover: cache + arithmetic only, no widget tree walk, no publishing; 65.1 and earlier scanned the whole list on every mouse move)
-    return hire_cache_lookup(m, root, x, y) != 0;
+static int hire_cache_fresh(module_t *m, uint64_t root) {   // 便宜的时效检查；hover 才用 | cheap freshness check; hover only
+    hire_cache_t *c = &g_hire_cache;
+    if (!c->ok || !m || !root) return 0;
+    if (c->gen != dm_ui_gen()) return 0;
+    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
+    if (!pn || pn != c->pn || !*(uint8_t *)(pn + 0x50)) return 0;
+    uint64_t lst = ui_find(pn, "ListContainer", 1);
+    if (!lst || lst != c->lst || !*(uint8_t *)(lst + 0x50)) return 0;
+    return dm_guest_frame() - c->built_fr <= 20;   // 最多 ~1/3 秒重测一次（滚动让行位置变） | re-measure at most ~3 times a second (scrolling moves the rows)
+}
+static uint64_t hire_pick_at(int x, int y, hire_row_ref **out) {   // 触点落在哪一行的实测行带里 | which row's measured band contains the point
+    if (out) *out = 0;
+    hire_cache_t *c = &g_hire_cache;
+    if (!c->ok || c->n <= 0) return 0;
+    if (c->haveL) {
+        int x0 = (int)(c->lr[0] * (float)c->vw), x1 = (int)(c->lr[2] * (float)c->vw);
+        int y0 = (int)(c->lr[1] * (float)c->vh), y1 = (int)(c->lr[3] * (float)c->vh);
+        if (x < x0 - 2 || x > x1 + 2 || y < y0 - 2 || y > y1 + 2) return 0;
+    }
+    hire_row_ref *best = 0; float best_inside = 1e30f, best_center = 1e30f, best_h = 1e30f;
+    for (int i = 0; i < c->n; i++) {
+        hire_row_ref *e = &c->rows[i]; if (!e->visible) continue;
+        float y0 = e->band[1] * (float)c->vh, y1 = e->band[3] * (float)c->vh;
+        float inside = (float)y < y0 ? y0 - (float)y : (float)y > y1 ? (float)y - y1 : 0.0f;
+        float center = (y0 + y1) * 0.5f - (float)y; if (center < 0) center = -center;
+        float h = y1 - y0;
+        if (inside < best_inside - 0.01f || (inside <= best_inside + 0.01f && (center < best_center - 0.01f || (center <= best_center + 0.01f && h < best_h)))) {
+            best_inside = inside; best_center = center; best_h = h; best = e;
+        }
+    }
+    if (!best) return 0;
+    float tol = c->pitch * (float)c->vh * 0.75f; if (tol < 12.0f) tol = 12.0f;
+    if (best_inside > 2.0f && best_center > tol) return 0;   // 行带之间 / 列表空白处：不算点中 | between bands / empty list space: not a row
+    if (out) *out = best;
+    return best->row;
+}
+static int hire_would_show_info(module_t *m, uint64_t root, int x, int y) {   // 这一点在不在招募列表行上（hover 用：20 帧缓存 + 纯算术，不发布） | is the point on a hire-list row (hover: 20-frame cache + arithmetic, no publishing)
+    if (!hire_cache_fresh(m, root) && !hire_scan(m, root)) return 0;
+    return hire_pick_at(x, y, 0) != 0;
 }
 
 static const char *hire_skill_field(int id, int en, int desc) {   // 查静态表：name / desc；表里没有返回 NULL（不硬猜） | table lookup; NULL when absent (no guessing)
@@ -3794,36 +3867,37 @@ static int hire_skill_id(uint64_t sk) {   // 技能 id：游戏填行时写进 H
     int32_t id = *(int32_t *)(uintptr_t)(sk + 0x960);
     return (id > 0 && id < 4096) ? id : 0;
 }
-static int hire_info_publish(module_t *m, uint64_t row, int x, int y) {   // 发布信息栏：矩形拿不到时逐级兜底（选行时估的 rect → HireName 控件 rect → 触点附近一块），并且一定返回状态给点击门
+static int hire_info_publish(module_t *m, hire_row_ref *e) {   // 发布信息栏：名称/等级/费用/技能全部从选中的那一行自己的控件读，矩形用选行时实测的行带
     // 64.1 反馈「第一下没反应、双击才出」：原来 hire_row_rect() 读不到就 return，点击又被门吞掉，用户看到的就是无响应；现在行矩形
     // 拿不到也用兜底矩形把信息栏画出来（位置略偏也比不弹好），发布失败才把点击放行。
-    // Publish the info bar: fall back through rect sources when the row rect cannot be probed (the rect estimated while picking the row ->
-    // the HireName widget rect -> a block around the tap point), and always report success/failure back to the tap gate.
-    // 64.1 report "first tap does nothing, only a double tap shows it": publish used to return early when hire_row_rect() failed and the
-    // gate still swallowed the click, so the user saw no response; now a fallback rect draws the bar too (slightly off beats missing) and
-    // only a real publish failure lets the click through.
+    // Publish the info bar: name / level / fee / skills all come from the resolved row's own widgets, and the rect is the row band measured
+    // while picking. 64.1 report "first tap does nothing, only a double tap shows it": publish used to return early when hire_row_rect()
+    // failed and the gate still swallowed the click, so the user saw no response; now a fallback rect draws the bar too and only a real
+    // publish failure lets the click through.
+    if (!m || !e || !e->row) return 0;
     char nm[64] = "", lv[48] = "", cst[48] = "";
-    hire_widget_text(ui_find(row, "HireName", 1), nm, sizeof nm);
-    hire_widget_text(ui_find(row, "HireLevel", 1), lv, sizeof lv);
-    hire_widget_text(ui_find(row, "HireCost", 1), cst, sizeof cst);
+    uint64_t nw = e->name ? e->name : ui_find(e->row, "HireName", 1);
+    uint64_t lw = e->level ? e->level : ui_find(e->row, "HireLevel", 1);
+    uint64_t cw = e->cost ? e->cost : ui_find(e->row, "HireCost", 1);
+    hire_widget_text(nw, nm, sizeof nm);
+    hire_widget_text(lw, lv, sizeof lv);
+    hire_widget_text(cw, cst, sizeof cst);
+    if (!nm[0]) { static int lgf; if (lgf++ < 6) LOG("【红】招募信息：选中的行没有 HireName 文本，信息栏不发布（放行原点击）"); return 0; }
+    if (strcmp(nm, e->text)) { static int lgf2; if (lgf2++ < 6) LOG("【红】招募信息：扫描时行名「%s」、发布时「%s」——行控件在两次读取之间被复用（本次仍按发布时原文显示）", e->text, nm); }
     int32_t vw = m ? *(int32_t *)(m->base + 0x211da38) : 0, vh = m ? *(int32_t *)(m->base + 0x211da3c) : 0;
-    float r[4] = {0, 0, 0, 0}; int src = 0;
-    // 选行时按 +0x74 估出来的行矩形优先：行控件的 hit 矩形在滚动列表里可能是整个列表（64.1 的「只显示第一行」就是 hit 对所有行都成立），
-    // 用它会让信息栏贴着整个列表；模型 4/5（hit 兜底选的）才退回 hit 矩形 | prefer the rect estimated from +0x74 while picking the row: a row's
-    // hit rect may be the whole list in a scrolling list (the 64.1 "always the first row" is exactly the hit being true for every row), and
-    // using it would place the info bar against the whole list; only the hit-fallback models (4/5) fall back to the hit rect
-    if (g_hire_pick_ok && g_hire_pick_model >= 1 && g_hire_pick_model <= 3) { for (int i = 0; i < 4; i++) r[i] = g_hire_pick_rect[i]; src = 2; }
-    else if (hire_row_rect(m, row, r)) src = 1;                             // 行 hit 矩形（正常路径） | row hit rect (normal path)
-    else if (g_hire_pick_ok) { for (int i = 0; i < 4; i++) r[i] = g_hire_pick_rect[i]; src = 2; }   // 选行时估出来的行矩形 | row rect estimated while picking
-    else {                                                                  // HireName 控件矩形扩一点 | the HireName widget rect, slightly grown
-        uint64_t nw = ui_find(row, "HireName", 1); float nr[4] = {0, 0, 0, 0};
-        if (nw && vw > 0 && vh > 0) dm_widget_rect_ui(nw, vw, vh, nr);
-        if (nr[2] > nr[0] && nr[3] > nr[1]) { r[0] = nr[0]; r[1] = nr[1] - 0.008f; r[2] = nr[2] + 0.06f; r[3] = nr[3] + 0.008f; src = 3; } }
-    if (!src) {                                                             // 最后兜底：触点附近一块（夹屏），保证第一击能弹出 | last resort: a block around the tap point (clamped), so the first tap always shows the bar
-        if (vw <= 0 || vh <= 0) { static int lgf; if (lgf++ < 6) LOG("【红】招募信息：界面宽高读不到，信息栏发布失败（放行原点击）"); return 0; }
-        r[0] = ((float)x - 0.02f * (float)vw) / (float)vw; r[1] = ((float)y - 0.02f * (float)vh) / (float)vh;
-        r[2] = ((float)x + 0.20f * (float)vw) / (float)vw; r[3] = ((float)y + 0.02f * (float)vh) / (float)vh; src = 4;
+    float r[4]; int src = e->anchor ? e->anchor : 1;
+    memcpy(r, e->band, sizeof r);
+    if (!hire_rect_ok(r)) {                                                 // 实测行带异常：逐级兜底 | measured band invalid: fall back step by step
+        if (hire_row_rect(m, e->row, r)) src = 10;                          // 行 hit 矩形 | row hit rect
+        else if (hire_rect_ok(e->name_r)) {                                 // HireName 控件矩形扩一点 | the HireName widget rect, slightly grown
+            r[0] = e->name_r[0]; r[1] = e->name_r[1] - 0.008f; r[2] = e->name_r[2] + 0.06f; r[3] = e->name_r[3] + 0.008f; src = 11;
+        } else {                                                            // 最后兜底：光标落点附近一块（夹屏），保证第一击能弹出 | last resort: a block around the click point (clamped)
+            if (vw <= 0 || vh <= 0) { static int lgf; if (lgf++ < 6) LOG("【红】招募信息：界面宽高读不到，信息栏发布失败（放行原点击）"); return 0; }
+            r[0] = ((float)e->cx - 0.02f * (float)vw) / (float)vw; r[1] = ((float)e->cy - 0.02f * (float)vh) / (float)vh;
+            r[2] = ((float)e->cx + 0.20f * (float)vw) / (float)vw; r[3] = ((float)e->cy + 0.02f * (float)vh) / (float)vh; src = 12;
+        }
     }
+    if (!lv[0] && !cst[0]) { static int lgf3; if (lgf3++ < 6) LOG("【红】招募信息：行「%s」的等级与费用控件都是空文本（行数据可能未填好，仍按名称发布）", nm); }
     if (r[0] < 0) r[0] = 0;
     if (r[1] < 0) r[1] = 0;
     if (r[2] > 1) r[2] = 1;
@@ -3838,13 +3912,17 @@ static int hire_info_publish(module_t *m, uint64_t row, int x, int y) {   // 发
         else { char b[80]; snprintf(b, sizeof b, en ? "Fee %s" : "费用 %s", cst); hire_line_add(lines, &n, b); }
     }
     int ids[3] = {0, 0, 0}, nsk = 0;
-    for (int k = 0; k < 3; k++) {   // 技能行：名称 + 短描述（表里没有的 id 不显示） | skill lines: name + short description (ids absent from the table are skipped)
+    for (int k = 0; k < 3; k++) {   // 技能行：名称 + 短描述（重复 / 表里没有的 id 不显示） | skill lines: name + short description (duplicate / unknown ids are skipped)
         char wn[8]; snprintf(wn, sizeof wn, "Skill%d", k);
-        uint64_t sk = ui_find(row, wn, 1);
-        ids[k] = hire_skill_id(sk);
-        if (!ids[k]) continue;
-        const char *name = hire_skill_field(ids[k], en, 0), *desc = hire_skill_field(ids[k], en, 1);
-        if (!name || !name[0]) continue;
+        uint64_t sk = ui_find(e->row, wn, 1);
+        int id = hire_skill_id(sk);
+        ids[k] = id;
+        if (!id) continue;
+        int dup = 0;
+        for (int j = 0; j < k; j++) if (ids[j] == id) dup = 1;
+        if (dup) { static int lgd; if (lgd++ < 6) LOG("招募信息：行「%s」的 Skill%d 与前面的技能 id 重复（%d），跳过", nm, k, id); continue; }   // 行控件复活时可能残留上一行的技能 | a reused row widget can keep a stale skill from the previous entry
+        const char *name = hire_skill_field(id, en, 0), *desc = hire_skill_field(id, en, 1);
+        if (!name || !name[0]) { static int lgu; if (lgu++ < 6) LOG("【红】招募信息：行「%s」的技能 id %d 不在技能表里，跳过（不硬猜）", nm, id); continue; }
         char b[128];
         if (desc && desc[0]) snprintf(b, sizeof b, "%s：%s", name, desc);
         else snprintf(b, sizeof b, "%s", name);
@@ -3857,10 +3935,29 @@ static int hire_info_publish(module_t *m, uint64_t row, int x, int y) {   // 发
     for (int i = 0; i < n; i++) snprintf(g_hire_info.lines[i], sizeof g_hire_info.lines[i], "%s", lines[i]);
     atomic_store(&g_hire_info_has, 1);
     { static uint64_t lg; uint64_t fr = dm_guest_frame(); if (fr - lg > 30) { lg = fr;
-        LOG("招募信息：行「%s」技能 id %d/%d/%d（命中表 %d 个），信息栏 %d 行，矩形 %.2f,%.2f,%.2f,%.2f（来源 %d，选行模型 %d）", nm, ids[0], ids[1], ids[2], nsk, n, (double)r[0], (double)r[1], (double)r[2], (double)r[3], src, g_hire_pick_model); } }
+        LOG("招募信息：行「%s」技能 id %d/%d/%d（命中表 %d 个），信息栏 %d 行，矩形 %.2f,%.2f,%.2f,%.2f（来源 %d，锚点 %d）", nm, ids[0], ids[1], ids[2], nsk, n, (double)r[0], (double)r[1], (double)r[2], (double)r[3], src, e->anchor); } }
     return 1;
 }
 
+// 补发点击的收尾：状态 / 目标行 / 目标名字一起清，下一次点击不会被上一轮的状态干扰 | tear down the replay state, target row and name together
+static void hire_click_reset(const char *why) {
+    int was = g_hire_click_step;
+    g_hire_click_step = 0; g_hire_click_t0 = 0;
+    atomic_store(&g_hire_click_row, 0); g_hire_click_name[0] = 0;
+    if (why && was) LOG("招募信息：补发点击复位（%s）", why);
+}
+// 只在 hire_scan() 刚建好的行表里找：行控件地址 + HireName 原文都对上才算同一条目（行控件会复用，地址单独不可信）
+// Search the row table hire_scan() has just rebuilt: the row widget address AND the HireName text must both match (row widgets are reused,
+// the address alone is not proof).
+static hire_row_ref *hire_find_row_by_key(uint64_t row, const char *name) {
+    hire_cache_t *c = &g_hire_cache;
+    if (!c->ok || !row || !name || !name[0]) return 0;
+    for (int i = 0; i < c->n; i++) {
+        hire_row_ref *e = &c->rows[i];
+        if (e->row == row && e->visible && !strcmp(e->text, name)) return e;
+    }
+    return 0;
+}
 static void hire_highlight_request(int x, int y);   // 定义在后面（信息栏第一击发布成功后调用） | defined later (called after a successful first-tap publish)
 static int hire_tip_gate(module_t *m, uint64_t root, int x, int y) {   // 1 = 这一下已改成「弹信息栏」（调用方把点击丢掉） | 1 = this tap became "show the info bar" (caller drops the click)
     // 行为：单击任意行 → 立即显示该行信息栏（并吞掉这次点击，第一次点不放行）；同一行 1.5 秒内再点 → 收起 + 补发一次原版点击（招募）；
@@ -3882,55 +3979,98 @@ static int hire_tip_gate(module_t *m, uint64_t root, int x, int y) {   // 1 = �
     if (g_hire_click_step) {   // 补发点击正在放：这一次列表点击忽略，不排队、不叠加 | a replayed click is in flight: ignore this list tap, do not queue another
         static uint64_t lg; uint64_t fr = dm_guest_frame(); if (fr - lg > 120) { lg = fr; LOG("招募信息：补发点击进行中（步骤 %d），忽略这次列表点击（%d,%d）", g_hire_click_step, x, y); }
         return 1; }
-    uint64_t row = hire_cache_lookup(m, root, x, y);   // 缓存命中直接出（点击路径也快）；未命中再走完整识别 | cache hit returns directly (fast click path); a miss falls back to the full scan
-    if (!row) row = lst ? hire_row_at(m, lst, xy_hit) : 0;
-    if (!row) { hire_info_clear("没点到列表行"); static uint64_t lg; uint64_t fr2 = dm_guest_frame(); if (fr2 - lg > 120) { lg = fr2; LOG("招募信息：列表里没认出点中的行（%d,%d）→ 放行原点击", x, y); } return 0; }
-    char rn[64] = ""; hire_widget_text(ui_find(row, "HireName", 1), rn, sizeof rn);   // 行名称：列表复用行控件时按名字认是否同一条目 | row name: with reused row widgets, identify the same entry by its name
+    // 点击路径强制重测行表：绝不拿 hover 的 20 帧旧表决定「点的是哪一行」（滚动后旧表正是选错行的来源）。
+    // The click path always re-measures: a 20-frame-old hover table must never decide which row was tapped (it is exactly what picked the
+    // wrong row after a scroll).
+    if (!hire_scan(m, root)) {
+        hire_info_clear("点击时行表重测失败");
+        static uint64_t lg; uint64_t fr = dm_guest_frame(); if (fr - lg > 120) { lg = fr; LOG("招募信息：点击时行表重测失败（%d,%d）→ 放行原点击", x, y); }
+        return 0;
+    }
+    hire_row_ref *e = 0;
+    uint64_t row = hire_pick_at(x, y, &e);
+    if (!row || !e) { hire_info_clear("没点到列表行"); static uint64_t lg; uint64_t fr2 = dm_guest_frame(); if (fr2 - lg > 120) { lg = fr2; LOG("招募信息：列表里没认出点中的行（%d,%d）→ 放行原点击", x, y); } return 0; }
+    char rn[64] = ""; hire_widget_text(e->name, rn, sizeof rn);   // 行名称：列表复用行控件时按名字认是否同一条目 | row name: with reused row widgets, identify the same entry by its name
+    if (!rn[0]) { hire_info_clear("行名读取失败"); static uint64_t lg; uint64_t fr2 = dm_guest_frame(); if (fr2 - lg > 60) { lg = fr2; LOG("【红】招募信息：点中的行没有 HireName 文本（%d,%d）→ 放行原点击", x, y); } return 0; }
+    if (strcmp(rn, e->text)) { static int lgc; if (lgc++ < 6) LOG("【红】招募信息：扫描时行名「%s」、点击时「%s」——行控件刚被复用；本次按点击时原文处理", e->text, rn); snprintf(e->text, sizeof e->text, "%s", rn); }
     {   // 同一条目 1.5 秒内再点：收起信息栏，并排一个「原版点击」序列（先悬停 3 帧再按下/抬起）——第一次点没摆过游戏光标，直接放行会被当成点空白 | second tap on the same entry within 1.5 s: hide the info bar and queue an original click sequence (3 hover frames, then press/release); the first tap did not place the game cursor, so letting the click straight through would be treated as a click on empty space
       uint64_t fr = dm_guest_frame(), lfr = atomic_load(&g_hire_last_fr), lrow = atomic_load(&g_hire_last_row);
       if (atomic_load(&g_hire_info_has) && lfr && fr - lfr <= 90 && row == lrow && !strcmp(rn, g_hire_last_name)) {
           hire_info_clear("同一条目再点");
-          atomic_store(&g_hire_click_xy, ((uint64_t)(uint32_t)x << 32) | (uint32_t)y);
+          atomic_store(&g_hire_click_row, e->row);
+          snprintf(g_hire_click_name, sizeof g_hire_click_name, "%s", rn);
+          atomic_store(&g_hire_click_xy, ((uint64_t)(uint32_t)e->cx << 32) | (uint32_t)e->cy);   // 目标 = 这一行 HireName 的实测中心，不是第一次点的坐标 | target = this row's measured HireName centre, not the first tap point
           g_hire_click_step = 1; g_hire_click_t0 = fr;
-          LOG("招募信息：同一条目 1.5 秒内再点（%d,%d）→ 收起信息栏，排一个原版点击（悬停 3 帧后按下 / 抬起）", x, y);
+          LOG("招募信息：同一条目 1.5 秒内再点「%s」→ 收起信息栏，补发点击瞄准名称中心（%d,%d）", rn, e->cx, e->cy);
           return 1; } }
-    if (!hire_info_publish(m, row, x, y)) {   // 发布失败：不吞点击（吞了就是「点了没反应」） | publish failed: do not swallow the tap (swallowing it is exactly the "tap does nothing" the user reported)
+    if (!hire_info_publish(m, e)) {   // 发布失败：不吞点击（吞了就是「点了没反应」） | publish failed: do not swallow the tap (swallowing it is exactly the "tap does nothing" the user reported)
         hire_info_clear("信息栏发布失败");
         static uint64_t lg; uint64_t fr3 = dm_guest_frame(); if (fr3 - lg > 60) { lg = fr3; LOG("【红】招募信息：信息栏发布失败（行「%s」，%d,%d）→ 放行原点击", rn, x, y); }
         return 0; }
     atomic_store(&g_hire_last_fr, dm_guest_frame());
     atomic_store(&g_hire_last_row, row);
     snprintf(g_hire_last_name, sizeof g_hire_last_name, "%s", rn);
-    hire_highlight_request(x, y);   // 把游戏光标摆到点中的行：原版列表高亮跟着光标，否则会出现「高亮旧行、信息栏新人」 | put the game cursor on the tapped row: the original list highlight follows the cursor, otherwise the highlight stays on the old row while the info bar shows the new one
+    hire_highlight_request(e->cx, e->cy);   // 把游戏光标摆到这一行的名称中心：原版列表高亮跟着光标，否则会出现「高亮旧行、信息栏新人」 | put the game cursor on this row's name centre: the original list highlight follows the cursor, otherwise the highlight stays on the old row while the info bar shows the new one
     { static int cl; if (!cl) { cl = 1; LOG("招募信息：技能行蓝色 = 游戏装备说明框的魔法物品蓝（profileHD FontColorBlue rgb(110,110,255)，MagicColor 映射；tmp/hostdev/layouts/global_ui_Layouts__profileHD.json L87/L679）"); } }
     { static uint64_t lg; uint64_t fr4 = dm_guest_frame(); if (fr4 - lg > 120) { lg = fr4;
-        LOG("招募信息：第一击 行=%p「%s」发布=ok（%d,%d）", (void *)(uintptr_t)row, rn, x, y); } }
+        LOG("招募信息：第一击 行=%p「%s」发布=ok（点 %d,%d / 名称中心 %d,%d，锚点 %d）", (void *)(uintptr_t)row, rn, x, y, e->cx, e->cy, e->anchor); } }
     return 1;
 }
 
 static void hire_info_pump(uint64_t root) {   // 每帧：面板关了 / 切走就收起信息栏、丢掉行表缓存 | every frame: hide the info bar and drop the row cache when the panel closes
     uint64_t pn = root ? ui_panel(root, HIRE_PANEL_NAME) : 0;
     int open = pn && *(uint8_t *)(pn + 0x50);
-    if (!open) { g_hire_cache_ok = 0; hire_info_clear("面板已关 / 切走"); return; }
+    if (!open) { g_hire_cache.ok = 0; g_hire_cache.n = 0; hire_info_clear("面板已关 / 切走"); return; }
     if (!atomic_load(&g_hire_info_has)) return;
-    if (!has_visible_leaf(pn, 1)) { g_hire_cache_ok = 0; hire_info_clear("面板空了"); }
+    if (!has_visible_leaf(pn, 1)) { g_hire_cache.ok = 0; g_hire_cache.n = 0; hire_info_clear("面板空了"); }
 }
 // 第二次点的补发序列：第一次点没摆游戏光标，直接放行点击会被当成点空白，所以这里自己补「悬停 3 帧 → 按下 → 抬起」。
+// 关键：按下前一定重测行表，按「行控件地址 + HireName 原文」确认还是同一条目；目标行被复用 / 改名 / 滚走就放弃，绝不点错人。
 // Deferred original click for the second tap: the first tap never placed the game cursor, so a straight click would be
-// treated as a click on empty space -- this sends the normal 3 hover frames, then press, then release.
+// treated as a click on empty space -- this sends the normal 3 hover frames, then press, then release. Crucially, the row table
+// is re-measured and the entry is re-identified by row widget address + HireName text right before the press; if the row was
+// reused / renamed / scrolled away the replay is abandoned rather than clicking the wrong mercenary.
 static void hire_click_pump(module_t *m, uint64_t root) {   // 第二次点补发的原版点击序列。异常/面板关掉/超时都复位，避免「卡住」 | Deferred original click for the second tap; resets on any anomaly / panel close / timeout so it can never wedge the UI
     if (!g_hire_click_step) return;
-    if (!m || !root) { LOG("招募信息：补发点击中断（主模块 / 界面根为空）→ 复位"); g_hire_click_step = 0; return; }
-    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
-    if (!pn || !*(uint8_t *)(pn + 0x50)) { LOG("招募信息：补发点击中断（面板已关）→ 复位"); g_hire_click_step = 0; return; }   // 面板关了就停 | stop when the panel closes
-    if (g_hire_click_t0 && dm_guest_frame() - g_hire_click_t0 > 60) { LOG("【红】招募信息：补发点击超时（步骤 %d）→ 复位", g_hire_click_step); g_hire_click_step = 0; return; }
     static uint64_t h_mv, h_dn, h_up;
     if (!h_mv) { h_mv = ui_hash("MouseMove"); h_dn = ui_hash("LeftMouseButtonDown"); h_up = ui_hash("LeftMouseButtonUp"); }
     uint64_t v = atomic_load(&g_hire_click_xy); int x = (int)(v >> 32), y = (int)(v & 0xffffffffu);
-    if (g_hire_click_step <= 3) { ui_send_mouse(m, root, h_mv, x, y); g_hire_click_step++; return; }
-    if (g_hire_click_step == 4) { ui_send_mouse(m, root, h_mv, x, y); ui_send_mouse(m, root, h_dn, x, y); g_hire_click_step = 5; return; }
-    ui_send_mouse(m, root, h_mv, x, y); ui_send_mouse(m, root, h_up, x, y); g_hire_click_step = 0; g_hire_click_t0 = 0;
-    LOG("招募信息：补发原版点击完成（%d,%d）", x, y);
+    if (g_hire_click_step == 5) {   // 已按下：抬起必须尽量发出去，不能因为面板刚好关掉就丢掉 up | already pressed: the release must go out even if the panel just closed
+        if (!m || !root) { hire_click_reset("抬起时主模块 / 界面根为空"); return; }
+        ui_send_mouse(m, root, h_mv, x, y); ui_send_mouse(m, root, h_up, x, y);
+        LOG("招募信息：补发原版点击完成（%s @ %d,%d）", g_hire_click_name, x, y);
+        g_hire_click_step = 0; g_hire_click_t0 = 0; atomic_store(&g_hire_click_row, 0); g_hire_click_name[0] = 0;
+        return;
+    }
+    if (!m || !root) { hire_click_reset("主模块 / 界面根为空"); return; }
+    uint64_t pn = ui_panel(root, HIRE_PANEL_NAME);
+    if (!pn || !*(uint8_t *)(pn + 0x50)) { hire_click_reset("面板已关"); return; }   // 面板关了就停 | stop when the panel closes
+    if (g_hire_click_t0 && dm_guest_frame() - g_hire_click_t0 > 60) { hire_click_reset("超时"); return; }
+    if (g_hire_click_step == 2 || g_hire_click_step == 3) {   // 纯悬停帧：坐标不变，不用再扫 | pure hover frames: coordinates do not change, no rescan
+        ui_send_mouse(m, root, h_mv, x, y); g_hire_click_step++; return;
+    }
+    // 步骤 1（第一帧悬停）与步骤 4（按下前）：重测并按「行地址 + 名字」找回同一条目 | step 1 (first hover) and step 4 (before press):
+    // re-measure and find the same entry by row address + name
+    if (!hire_scan(m, root)) { hire_click_reset("行表重测失败"); return; }
+    hire_row_ref *e = hire_find_row_by_key(atomic_load(&g_hire_click_row), g_hire_click_name);
+    if (!e) {
+        LOG("【红】招募信息：补发点击取消——目标行已消失 / 改名 / 滚出列表（行=%p「%s」，步骤 %d）",
+            (void *)(uintptr_t)atomic_load(&g_hire_click_row), g_hire_click_name, g_hire_click_step);
+        hire_click_reset(0);
+        return;
+    }
+    if (g_hire_click_step == 1) {   // 第一帧悬停用刚测到的名称中心 | first hover uses the freshly measured name centre
+        atomic_store(&g_hire_click_xy, ((uint64_t)(uint32_t)e->cx << 32) | (uint32_t)e->cy);
+        ui_send_mouse(m, root, h_mv, e->cx, e->cy); g_hire_click_step = 2; return;
+    }
+    // 步骤 4：目标若移动过，先补一帧悬停，下一帧再按下（保证按下时游戏已经认为光标在这一行上）
+    // Step 4: if the target moved, send one more hover and press on the next frame (so the game already considers the cursor on this row)
+    if (e->cx != x || e->cy != y) {
+        atomic_store(&g_hire_click_xy, ((uint64_t)(uint32_t)e->cx << 32) | (uint32_t)e->cy);
+        ui_send_mouse(m, root, h_mv, e->cx, e->cy);
+        return;
+    }
+    ui_send_mouse(m, root, h_mv, e->cx, e->cy); ui_send_mouse(m, root, h_dn, e->cx, e->cy); g_hire_click_step = 5;
 }
 
 static _Atomic uint64_t g_hire_hl_xy; static int g_hire_hl_frames;   // 第一击后把游戏光标摆到点中的行（原版列表高亮跟着光标） | after the first tap put the game cursor on the tapped row (the original list highlight follows the cursor)
@@ -3996,7 +4136,10 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
     static uint64_t last_frame = UINT64_MAX; uint64_t fr = dm_guest_frame();
     if (fr == last_frame) return;
     dm_ui_hud_pump();   // 每帧修正角色栏文字与佣兵名字颜色 | refresh character-panel titles and mercenary name colour each frame
-    { module_t *hm = main_module(); uint64_t hr = 0; if (hm) { memcpy(&hr, hm->base + 0x2f05458, 8); if (hr) { hire_click_pump(hm, hr); hire_highlight_pump(hm, hr); } } }   // 招募信息栏：第二次点的补发点击序列 + 第一击后把光标摆到点中的行 | hire info bar: deferred click for the second tap + move the cursor onto the tapped row after the first tap
+    // 补发点击每帧都要推进/收尾：即使界面根暂时为空也要进去复位，避免留下「已按下未抬起」的状态跨面板 / 跨局面
+    // The replay must be advanced / torn down every frame: even with a temporarily empty UI root, enter it to reset, so a pressed-but-not-released
+    // state cannot survive across panels / runs
+    { module_t *hm = main_module(); uint64_t hr = 0; if (hm) memcpy(&hr, hm->base + 0x2f05458, 8); hire_click_pump(hm, hr); if (hr) hire_highlight_pump(hm, hr); }   // 招募信息栏：第二次点的补发点击序列 + 第一击后把光标摆到点中的行 | hire info bar: deferred click for the second tap + move the cursor onto the tapped row after the first tap
     dm_ui_hover_apply();   // 触摸线程排队的「放光标」请求在这里执行 | apply the queued hover request on the game thread
     (void)dm_ui_gen();   // 每帧核一次顶层面板（界面代号）：卸掉又在同一地址建出新面板的那种，隔帧才核会漏 | Check the top-level panels (UI generation) once per frame: a panel unloaded and rebuilt at the same address would be missed by checking every other frame
     ui_watch_pump();
