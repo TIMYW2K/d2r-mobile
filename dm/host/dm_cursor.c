@@ -2109,6 +2109,7 @@ static void ui_note_dock_pump(uint64_t root) {
         if (note_dock_snap(w, was, pv)) { static int lg; if (lg++ < 60) LOG("提示框停靠：目标换成 %d 时框已停稳在 y %d，矩形 y 一并写成新目标", pv, was); } }
     if (panel != g_nd_on) { g_nd_on = panel; static int lg; if (lg++ < 40) LOG("提示框停靠：%s，目标 y %d（布局原值 %d，矩形高 %d）", panel ? "面板态" : "无面板", *t, g_nd_orig, h); }
 }
+static _Atomic int g_safe_t;   // 顶部安全区（布局单位）：竖屏贴顶上提要留出灵动岛那一条 | Top safe area (layout units): in portrait the top lift must leave the Dynamic Island strip clear
 static void ui_lift_pump(uint64_t root, uint64_t fr) {
     // 普通轮询等控件树稳定，避免下一轮布局继承已上提的坐标；加载消息（fr=0）仍当场更新。两条路都避开模式切换事务
     // Polling waits for the widget tree to settle so the next layout cannot inherit lifted coordinates; loading messages (fr=0) still update immediately. Both paths avoid mode-switch transactions
@@ -2116,6 +2117,7 @@ static void ui_lift_pump(uint64_t root, uint64_t fr) {
     int dm_padmode_busy(void); if (dm_ui_unstable() && (fr || dm_padmode_busy())) return;
     if (fr < g_lift_next) return; g_lift_next = fr + 6;
     int x, y, w, h; dm_ui_rect(&x, &y, &w, &h); int lift = h > 0 && dm_uiscreen_ingame() ? (int)((long)y * 2160 / h) : 0;
+    if (lift > 0 && dm_uiscreen_portrait()) { int st = atomic_load(&g_safe_t); if (st > 0) lift = lift > st ? lift - st : 0; }   // 竖屏：贴顶上提只提到顶部安全区（灵动岛）之下，不钻到岛里 | Portrait: lift top widgets only up to below the top safe area (Dynamic Island), not into it
     g_mv_want[MV_LIFT] = lift != 0; if (!lift) { mv_restore(root, MV_LIFT); return; }   // 不上提（不在局内 / 不是真全屏）：全部写回原值 | No lift (not in-game / not true fullscreen): write everything back to the original values
     uint64_t ch = *(uint64_t *)(root + 0x58), n = *(uint64_t *)(root + 0x60);
     for (uint64_t k = 0; ch && k < n && k < 256; k++) { uint64_t p = *(uint64_t *)(ch + 8 * k); if (!p) continue; const char *nm = (const char *)*(uint64_t *)(p + 8);
@@ -2331,6 +2333,7 @@ static _Atomic int g_safe_r;
 static _Atomic int g_safe_l;   // 左安全区：左上角的佣兵 / 队友头像栏往右让 | Left safe area: the mercenary / party member portrait bar at the top left gives way to the right
 void dm_ui_safe_left(int units) { atomic_store(&g_safe_l, units < 0 ? 0 : units > 800 ? 800 : units); }
 void dm_ui_safe_right(int units) { atomic_store(&g_safe_r, units < 0 ? 0 : units > 800 ? 800 : units); }
+void dm_ui_safe_top(int units) { atomic_store(&g_safe_t, units < 0 ? 0 : units > 800 ? 800 : units); }
 static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     static uint64_t next; if (fr < next) return; next = fr + 6; int u = atomic_load(&g_safe_r);   // 切全屏再切回时游戏把矩形写回贴边，6 帧内补回 | After switching to fullscreen and back the game writes the rect back to the edge; restored within 6 frames
     g_mv_want[MV_SAFE] = dm_uiscreen_ingame();   // 条件：在局内。小地图的「上移 25px / 右移 120px」是绝对值，没有安全区也要生效；其余项 delta 为 0 = 写回，无副作用 | Condition: in-game. The minimap's fixed +25 px up / +120 px right offsets must apply even without a safe area; the other entries get delta 0 (= restore) and are unaffected
@@ -2349,6 +2352,7 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
         int ux = 0, uy = 0, uw = 0, uh = 0; dm_ui_rect(&ux, &uy, &uw, &uh);
         int dux = uh > 0 ? (int)lround(MM_SHIFT_RIGHT_PX * 2160.0 / (double)uh) : 33;   // 120 px → 布局单位 | 120 px in layout units
         int duy = uh > 0 ? (int)lround(MM_SHIFT_UP_PX * 2160.0 / (double)uh) : 8;       // 25 px → 布局单位 | 25 px in layout units
+        if (dm_uiscreen_portrait()) { dux = duy = 0; }   // 竖屏小地图由顶部贴顶上提统一摆位，不再额外右移 / 上移（120 px 在 402 点宽里过大） | Portrait: the minimap's position comes from the top lift alone; no extra right / up shift (120 px is too much in a 402-pt width)
         // 内移量从「贴边」（x = -宽）算，不从控件此刻的值算：手柄 / 触屏切换让游戏把界面重建两遍，第二遍建出来的面板矩形带着我们上一遍挪过的值（实跑：-1564 → -2002 之后又 -2002 → -2440），
         // 照「现值当原值」再挪一次，小地图就往左多挪了一个安全区、切回触屏也不回来。所以把原位（贴边）交给 mv_offset，由它按原位 + 内移量写
         // The inward shift is computed from "flush against the edge" (x = -width), not from the widget's current value: switching between

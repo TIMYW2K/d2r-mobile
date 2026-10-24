@@ -8,6 +8,8 @@
 #include "dm_input.h"
 #include "../../host/dm_i18n.h"
 
+CGRect front_ios_ui_band(UIView *v);   // front_ios.m：竖屏界面矩形（点）；横屏 = 视图 bounds | portrait UI rectangle in points; landscape = view bounds
+
 static UIColor *bronze(CGFloat a) { return [UIColor colorWithRed:.66 green:.53 blue:.32 alpha:a]; }
 // 本地改动（T38/T70）：灵动岛回城胶囊按钮相对岛中心的偏移（点）。先要右移 5、下移 2；后又要左侧岛再左移 2、上移 2
 // （= +3/0；右侧岛自动镜像成 -3/0），想再调只改这两个数。
@@ -181,55 +183,58 @@ static UIImage *v4img(NSString *name) {
 }
 // 逐字贴预渲染字形（字效与效果图同源）；align：0 居中、1 右对齐；(x, baseline) 为效果图像素
 // Blit pre-rendered glyphs character by character (text effect from the same source as the mockup); align: 0 centered, 1 right-aligned; (x, baseline) are in mockup pixels
-static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat baseline, int align, CGFloat W, CGFloat u) {
+static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat baseline, int align, CGFloat W, CGFloat u, CGFloat oy) {
     CGFloat adv=0; for(NSUInteger i=0;i<str.length;i++) adv+=[glyphs[[str substringWithRange:NSMakeRange(i,1)]][@"adv"] doubleValue];
     CGFloat pen=align==1?x-adv:x-adv/2;
     for(NSUInteger i=0;i<str.length;i++) {
         NSDictionary *gm=glyphs[[str substringWithRange:NSMakeRange(i,1)]]; if(!gm) continue;
         UIImage *im=[gm[@"file"] isKindOfClass:NSString.class]?v4img(gm[@"file"]):nil;
-        if(im) [im drawInRect:CGRectMake((pen+[gm[@"dx"] doubleValue]-1434)*u+W/2,(baseline+[gm[@"dy"] doubleValue])*u,im.size.width*u,im.size.height*u)];
+        if(im) [im drawInRect:CGRectMake((pen+[gm[@"dx"] doubleValue]-1434)*u+W/2,(baseline+[gm[@"dy"] doubleValue])*u+oy,im.size.width*u,im.size.height*u)];
         pen+=[gm[@"adv"] doubleValue];
     }
 }
 - (void)drawV4:(CGContextRef)c {
     NSDictionary *ui=v4ui(); const dm_hud_info h=self.hud; const dm_tc_state *s=self.controls;
     if(!ui || !dm_hud_bar_visible(&h,self.navigationMode && !self.dialogOnly,self.hudBlocked)) return;   // 只在局内常态显示：面板 / 读取画面 / 过场（导航态）与死亡时让开，不挡游戏自己的画面（dm_hud.h） | Shown only in the normal in-run state: yields during panels / loading screen / cutscenes (navigation mode) and on death, so it does not cover the game's own picture (dm_hud.h)
-    CGFloat W=self.bounds.size.width, u=self.bounds.size.height/1320.0;
+    // 竖屏：底栏贴界面矩形底边（界面带 = 游戏画界面的那一块），u / oy 都按界面带算；横屏界面带 = 整视图，u / oy 与原来逐字相同
+    // Portrait: the bar sits on the bottom edge of the UI rectangle (the band the game lays the UI out in); u / oy follow the band. In landscape the band is the whole view, so u / oy are unchanged
+    CGRect band=front_ios_ui_band(self);
+    CGFloat W=self.bounds.size.width, u=band.size.height/1320.0, oy=band.origin.y;
     CGFloat (^X)(CGFloat)=^(CGFloat px){ return (px-1434)*u+W/2; };
     // 底栏静态美术：效果图原生分辨率直接贴（不经游戏 1568×720 渲染再放大）；腰带格内挖空透出游戏画的药水、球心挖空透出球液
     // Bottom bar static art: blit the mockup directly at native resolution (not rendered by the game at 1568×720 and then upscaled); the belt cells are cut out to show the potions drawn by the game, and the orb centers are cut out to show the orb liquid
     UIImage *full=v4img(@"base_full.png"); NSDictionary *bo=ui[@"base"];
-    if(full) [full drawInRect:CGRectMake(X([bo[@"x"] doubleValue]),[bo[@"y"] doubleValue]*u,full.size.width*u,full.size.height*u)];
+    if(full) [full drawInRect:CGRectMake(X([bo[@"x"] doubleValue]),[bo[@"y"] doubleValue]*u+oy,full.size.width*u,full.size.height*u)];
     // 第 5 格（现为六格布局；原第 6 格）= 原版十字按钮整格替换（含边框）；按住第 1 帧。两态：有未分配点数时红色 + 外圈金光（原版「有点可加」提示），否则默认色（暗底金十字）
     // Cell 5 (now a six-cell layout; formerly cell 6) = the original game's cross button replacing the whole cell (border included); frame 1 while held. Two states: with unspent points it is red + an outer gold glow (the original game's "points available" hint), otherwise the default color (gold cross on dark base)
     { NSArray *s6=ui[@"slots"][5]; BOOL held=s && (s->buttons & DM_BTN_PLUS), alert=h.points>0 || h.quest_unread;
-      UIImage *btn=v4img(alert?(held?@"lvl_1.png":@"lvl_0.png"):(held?@"lvl_d1.png":@"lvl_d0.png")); CGRect r=CGRectMake(X([s6[0] doubleValue]),[s6[1] doubleValue]*u,([s6[2] doubleValue]-[s6[0] doubleValue])*u,([s6[3] doubleValue]-[s6[1] doubleValue])*u);
+      UIImage *btn=v4img(alert?(held?@"lvl_1.png":@"lvl_0.png"):(held?@"lvl_d1.png":@"lvl_d0.png")); CGRect r=CGRectMake(X([s6[0] doubleValue]),[s6[1] doubleValue]*u+oy,([s6[2] doubleValue]-[s6[0] doubleValue])*u,([s6[3] doubleValue]-[s6[1] doubleValue])*u);
       if(h.points>0) { CGContextSaveGState(c); CGContextSetShadowWithColor(c,CGSizeZero,10*u,[UIColor colorWithRed:1 green:.82 blue:.35 alpha:.95].CGColor); [btn drawInRect:r]; CGContextRestoreGState(c); }
       if(btn) [btn drawInRect:r]; }
     // 经验条：底槽 + 描边 + 填充（本级‰）+ 20 等分刻度，同效果图
     // Experience bar: base groove + outline + fill (‰ of the current level) + 20 equal tick marks, same as the mockup
     NSDictionary *e=ui[@"exp"]; CGFloat x0=[e[@"x0"] doubleValue], x1=[e[@"x1"] doubleValue], y=[e[@"y"] doubleValue], eh=[e[@"h"] doubleValue];
     UIColor *(^rgb)(NSArray *)=^(NSArray *a){ return [UIColor colorWithRed:[a[0] doubleValue]/255 green:[a[1] doubleValue]/255 blue:[a[2] doubleValue]/255 alpha:1]; };
-    CGContextSetFillColorWithColor(c,rgb(e[@"track"]).CGColor); CGContextFillRect(c,CGRectMake(X(x0),y*u,(x1-x0)*u,eh*u));
-    CGContextSetStrokeColorWithColor(c,rgb(e[@"edge"]).CGColor); CGContextSetLineWidth(c,u); CGContextStrokeRect(c,CGRectMake(X(x0)+u/2,y*u+u/2,(x1-x0-1)*u,(eh-1)*u));
-    CGContextSetFillColorWithColor(c,rgb(e[@"fill"]).CGColor); CGContextFillRect(c,CGRectMake(X(x0+1),(y+1)*u,(x1-x0-2)*u*h.exp_permille/1000.0,(eh-2)*u));
+    CGContextSetFillColorWithColor(c,rgb(e[@"track"]).CGColor); CGContextFillRect(c,CGRectMake(X(x0),y*u+oy,(x1-x0)*u,eh*u));
+    CGContextSetStrokeColorWithColor(c,rgb(e[@"edge"]).CGColor); CGContextSetLineWidth(c,u); CGContextStrokeRect(c,CGRectMake(X(x0)+u/2,y*u+oy+u/2,(x1-x0-1)*u,(eh-1)*u));
+    CGContextSetFillColorWithColor(c,rgb(e[@"fill"]).CGColor); CGContextFillRect(c,CGRectMake(X(x0+1),(y+1)*u+oy,(x1-x0-2)*u*h.exp_permille/1000.0,(eh-2)*u));
     int ticks=[e[@"ticks"] intValue]; CGContextSetFillColorWithColor(c,rgb(e[@"track"]).CGColor);
-    for(int t=1;t<ticks;t++) CGContextFillRect(c,CGRectMake(X(x0+round((x1-x0)*t/(double)ticks)),(y+1)*u,u,(eh-2)*u));
+    for(int t=1;t<ticks;t++) CGContextFillRect(c,CGRectMake(X(x0+round((x1-x0)*t/(double)ticks)),(y+1)*u+oy,u,(eh-2)*u));
     NSDictionary *vt=ui[@"vital"];   // 生命 / 法力：球顶上方居中，效果图字形原生分辨率（原生数值文字已挪出屏幕） | Life / mana: centered above the top of the orb, mockup glyphs at native resolution (the native numeric text has been moved off screen)
-    v4text([NSString stringWithFormat:@(dm_ui("dmHudLife")),h.hp,h.hp_max],vt[@"glyphs"],[vt[@"left_x"] doubleValue],[vt[@"baseline"] doubleValue],0,W,u);
-    v4text([NSString stringWithFormat:@(dm_ui("dmHudMana")),h.mp,h.mp_max],vt[@"glyphs"],[vt[@"right_x"] doubleValue],[vt[@"baseline"] doubleValue],0,W,u);
+    v4text([NSString stringWithFormat:@(dm_ui("dmHudLife")),h.hp,h.hp_max],vt[@"glyphs"],[vt[@"left_x"] doubleValue],[vt[@"baseline"] doubleValue],0,W,u,oy);
+    v4text([NSString stringWithFormat:@(dm_ui("dmHudMana")),h.mp,h.mp_max],vt[@"glyphs"],[vt[@"right_x"] doubleValue],[vt[@"baseline"] doubleValue],0,W,u,oy);
     NSDictionary *lv=ui[@"lv"];
-    v4text([NSString stringWithFormat:@"Lv %d · %d%%",h.level,h.exp_permille/10],lv[@"glyphs"],[lv[@"x"] doubleValue],[lv[@"baseline"] doubleValue],0,W,u);
+    v4text([NSString stringWithFormat:@"Lv %d · %d%%",h.level,h.exp_permille/10],lv[@"glyphs"],[lv[@"x"] doubleValue],[lv[@"baseline"] doubleValue],0,W,u,oy);
     // 角标：腰带四列件数（第 1–4 格），右下内角右对齐（回城不要书 / 卷轴、不显示次数，第 5 格是十字）
     // Badges: item counts of the four belt columns (cells 1–4), right-aligned at the inner bottom-right corner (town portal needs no tome / scroll and shows no count; cell 5 is the cross)
     NSArray *slots=ui[@"slots"], *in=ui[@"inner"]; NSDictionary *bd=ui[@"badge"];
     int counts[5]={0,h.belt[0],h.belt[1],h.belt[2],h.belt[3]};
     for(int i=1;i<=4;i++) { if(!counts[i]) continue;
-        v4text([NSString stringWithFormat:@"%d",counts[i]],bd[@"glyphs"],[slots[i][0] doubleValue]+[in[2] doubleValue]+[bd[@"dx"] doubleValue],[slots[i][1] doubleValue]+[in[3] doubleValue]+[bd[@"dy"] doubleValue],1,W,u); }
+        v4text([NSString stringWithFormat:@"%d",counts[i]],bd[@"glyphs"],[slots[i][0] doubleValue]+[in[2] doubleValue]+[bd[@"dx"] doubleValue],[slots[i][1] doubleValue]+[in[3] doubleValue]+[bd[@"dy"] doubleValue],1,W,u,oy); }
     // 难度：第 0 格当前档数字；选择条展开时画 8 格（当前档不透明、其余略淡）
     // Difficulty: cell 0 shows the current level number; when the selector strip is expanded, draw 8 cells (current level opaque, the rest slightly faded)
     void (^digit)(int,CGFloat,CGFloat,CGFloat)=^(int n,CGFloat cx,CGFloat cy,CGFloat alpha){ UIImage *d=v4img([NSString stringWithFormat:@"diff_%d.png",n]);
-        if(d) [d drawInRect:CGRectMake(X(cx)-d.size.width*u/2,cy*u-d.size.height*u/2,d.size.width*u,d.size.height*u) blendMode:kCGBlendModeNormal alpha:alpha]; };
+        if(d) [d drawInRect:CGRectMake(X(cx)-d.size.width*u/2,cy*u+oy-d.size.height*u/2,d.size.width*u,d.size.height*u) blendMode:kCGBlendModeNormal alpha:alpha]; };
     CGFloat icx=([in[0] doubleValue]+[in[2] doubleValue]+1)/2, icy=([in[1] doubleValue]+[in[3] doubleValue]+1)/2;
     if(h.players>=1 && h.players<=8) digit(h.players,[slots[0][0] doubleValue]+icx,[slots[0][1] doubleValue]+icy,1);
     if(s && s->diff_open) {
@@ -237,7 +242,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
         for(int i=0;i<8;i++) {
             CGFloat cx=[pk[@"center_x"] doubleValue]+(i-3.5)*[pk[@"pitch"] doubleValue], cy=[pk[@"y"] doubleValue];
             CGFloat tw=tile.size.width, th=tile.size.height, a=(i+1==h.players)?1:.82;
-            if(tile) [tile drawInRect:CGRectMake(X(cx-tw/2),(cy-th/2)*u,tw*u,th*u) blendMode:kCGBlendModeNormal alpha:a];
+            if(tile) [tile drawInRect:CGRectMake(X(cx-tw/2),(cy-th/2)*u+oy,tw*u,th*u) blendMode:kCGBlendModeNormal alpha:a];
             digit(i+1,cx,cy,a);
         }
     }
@@ -478,8 +483,8 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                 CGContextSetFillColorWithColor(c,[UIColor colorWithRed:.11 green:.094 blue:.078 alpha:.95].CGColor); CGContextFillEllipseInRect(c,bb);
                 CGContextSetLineWidth(c,MAX(1,br*.14)); CGContextSetStrokeColorWithColor(c,[UIColor colorWithRed:.63 green:.50 blue:.27 alpha:1].CGColor); CGContextStrokeEllipseInRect(c,lw2);
                 CGFloat ts=br*1.15; caption(@"Ⅱ",CGRectMake(bx-br,by-ts*.62,br*2,ts*1.4),ts,1); }
-            if(ssKind&2) { NSDictionary *ui=v4ui(); CGFloat W=self.bounds.size.width, u=self.bounds.size.height/1320.0; NSDictionary *bd=ui[@"badge"];
-                if(bd && u>0) v4text([NSString stringWithFormat:@"%d",ssCharges<0?0:ssCharges],bd[@"glyphs"],(t->x+t->r*.66-W/2)/u+1434,(t->y+t->r*.42)/u,1,W,u); }
+            if(ssKind&2) { NSDictionary *ui=v4ui(); CGRect band=front_ios_ui_band(self); CGFloat W=self.bounds.size.width, u=band.size.height/1320.0, oy=band.origin.y; NSDictionary *bd=ui[@"badge"];
+                if(bd && u>0) v4text([NSString stringWithFormat:@"%d",ssCharges<0?0:ssCharges],bd[@"glyphs"],(t->x+t->r*.66-W/2)/u+1434,(t->y+t->r*.42-oy)/u,1,W,u,oy); }   // 角标跟着技能钮（视图点）走，字大小仍按界面带换算；横屏 oy = 0、u = 视图高/1320，逐字不变 | The badge follows the skill button (view points); glyph size still scales by the UI band. In landscape oy = 0 and u = view height/1320, unchanged
             if(bare) continue;
             NSString *ln=i==DM_TC_MAIN?@"lbl_main.png":[NSString stringWithFormat:@"lbl_f%d.png",i-DM_TC_SKILL1+1+(s->skill_set?4:0)];
             UIImage *lbl=[UIImage imageWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:[@"hud_v4_ui" stringByAppendingPathComponent:ln]]];

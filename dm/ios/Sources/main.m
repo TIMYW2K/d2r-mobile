@@ -293,6 +293,8 @@ static void probe_tsd(void) {
 int dm_main(int argc, char **argv);   // dm/host/main.c 以 -Dmain=dm_main 编入 | dm/host/main.c is compiled in with -Dmain=dm_main
 UIView *front_ios_view(CGRect frame); // front_ios.m
 void front_ios_lifecycle_install(void); // front_ios.m
+void front_ios_set_launch_bounds(CGRect b, UIInterfaceOrientation o);   // front_ios.m：启动方向锁定（竖屏 / 横屏） | launch orientation lock (portrait / landscape)
+int front_ios_portrait(void);           // front_ios.m：是不是竖屏启动 | whether the launch orientation is portrait
 void front_ios_focus_event(int ev);     // front_ios.m
 static char *g_boot_argv[8];
 static int g_boot_argc = 4;
@@ -819,6 +821,8 @@ static void run_boot(void);
 // 底边上滑 / 顶边下拉一下就生效、底部横条常亮（下载界面本身没有贴边控件，声明了也无妨）
 // Once the assets are complete the game starts in place inside this controller (see ready), so it must make the same two declarations as DmGameVC -- otherwise, in the run played right after the first-install download,
 // a single swipe up from the bottom edge / pull down from the top edge takes effect and the home indicator stays lit (the download screen itself has no edge-hugging widgets, so declaring them does no harm)
+- (BOOL)shouldAutorotate { return !front_ios_portrait(); }   // 同 DmGameVC：下载界面也按启动方向锁定 | same as DmGameVC: the download screen is locked to the launch orientation too
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return front_ios_portrait() ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
@@ -1058,6 +1062,8 @@ static void astc_handoff(UIWindow *w) {   // 补充包到位（玩家刚拷好 /
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
+- (BOOL)shouldAutorotate { return !front_ios_portrait(); }   // 竖屏启动 = 锁死竖屏；横屏保持原行为（左右两向可转） | portrait launch = locked to portrait; landscape keeps the original behaviour (rotates between the two landscape directions)
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return front_ios_portrait() ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape; }
 - (void)viewSafeAreaInsetsDidChange {   // 安全区实际数值记进启动日志（排控件位置用，从 UIKit 读、不凭印象） | Record the actual safe-area values in the boot log (used for placing widgets; read from UIKit, not from memory)
     [super viewSafeAreaInsetsDidChange]; UIEdgeInsets i = self.view.safeAreaInsets; CGSize z = self.view.bounds.size;
     plog("安全区 上 %.1f 左 %.1f 下 %.1f 右 %.1f（点）；视图 %.0fx%.0f；朝向 %ld", i.top, i.left, i.bottom, i.right, z.width, z.height, (long)self.view.window.windowScene.interfaceOrientation);
@@ -1069,6 +1075,9 @@ static void astc_handoff(UIWindow *w) {   // 补充包到位（玩家刚拷好 /
 @implementation SceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)s options:(UISceneConnectionOptions *)o {
     UIWindowScene *ws = (UIWindowScene *)scene;
+    UIInterfaceOrientation lo = UIInterfaceOrientationUnknown;
+    if (@available(iOS 26.0, *)) lo = ws.effectiveGeometry.interfaceOrientation; else lo = ws.interfaceOrientation;
+    front_ios_set_launch_bounds(ws.coordinateSpace.bounds, lo);   // 第一件事：按启动时的界面方向 / 窗口宽高定竖屏 / 横屏（之后锁死，不跟随旋转） | first thing: decide portrait / landscape from the launch interface orientation / window bounds (locked afterwards, no rotation following)
     self.window = [[UIWindow alloc] initWithWindowScene:ws]; g_window = self.window;
     UIViewController *vc = [DmGameVC new];
     vc.view.backgroundColor = UIColor.blackColor;

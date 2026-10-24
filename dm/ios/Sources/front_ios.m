@@ -84,9 +84,59 @@ static __weak DmMetalView *g_touch_view;
 // True fullscreen (screen narrower than 16:9, iPad 4:3): 3D fills the whole window, and the game view (UI, custom-drawn widgets, UI touch points) is a bottom-anchored 16:9 block, see front_ios_view.
 // The world side (tapping monsters / chests / unit projection) is computed on the whole window: world_rect = the whole window's rectangle in game-view coordinates; when not true fullscreen it is the game view itself.
 static int g_full;
+// 竖屏（启动方向锁定，见 front_ios_set_launch_bounds）：3D 铺满整窗，界面矩形 1206×1336 像素贴底 / 局外居中，由 dm_uiscreen.c 按 1950:2160 排。
+// 游戏视图仍是整窗（不套 g_full 容器），界面触点、自绘 HUD 都按界面矩形归一化。
+// Portrait (orientation locked at launch, see front_ios_set_launch_bounds): 3D fills the window, the UI rectangle is 1206x1336 px anchored to the bottom / centered out of a run, laid out at 1950:2160 by dm_uiscreen.c.
+// The game view is still the whole window (no g_full container); UI touch points and the custom HUD are normalized to the UI rectangle.
+static int g_portrait, g_res_dir;   // g_res_dir = 方向代号（启动方向变一次加 1，见 front_ios_set_launch_bounds） | orientation generation (incremented whenever the launch orientation is set, see front_ios_set_launch_bounds)
+int front_ios_portrait(void) { return g_portrait; }
+void front_ios_set_launch_bounds(CGRect b, UIInterfaceOrientation o) {
+    // 以启动时的界面方向为准（iOS 26 的 effectiveGeometry 已经是最终方向），读不到才退回窗口宽高：
+    // 只按 coordinateSpace.bounds 判，某些系统版本在 willConnect 这一刻还按竖屏尺寸给，横屏启动会被误锁成竖屏。
+    // Prefer the launch interface orientation (on iOS 26 effectiveGeometry already holds the final one) and fall back to the
+    // window bounds only when it is unknown: bounds alone can still be portrait-sized at willConnect on some system versions,
+    // which would wrongly lock a landscape launch to portrait.
+    // 只要有一个信号说横屏就按横屏（保住原有横屏，绝不因为某个信号晚一拍就把横屏锁成竖屏）；
+    // 两个信号都说竖屏（或都读不到、窗口是竖的）才锁竖屏。
+    // Landscape wins if either signal says landscape (never lock an existing landscape launch to portrait just because one
+    // signal lags); portrait only when both say portrait (or both are unknown and the window is taller than wide).
+    int ol = o == UIInterfaceOrientationLandscapeLeft || o == UIInterfaceOrientationLandscapeRight ? 1 :
+             o == UIInterfaceOrientationPortrait || o == UIInterfaceOrientationPortraitUpsideDown ? 0 : -1;
+    int bl = b.size.width > b.size.height + 0.5 ? 1 : b.size.height > b.size.width + 0.5 ? 0 : -1;
+    int p = ol == 1 || bl == 1 ? 0 : ol == 0 || bl == 0 ? 1 : b.size.height > b.size.width + 0.5;
+    if (p == g_portrait) return;
+    g_portrait = p; ++g_res_dir; g_full = 0;   // 分辨率缓存按新方向重算；竖屏不套真全屏容器 | recompute the resolution cache for the new orientation; portrait uses no true-fullscreen container
+    LOG("前端：启动方向 %s（窗口 %.0fx%.0f，界面方向 %ld）", p ? "竖屏（方向锁定）" : "横屏", b.size.width, b.size.height, (long)o);
+}
 static CGRect world_rect(UIView *v) { UIView *b = v.superview; int x, y, w, h, rw = 0, rh = 0; if (!g_full || !b) return v.bounds; dm_ui_rect(&x, &y, &w, &h);
     return dm_screen_real(&rw, &rh) && h > 0 && h < rh ? [v convertRect:b.bounds fromView:b] : v.bounds; }   // 局外（界面矩形就是整个画面）时世界与游戏视图重合 | Out of a run (the UI rectangle is the whole picture) the world and the game view coincide
 static void world_norm(UIView *v, CGFloat x, CGFloat y, float *nx, float *ny) { CGRect r = world_rect(v); *nx = (float)((x - r.origin.x) / r.size.width); *ny = (float)((y - r.origin.y) / r.size.height); }
+// 界面矩形在视图里的点坐标：横屏 = 游戏视图自己（真全屏时视图就是界面矩形）；竖屏 = 整窗里按真实画面比例换算出的那一块。
+// 界面触点、手柄光标、小地图 / 地图终点、自绘底栏全部经这里换算，横屏时与原行为逐字节相同。
+// UI rectangle in view points: landscape = the game view itself (in true fullscreen the view IS the UI rectangle); portrait = the block inside the whole window converted by the real-picture scale.
+// UI touch points, the controller cursor, minimap / map goals and the custom bottom bar all go through this; in landscape the behaviour is byte-for-byte the same as before.
+static CGRect ui_rect_view(UIView *v) {
+    if (!g_portrait) return v.bounds;
+    int x = 0, y = 0, w = 0, h = 0, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h);
+    if (!dm_screen_real(&rw, &rh) || rh <= 0 || w <= 0 || h <= 0) return v.bounds;
+    CGFloat k = v.bounds.size.height / rh;
+    return CGRectMake(v.bounds.origin.x + x * k, v.bounds.origin.y + y * k, w * k, h * k);
+}
+CGRect front_ios_ui_band(UIView *v) { return ui_rect_view(v); }
+static void ui_norm(UIView *v, CGFloat x, CGFloat y, float *nx, float *ny) {
+    CGRect r = ui_rect_view(v); *nx = (float)((x - r.origin.x) / r.size.width); *ny = (float)((y - r.origin.y) / r.size.height);
+}
+static CGPoint ui_to_view(UIView *v, float nx, float ny) {
+    CGRect r = ui_rect_view(v); return CGPointMake(r.origin.x + nx * r.size.width, r.origin.y + ny * r.size.height);
+}
+static CGFloat ui_band_h(UIView *v) { return ui_rect_view(v).size.height; }
+static void cursor_set_view(UIView *v, CGFloat x, CGFloat y) {   // 手柄光标请求按界面矩形归一化（宿主再乘游戏全局宽高 = 界面尺寸） | cursor request normalized to the UI rectangle (the host then multiplies by the game globals = UI size)
+    CGRect r = ui_rect_view(v); dm_cursor_set_screen((float)(x - r.origin.x), (float)(y - r.origin.y), (float)r.size.width, (float)r.size.height);
+}
+static CGPoint ui_picture_to_view(UIView *v, float px, float py) {   // 真实画面归一化 → 视图点（地图上玩家脚底 / 终点） | real-picture normalized -> view points (player feet / goals on the map)
+    if (!g_portrait) { CGRect wr = world_rect(v); return CGPointMake(wr.origin.x + px * wr.size.width, wr.origin.y + py * wr.size.height); }
+    return CGPointMake(v.bounds.origin.x + px * v.bounds.size.width, v.bounds.origin.y + py * v.bounds.size.height);
+}
 // 测试脚本触点（DM_TOUCH_SCRIPT）：走与真手指相同的 touchesBegan/Moved/Ended 路径，只把位置换成脚本给的点。
 // Test script touch points (DM_TOUCH_SCRIPT): go through the same touchesBegan/Moved/Ended path as real fingers, only replacing the position with the point given by the script.
 @interface DmScriptTouch : UITouch
@@ -321,13 +371,21 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     if(l==g_layer) l.drawableSize=CGSizeMake(self.bounds.size.width*l.contentsScale,self.bounds.size.height*l.contentsScale);   // 真全屏（iPad）时出图层挂在外层容器上，不是这一层 | In true fullscreen (iPad) the present layer hangs on the outer container, not this layer
     UIEdgeInsets si=self.safeAreaInsets; static CGFloat sl=-1,sr=-1,sb=-1; BOOL safeChanged=(si.left!=sl || si.right!=sr || si.bottom!=sb);   // 安全区变了（首次布局 / 转屏）也要重排控件 | A safe area change (first layout / rotation) also requires re-laying out the widgets
     if (safeChanged) { sl=si.left; sr=si.right; sb=si.bottom; dm_tc_set_safe_bottom((float)si.bottom); dm_tc_set_safe_insets((float)si.left,(float)si.right); }
+    // 界面带（竖屏贴底 / 面板居中那一块）：变了就按新带重排技能扇区与底栏；横屏就是整视图，行为不变
+    // UI band (the bottom-anchored block in portrait / centered with a panel): when it changes, re-lay out the skill fan and bottom bar for the new band; in landscape it is the whole view, behaviour unchanged
+    CGRect band=ui_rect_view(self);
+    static CGRect lastBand; static BOOL bandSet;
+    BOOL bandChanged=!bandSet || !CGRectEqualToRect(band,lastBand);
+    dm_tc_set_safe_top((float)si.top);
+    if (bandChanged) { bandSet=YES; lastBand=band; dm_tc_set_ui_band((float)band.origin.x,(float)band.origin.y,(float)band.size.width,(float)band.size.height); }
     // 只对 iPad：底部安全区那一条不起摇杆（见 dm_tc_set_edge_bottom）。视图不贴屏幕底（留边档）时这个值自然是 0。DM_TEST_EDGE_B：Mac 上没有底部安全区，测试用
     // iPad only: the bottom safe area strip does not start the stick (see dm_tc_set_edge_bottom). When the view does not touch the bottom of the screen (margin mode) this value is naturally 0. DM_TEST_EDGE_B: Mac has no bottom safe area, for testing
     { const char *tb=getenv("DM_TEST_EDGE_B"); dm_tc_set_edge_bottom(tb ? (float)atof(tb) : UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad ? (float)si.bottom : 0); }
-    { const char *tl=getenv("DM_TEST_SAFE_L"); CGFloat l=tl ? atof(tl) : si.left, hh=self.bounds.size.height; if(hh>0) dm_ui_safe_left((int)lround(l/hh*2160)); }   // 左上角佣兵头像内移到安全线内 | The top-left mercenary portrait is moved inside the safe line
+    { const char *tl=getenv("DM_TEST_SAFE_L"); CGFloat l=tl ? atof(tl) : si.left, hh=band.size.height; if(hh>0) dm_ui_safe_left((int)lround(l/hh*2160)); }   // 左上角佣兵头像内移到安全线内 | The top-left mercenary portrait is moved inside the safe line
+    { const char *tt=getenv("DM_TEST_SAFE_T"); CGFloat t=tt ? atof(tt) : si.top, hh=band.size.height; if(hh>0) dm_ui_safe_top((int)lround(t/hh*2160)); }   // 竖屏：贴顶上提停在该安全线之下（横屏 g_ui_h = 视图高，但 lift 只在竖屏减它，不影响横屏） | Portrait: the top lift stops below this safe line (landscape: g_ui_h is the view height, but the lift is only reduced in portrait, so landscape is unaffected)
     { const char *tj=getenv("DM_TEST_JOY_ISO"); if(tj) dm_tc_set_iso_fix(atoi(tj)); }   // 测量用：0 = 关掉移动摇杆斜向预修正 | For measurement: 0 = turn off the diagonal pre-correction of the movement stick
-    { const char *ts=getenv("DM_TEST_SAFE_R"); CGFloat r=ts ? atof(ts) : si.right, hh=self.bounds.size.height; if(hh>0) dm_ui_safe_right((int)lround(r/hh*2160)); }   // 右上角小地图与区域名内移到安全线内；DM_TEST_SAFE_R=<点> 供 Mac 上验（Mac 窗口安全区是 0） | The top-right minimap and area name are moved inside the safe line; DM_TEST_SAFE_R=<points> is for verification on Mac (the Mac window safe area is 0)
-    if (safeChanged || _controls.layout.width!=self.bounds.size.width || _controls.layout.height!=self.bounds.size.height) {
+    { const char *ts=getenv("DM_TEST_SAFE_R"); CGFloat r=ts ? atof(ts) : si.right, hh=band.size.height; if(hh>0) dm_ui_safe_right((int)lround(r/hh*2160)); }   // 右上角小地图与区域名内移到安全线内；DM_TEST_SAFE_R=<点> 供 Mac 上验（Mac 窗口安全区是 0） | The top-right minimap and area name are moved inside the safe line; DM_TEST_SAFE_R=<points> is for verification on Mac (the Mac window safe area is 0)
+    if (safeChanged || bandChanged || _controls.layout.width!=self.bounds.size.width || _controls.layout.height!=self.bounds.size.height) {
         [self cancelControlsFrom:"layout"]; dm_tc_resize(&_controls,self.bounds.size.width,self.bounds.size.height);
     }
     // 本地改动：转屏过渡里 UIKit 可能把视图尺寸短暂置零——别把控件层跟着清成 0×0（那期间胶囊会消失）。
@@ -473,15 +531,15 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 - (void)pushFrom:(const char *)source phase:(const char *)phase {
     dm_touch ts[16]; int n=0; CGSize b=self.bounds.size;
     if (b.width>0 && b.height>0) for(int i=0;i<16;i++) if(_slot[i]) {
-        CGPoint p=[_slot[i] locationInView:self];
-        ts[n++]=(dm_touch){(uint32_t)i,(float)fmin(fmax(p.x/b.width,0),.99999),(float)fmin(fmax(p.y/b.height,0),.99999)};
+        CGPoint p=[_slot[i] locationInView:self]; float ux,uy; ui_norm(self,p.x,p.y,&ux,&uy);   // 竖屏按界面矩形归一化（横屏 = 视图归一化，逐字不变） | portrait normalizes to the UI rectangle (landscape = view normalization, unchanged)
+        ts[n++]=(dm_touch){(uint32_t)i,(float)fmin(fmax(ux,0),.99999),(float)fmin(fmax(uy,0),.99999)};
     }
     dm_touch_set(ts,n);
     BOOL diagnostic=touch_control_log_enabled();
     uint64_t publishStart=diagnostic?now_ns():0;
     // 指针登记为待写光标、再发布按键：宿主在游戏读手柄时把两者一起落地（dm_cursor.h）
     // Register the pointer as a pending cursor write, then publish the keys: the host applies both together when the game reads the controller (dm_cursor.h)
-    if (_controls.pointer_valid) dm_cursor_set_screen(_controls.pointer_x,_controls.pointer_y,b.width,b.height); else dm_cursor_clear();
+    if (_controls.pointer_valid) cursor_set_view(self,_controls.pointer_x,_controls.pointer_y); else dm_cursor_clear();
     dm_input_set(_controls.buttons,_controls.lx,_controls.ly,_controls.rx,_controls.ry);
     if (_controls.belt_request) { int br=_controls.belt_request; _controls.belt_request=0;   // 腰带展开 / 收起 / 喝上面几排的药（dm_actions.c） | Belt expand / collapse / drink a potion from the upper rows (dm_actions.c)
         if (br==1 || br==2) dm_belt_expand(br==1); else dm_belt_use(br&0xf, br>>4&0xf); }   // 腰带点按一律给玩家喝 | belt taps always go to the player
@@ -549,7 +607,8 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 // With the fullscreen map open: tapping the minimap block again, or anywhere not on a skill button / stick area = back to the minimap; the stick still walks and skill buttons still cast (travelling with the fullscreen map open is normal Diablo play). The minimap is always shown; there is no way to close it.
 - (BOOL)minimapRect:(CGRect *)whole tap:(CGRect *)tap {   // 小地图矩形与其中的点击区（本视图的点）；没有矩形返回 NO | Minimap rectangle and the tap area inside it (points in this view); returns NO if there is no rectangle
     float r[4]; CGSize z=self.bounds.size; if(z.width<=0 || !dm_ui_minimap_rect(r)) return NO;
-    CGFloat x0=r[0]*z.width, y0=r[1]*z.height, w=(r[2]-r[0])*z.width, h=(r[3]-r[1])*z.height, band=h/4; if(band<30) band=MIN(30,h*0.4);
+    CGRect u=ui_rect_view(self);   // 宿主给的是界面矩形归一化（竖屏贴顶上提后 y 可为负） | normalized to the UI rectangle (negative y after the portrait top lift)
+    CGFloat x0=u.origin.x+r[0]*u.size.width, y0=u.origin.y+r[1]*u.size.height, w=(r[2]-r[0])*u.size.width, h=(r[3]-r[1])*u.size.height, band=h/4; if(band<30) band=MIN(30,h*0.4);
     if(whole) *whole=CGRectMake(x0,y0,w,h); if(tap) *tap=CGRectMake(x0,y0,w,band); return YES;
 }
 - (BOOL)inMinimap:(CGPoint)p {
@@ -598,7 +657,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     { static int was; int st=dm_ui_bind_active(); if(st==2 && was!=2 && z.width>0) { _controls.pointer_valid=1; _controls.pointer_x=0.155f*(float)z.width; _controls.pointer_y=0.5f*(float)z.height; } was=st; }
     int hk=dm_ui_bind_skill_hit(&nx,&ny); _controls.tap_button=0; _controls.tap_move=0;
     if(!hk) _selId=0;   // 这一下没落在加点类按钮上：选中作废 | This tap did not land on a point-spending button: the selection is voided
-    if(hk) { _controls.tap_x=nx*(float)z.width; _controls.tap_y=ny*(float)z.height;
+    if(hk) { CGPoint bv=ui_to_view(self,nx,ny); _controls.tap_x=(float)bv.x; _controls.tap_y=(float)bv.y;
         if(hk==1 && dm_ui_bind_active()==2) _controls.tap_button=DM_BTN_Y;   // 绑定态：点技能 = 绑定 | Binding mode: tapping a skill = bind
         else if(!dm_ui_bind_active()) _controls.tap_move=1; } }   // 平时：点技能图标 / 属性「+」只选中（光标移过去、出说明），不发点击——点击当场加点且不可撤销，加点走手机层的确认按钮 | Normally: tapping a skill icon / stat "+" only selects (cursor moves there, tooltip appears) and sends no click -- a click spends the point on the spot and cannot be undone; spending points goes through the phone layer's confirm button
 // 商人货架拖货的跟手图：游戏里货架上的货没有「拿起」态，拖动途中手指下什么都没有。
@@ -621,9 +680,10 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     // previously it was placed at "half the goods' height + 14 points above the finger", so a one-cell-high goods image was about 18 points below the judgment point -- the image was already over the first inventory row while the judgment point was still outside the top edge of the inventory, and releasing did not buy (measured with a key on this machine)
     float g[4]; if(!dm_ui_shelf_grid(g)) return;
     float r[4]; BOOL have=mtl_ui_ghost_rect(r);
-    mtl_ui_ghost(1,(float)(f->aim_origin_x/z.width),(float)(f->aim_origin_y/z.height),g,(float)(f->x/z.width),(float)((f->y-DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(z.width,z.height))/z.height));
+    float px,py,fx,fy; ui_norm(self,f->aim_origin_x,f->aim_origin_y,&px,&py); ui_norm(self,f->x,(CGFloat)(f->y-DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(z.width,z.height)),&fx,&fy);   // 界面矩形归一化（竖屏与横屏同一入口） | normalized to the UI rectangle (same entry in portrait and landscape)
+    mtl_ui_ghost(1,px,py,g,fx,fy);
     if(!_ghostOn) { _ghostOn=YES; LOG("前端：货架拖货跟手图 开（按下点 %.0f,%.0f）",f->aim_origin_x,f->aim_origin_y); }
-    if(have && !_ghostDim && (_itemKind!=8 || dm_ui_stack_left()==1)) { _ghostDim=[[UIView alloc] initWithFrame:CGRectMake(r[0]*z.width,r[1]*z.height,(r[2]-r[0])*z.width,(r[3]-r[1])*z.height)];
+    if(have && !_ghostDim && (_itemKind!=8 || dm_ui_stack_left()==1)) { CGRect rv=ui_rect_view(self); _ghostDim=[[UIView alloc] initWithFrame:CGRectMake(rv.origin.x+r[0]*rv.size.width,rv.origin.y+r[1]*rv.size.height,(r[2]-r[0])*rv.size.width,(r[3]-r[1])*rv.size.height)];
         _ghostDim.backgroundColor=[UIColor colorWithWhite:0 alpha:.82]; _ghostDim.userInteractionEnabled=NO; [self addSubview:_ghostDim]; }
 }
 // 小地图任务终点（宿主 dm_world.c 找终点、dm_cursor.c 给地图几何）：
@@ -649,15 +709,15 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     CGRect wr=world_rect(self); float mm[4]; BOOL haveMini=dm_ui_minimap_rect(mm);
     BOOL show=mode && n>0 && !_navigation && !_info.hidden && rw>0 && cell>0 && (mode==2 || haveMini);
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    CGSize z=self.bounds.size; CGFloat k=wr.size.width/rw, c=cell*k, H=wr.size.height, lh=H*0.0236, sh=H*0.085*(mode==1?0.6:1);   // 名牌高（原版名牌字高约屏高 1/53）、符号高（的大小） | Nameplate height (the original game's nameplate glyph height is about 1/53 of screen height), symbol height (its size)
+    CGSize z=self.bounds.size; CGRect band=ui_rect_view(self); CGFloat k=wr.size.width/rw, c=cell*k, H=band.size.height, lh=H*0.0236, sh=H*0.085*(mode==1?0.6:1);   // 名牌高（原版名牌字高约屏高 1/53）、符号高（的大小） | Nameplate height (the original game's nameplate glyph height is about 1/53 of screen height), symbol height (its size)
     CGPoint o; CGRect area;
-    if(mode==2) { o=CGPointMake(wr.origin.x+v.sx*wr.size.width, wr.origin.y+v.sy*wr.size.height); area=CGRectMake(wr.origin.x+wr.size.width*0.04, wr.origin.y+H*0.06, wr.size.width*0.92, H*0.72); }
-    else { area=CGRectMake(mm[0]*z.width, mm[1]*z.height, (mm[2]-mm[0])*z.width, (mm[3]-mm[1])*z.height); o=CGPointMake(CGRectGetMidX(area),CGRectGetMidY(area)); area=CGRectInset(area,area.size.width*0.06,area.size.height*0.08); }
+    if(mode==2) { o=ui_picture_to_view(self,v.sx,v.sy); area=CGRectMake(band.origin.x+band.size.width*0.04, band.origin.y+H*0.06, band.size.width*0.92, H*0.72); }
+    else { area=CGRectMake(band.origin.x+mm[0]*band.size.width, band.origin.y+mm[1]*band.size.height, (mm[2]-mm[0])*band.size.width, (mm[3]-mm[1])*band.size.height); o=CGPointMake(CGRectGetMidX(area),CGRectGetMidY(area)); area=CGRectInset(area,area.size.width*0.06,area.size.height*0.08); }
     for(int i=0;i<12;i++) {
         if(!_mgLabel[i]) { _mgLabel[i]=[CALayer layer]; _mgMark[i]=[CALayer layer]; for(CALayer *l in @[_mgLabel[i],_mgMark[i]]) { l.contentsGravity=kCAGravityResizeAspect; l.hidden=YES; [_info.layer addSublayer:l]; } }
         if(!show || i>=n) { _mgLabel[i].hidden=YES; _mgMark[i].hidden=YES; continue; }
         int dx=v.x[i]-v.px, dy=v.y[i]-v.py; CGPoint p=CGPointMake(o.x+(dx-dy)*1.6*c, o.y+(dx+dy)*0.8*c);
-        BOOL inside=CGRectContainsPoint(area,p) && !(mode==2 && p.x>wr.origin.x+wr.size.width*0.72 && p.y>wr.origin.y+H*0.45);   // 全屏地图右下是技能区 | The bottom right of the fullscreen map is the skill area
+        BOOL inside=CGRectContainsPoint(area,p) && !(mode==2 && p.x>band.origin.x+band.size.width*0.72 && p.y>band.origin.y+H*0.45);   // 全屏地图右下是技能区 | The bottom right of the fullscreen map is the skill area
         int art=v.art[i], sym=art>=64; UIImage *lab=nil, *mark=nil;
         if(inside && sym) mark=[self mgImage:[NSString stringWithFormat:@"sym_%d.png",art-64]];
         else { int id=sym ? 0 : art; lab=!dm_lang_zh() ? [self mgImage:[NSString stringWithFormat:@"label_%d_en.png",id]] : (old && dm_lang_index()==8 ? [self mgImage:[NSString stringWithFormat:@"label_%d_old.png",id]] : nil);   // 简中 / 繁体用中文名牌，其余原版 enUS 名牌；旧译名只跟简中（注释一系只写 zhCN） | Simplified / Traditional Chinese use the Chinese name label, everything else the original enUS name label; legacy translated names apply to Simplified Chinese only (the notes family is written only into zhCN)
@@ -714,13 +774,13 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     // Holding "+" on the stats page = continuous point spending (about 1 point every 0.15 seconds, stops on release)
     if(_controls.navigation_mode && !dm_ui_bind_active() && !_itemAsked && _controls.pointer_slot>=0 && _controls.pointer_slot<DM_TC_MAX_TOUCH) { dm_tc_finger *f=&_controls.finger[_controls.pointer_slot]; float nx=0,ny=0; CGSize z=self.bounds.size; uint32_t hid=dm_ui_hit_id();
         if(f->active && !f->pointer_dragged && !f->ui_drag && now-f->start_time_s>=0.5 && hypotf(f->x-f->aim_origin_x,f->y-f->aim_origin_y)<=10*dm_tc_scale_for_size(z.width,z.height) && dm_ui_bind_skill_hit(&nx,&ny)==2 && hid>=1 && hid<=4) {
-            if(!f->pointer_long) { f->pointer_long=1; _statNext=now; _selId=hid; _controls.pointer_valid=1; _controls.pointer_x=nx*(float)z.width; _controls.pointer_y=ny*(float)z.height; LOG("前端：按住「+」（属性 %u）→ 连续加点",hid-1); }
+            if(!f->pointer_long) { f->pointer_long=1; _statNext=now; _selId=hid; CGPoint bv=ui_to_view(self,nx,ny); _controls.pointer_valid=1; _controls.pointer_x=(float)bv.x; _controls.pointer_y=(float)bv.y; LOG("前端：按住「+」（属性 %u）→ 连续加点",hid-1); }
             if(now>=_statNext) { _statNext=now+0.15; dm_stat_add((int)hid-1,1); } } }
     // 技能树里长按技能图标（按住不动 ≥0.5 秒）= 给它选一个位：光标到图标 + 按 Y，游戏弹自己的「重新绑定技能」框（原版手柄流程的第一步）
     // Long press on a skill icon in the skill tree (held still ≥0.5 seconds) = pick a slot for it: cursor to the icon + press Y, and the game pops its own 「重新绑定技能」(Press button to rebind skill) box (step one of the original game's controller flow)
     if(_controls.navigation_mode && !dm_ui_bind_active() && !_itemAsked && _controls.pointer_slot>=0 && _controls.pointer_slot<DM_TC_MAX_TOUCH) { dm_tc_finger *f=&_controls.finger[_controls.pointer_slot]; float nx=0,ny=0; CGSize z=self.bounds.size;
         if(!_pendEnd && f->active && !f->pointer_dragged && !f->pointer_long && now-f->start_time_s>=0.5 && hypotf(f->x-f->aim_origin_x,f->y-f->aim_origin_y)<=10*dm_tc_scale_for_size(z.width,z.height) && dm_ui_bind_skill_hit(&nx,&ny)==1) {
-            dm_tc_pointer_press(&_controls,nx*(float)z.width,ny*(float)z.height,DM_BTN_Y); LOG("前端：技能树里长按技能 (%.0f,%.0f) → 开绑定框",nx*z.width,ny*z.height); } }   // 按满即弹，不等松手（dm_tc_pointer_press 会把这根手指记成「长按已处理」，松手不再算点按） | Pops as soon as the hold time is reached, without waiting for release (dm_tc_pointer_press marks this finger as "long press handled", so the release no longer counts as a tap)
+            CGPoint bv=ui_to_view(self,nx,ny); dm_tc_pointer_press(&_controls,(float)bv.x,(float)bv.y,DM_BTN_Y); LOG("前端：技能树里长按技能 (%.0f,%.0f) → 开绑定框",bv.x,bv.y); } }   // 按满即弹，不等松手（dm_tc_pointer_press 会把这根手指记成「长按已处理」，松手不再算点按） | Pops as soon as the hold time is reached, without waiting for release (dm_tc_pointer_press marks this finger as "long press handled", so the release no longer counts as a tap)
     if(_mapWorldAsked) { int wr=dm_world_tap_result(_mapWorldSeq);   // 小地图那一块的点按：世界答了才定去向 | Tap on the minimap block: the destination is decided only after the world answers
         if(wr>=0) { _mapWorldAsked=NO; if(wr==0 && !_navigation) { dm_ui_map_full(1); LOG("前端：点小地图那一块 (%.0f,%.0f) → 全屏地图",_mapWorldPt.x,_mapWorldPt.y); }
             else LOG("前端：点小地图那一块 (%.0f,%.0f) → 底下有世界目标（类 %d），交互、不切地图",_mapWorldPt.x,_mapWorldPt.y,wr); } }
@@ -745,7 +805,7 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     else if(_controls.belt_request && !_controls.pulse_button) [self pushFrom:"tick" phase:"none"];   // 腰带上面几排的单击过了双击窗（dm_tc_tick 里定下的 belt_request）：当拍交宿主，不等下一次触摸 | A single tap on the upper belt rows has passed the double-tap window (belt_request decided in dm_tc_tick): hand it to the host within this tick, without waiting for the next touch
     if(_controls.pulse_button && !_pulseTicking) { [self pushFrom:"tick" phase:"none"]; [self armPulseEnd]; }   // tick 里起的脉冲（面板外点按后「按 B 到面板关掉」的后续几下） | Pulses started in tick (the follow-up presses of "press B until the panel closes" after a tap outside the panel)
     if (_controls.pointer_valid)
-        dm_cursor_set_screen(_controls.pointer_x, _controls.pointer_y, self.bounds.size.width, self.bounds.size.height);
+        cursor_set_view(self,_controls.pointer_x, _controls.pointer_y);
     else if (_controls.navigation_mode) dm_cursor_clear();   // 手势层放开了手柄光标（触点不在物品区）：不再推摇杆 | The gesture layer released the controller cursor (touch point not in an item area): stop pushing the stick
 }
 // 兜底（不当根修）：每次按下前扫一遍——槽里或单独记下的手指若已是 Ended / Cancelled（挂着待放行的 _pendEnd 除外），
@@ -817,7 +877,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
             if(!_navigation && !_mapBackTouch && _controls.finger[i].target==DM_TC_NONE && dm_ui_map_is_full()) { _mapBackTouch=t; _mapP0=p; _mapT0=CACurrentMediaTime(); }   // 全屏地图开着、这根手指没落在任何键和摇杆区上：松手时若是点按就回小地图 | Fullscreen map open and this finger landed on no button and no stick area: if it turns out to be a tap on release, return to the minimap
             // 功能页里的指针手指：问宿主这点是不是物品区（游戏主线程下一帧作答，松手时取）
             // Pointer finger in a function page: ask the host whether this point is an item area (the game main thread answers on the next frame; fetched on release)
-            if(_controls.navigation_mode && _controls.pointer_slot==i && self.bounds.size.width>0) _itemSeq=dm_ui_item_query((float)(p.x/self.bounds.size.width),(float)(p.y/self.bounds.size.height)); _itemAsked=YES; _itemKind=-1;
+            if(_controls.navigation_mode && _controls.pointer_slot==i && self.bounds.size.width>0) { float qx,qy; ui_norm(self,p.x,p.y,&qx,&qy); _itemSeq=dm_ui_item_query(qx,qy); } _itemAsked=YES; _itemKind=-1;
             break;
         }
         [self recordTouch:t slot:slot phase:"began"];
@@ -841,12 +901,12 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         for(int i=0;i<16;i++) if(_slot[i]==t) { CGPoint p=[t locationInView:self]; dm_tc_move_at(&_controls,i,p.x,p.y,CACurrentMediaTime()); slot=i;
             // 界面连续手势（上下拖 = 滚动、按住滑块横拖）：手势层定型后把起手点与当前点交给宿主；认滑块时上下放宽 44 点（约 7 毫米，手指粗细）
             // Continuous UI gestures (vertical drag = scroll, hold a slider and drag horizontally): once the gesture layer has settled the type, give the start point and current point to the host; when recognizing a slider allow 44 points of vertical slack (about 7 mm, a finger's width)
-            if(_controls.navigation_mode && _controls.pointer_slot==i && _controls.finger[i].ui_drag && self.bounds.size.width>0) { CGSize z=self.bounds.size; dm_tc_finger *f=&_controls.finger[i];
-                if(!_uiDragOn) { _uiDragOn=YES; dm_ui_drag_lift((float)(DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(z.width,z.height)/z.height)); dm_ui_drag_begin(f->ui_drag,(float)(f->aim_origin_x/z.width),(float)(f->aim_origin_y/z.height),(float)(44.0/z.height)); }
-                dm_ui_drag_move((float)(p.x/z.width),(float)(p.y/z.height)); }
+            if(_controls.navigation_mode && _controls.pointer_slot==i && _controls.finger[i].ui_drag && self.bounds.size.width>0) { CGSize z=self.bounds.size; dm_tc_finger *f=&_controls.finger[i]; CGFloat bh=ui_band_h(self), lift=DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(z.width,z.height);
+                if(!_uiDragOn) { _uiDragOn=YES; float ox,oy; ui_norm(self,f->aim_origin_x,f->aim_origin_y,&ox,&oy); dm_ui_drag_lift(bh>0 ? (float)(lift/bh) : 0); dm_ui_drag_begin(f->ui_drag,ox,oy,bh>0 ? (float)(44.0/bh) : 0); }   // 抬起量 / 滑块放宽都按界面带高（竖屏 = 界面矩形高，横屏 = 视图高） | lift / slider slack are fractions of the UI band height (portrait = UI rectangle height, landscape = view height)
+                float mx,my; ui_norm(self,p.x,p.y,&mx,&my); dm_ui_drag_move(mx,my); }
             // 拖放中：问落点（物品抬在手指上方）是不是物品区，松手时用最近一次的回答
             // During drag and drop: ask whether the drop point (the item is lifted above the finger) is an item area; on release use the most recent answer
-            if(_controls.navigation_mode && _controls.pointer_slot==i && _controls.finger[i].pointer_dragged && self.bounds.size.width>0) { _relSeq=dm_ui_drop_query((float)(p.x/self.bounds.size.width),(float)((p.y-DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(self.bounds.size.width,self.bounds.size.height))/self.bounds.size.height),(float)(p.y/self.bounds.size.height)); _relAsked=YES; }
+            if(_controls.navigation_mode && _controls.pointer_slot==i && _controls.finger[i].pointer_dragged && self.bounds.size.width>0) { CGSize z=self.bounds.size; CGFloat lift=DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(z.width,z.height); float nx,ny,fx,fy; ui_norm(self,p.x,p.y-lift,&nx,&ny); ui_norm(self,p.x,p.y,&fx,&fy); _relSeq=dm_ui_drop_query(nx,ny,fy); _relAsked=YES; }
             break; }
         [self recordTouch:t slot:slot phase:"moved"];
     }
@@ -859,17 +919,18 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
 // Front-end pages (main menu / character select / character creation): tap = one UI mouse click at the lift position. Dragging vertically past 10 points = scroll (the character select page shows only 9 characters and could not be pulled down) --
 // cancel this click (dm_ui_touch phase 3) and use the in-run panel mechanism instead (dm_ui_drag_*: send the game's own mouse wheel messages at the starting point, scrolling as far as the finger moves, see dm_cursor.c ui_drag_pump).
 // Horizontal drags are still treated as clicks (the front end has no sliders)
-- (void)uiTouch:(NSSet<UITouch *> *)ts phase:(int)ph {   // 只认第一根手指；归一化坐标交给宿主 | Only the first finger is accepted; normalized coordinates are given to the host
+- (void)uiTouch:(NSSet<UITouch *> *)ts phase:(int)ph {   // 只认第一根手指；界面矩形里的归一化坐标交给宿主 | Only the first finger is accepted; coordinates normalized to the UI rectangle are given to the host
     CGSize b=self.bounds.size; if(b.width<=0 || b.height<=0) return;
     for(UITouch *t in ts) {
         if(ph==0 && !_uiFinger) { _uiFinger=t; _uiFeO=[t locationInView:self]; _uiFeDrag=NO; }
         if(t!=_uiFinger) continue;
-        CGPoint p=[t locationInView:self]; float dy=fabs(p.y-_uiFeO.y);
+        CGPoint p=[t locationInView:self]; float dy=fabs(p.y-_uiFeO.y); float nx,ny; ui_norm(self,p.x,p.y,&nx,&ny);   // 竖屏：界面矩形归一化（横屏 = 视图归一化，逐字不变） | portrait: UI rectangle normalization (landscape = view normalization, unchanged)
         if(ph==1 && !_uiFeDrag && !_uiDragOn && dy>10 && dy>fabs(p.x-_uiFeO.x) && dm_ui_fe_drag_ok()) {
-            _uiFeDrag=YES; _uiDragOn=YES; dm_ui_touch(3,0,0); dm_ui_drag_begin(1,(float)(_uiFeO.x/b.width),(float)(_uiFeO.y/b.height),0);
+            float ox,oy; ui_norm(self,_uiFeO.x,_uiFeO.y,&ox,&oy);
+            _uiFeDrag=YES; _uiDragOn=YES; dm_ui_touch(3,0,0); dm_ui_drag_begin(1,ox,oy,0);
             LOG("前端：纵向拖 → 滚动（起手 %.0f,%.0f），这次不点", _uiFeO.x, _uiFeO.y); }
-        if(_uiFeDrag) { if(ph==1) dm_ui_drag_move((float)(p.x/b.width),(float)(p.y/b.height)); else if(ph==2) { _uiFeDrag=NO; _uiDragOn=NO; dm_ui_drag_end(); _uiFinger=nil; } continue; }
-        dm_ui_touch(ph,(float)(p.x/b.width),(float)(p.y/b.height));
+        if(_uiFeDrag) { if(ph==1) dm_ui_drag_move(nx,ny); else if(ph==2) { _uiFeDrag=NO; _uiDragOn=NO; dm_ui_drag_end(); _uiFinger=nil; } continue; }
+        dm_ui_touch(ph,nx,ny);
         if(ph==2) _uiFinger=nil;
     }
 }
@@ -889,8 +950,8 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     // "hover to show" becomes "tap to show".
     if (!strcmp(phase, "ended") && _controls.navigation_mode && self.bounds.size.width > 0 && self.bounds.size.height > 0) {
         extern void dm_ui_hover_norm(float nx, float ny);
-        for (UITouch *ht in ts) { CGPoint hp = [ht locationInView:self];
-            dm_ui_hover_norm((float)(hp.x / self.bounds.size.width), (float)(hp.y / self.bounds.size.height)); break; }
+        for (UITouch *ht in ts) { CGPoint hp = [ht locationInView:self]; float hx,hy; ui_norm(self,hp.x,hp.y,&hx,&hy);
+            dm_ui_hover_norm(hx,hy); break; }
     }
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) { [r removeObject:t]; [_swallow removeObject:t]; } if(!r.count) return; ts=r; }   // 手柄模式下落下的那根：抬起也不交 | The touch that landed in controller mode: its lift is not passed on either
     // 界面手指那一根交给 uiTouch，其余照常结束、清槽（真机 SIGSEGV：原先 _uiFinger 在就整批交走 return，局内手指的槽留下已释放的触摸）
@@ -926,9 +987,9 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         if(!_pendFire && !_pendEnd && !strcmp(phase,"ended") && _controls.navigation_mode && _controls.pointer_slot>=0 && _slot[_controls.pointer_slot]==t && self.bounds.size.width>0) {
             dm_tc_finger *pf=&_controls.finger[_controls.pointer_slot]; BOOL wait=NO;
             if(_itemAsked && dm_ui_item_result(_itemSeq)<0) wait=YES;
-            else if(pf->pointer_dragged) { CGPoint ep=[t locationInView:self]; CGSize z=self.bounds.size;
+            else if(pf->pointer_dragged) { CGPoint ep=[t locationInView:self]; CGSize z=self.bounds.size; CGFloat lift=DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(z.width,z.height);
                 dm_tc_move_at(&_controls,_controls.pointer_slot,ep.x,ep.y,CACurrentMediaTime());   // 抬起点可能比最后一次移动更远 | The lift point may be farther than the last move
-                _relSeq=dm_ui_drop_query((float)(ep.x/z.width),(float)((ep.y-DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(z.width,z.height))/z.height),(float)(ep.y/z.height)); _relAsked=YES; _finalAsked=YES; wait=YES; }
+                { float nx,ny,ffx,ffy; ui_norm(self,ep.x,ep.y-lift,&nx,&ny); ui_norm(self,ep.x,ep.y,&ffx,&ffy); _relSeq=dm_ui_drop_query(nx,ny,ffy); } _relAsked=YES; _finalAsked=YES; wait=YES; }
             if(wait) { _pendEnd=t; _pendEndTime=CACurrentMediaTime(); _pendWall=CACurrentMediaTime(); continue; }
         }
         for(int i=0;i<16;i++) if(_slot[i]==t) {
@@ -943,8 +1004,8 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
                 else { dm_tc_cancel_finger(&_controls,i); LOG("前端：系统取消触摸（槽 %d）→ 不当松手",i); }
                 if(_controls.pointer_slot<0) { _relAsked=NO; _itemAsked=NO; }
                 _slot[i]=nil; slot=i; break; }
-            if(_controls.navigation_mode && _controls.pointer_slot==i && _controls.finger[i].shop_drag) { int rk=_relAsked ? dm_ui_item_result(_relSeq) : 0; if(rk<0) rk=dm_ui_drop_last(); if(rk==5 && !dm_ui_drop_bag()) LOG("前端：%s拖出后松在背包格以外的物品区 → 不%s",_itemKind==8?"一叠":"货架上的货",_itemKind==8?"取":"买");   /* 装备槽、腰带格、那一叠自己身上都不成交 | Equipment slots, belt cells and that stack itself do not complete a deal */ else if((rk==5 || rk==11) && self.bounds.size.width>0) { dm_tc_finger *sf=&_controls.finger[i]; if(rk==11) { dm_ui_stack_cube_at((float)(sf->aim_origin_x/self.bounds.size.width),(float)(sf->aim_origin_y/self.bounds.size.height)); LOG("前端：高级仓库里的一叠拖到魔盒格上松手 → 1 件进魔盒"); } else if(_itemKind==8) { dm_ui_stack_take_at((float)(sf->aim_origin_x/self.bounds.size.width),(float)(sf->aim_origin_y/self.bounds.size.height)); LOG("前端：高级仓库里的一叠拖到背包松手 → 取 1 件"); } else { LOG("前端：货架上的货拖到背包松手 → 买"); dm_ui_shop_buy_at((float)(sf->aim_origin_x/self.bounds.size.width),(float)(sf->aim_origin_y/self.bounds.size.height)); } _controls.pointer_x=sf->aim_origin_x; _controls.pointer_y=sf->aim_origin_y;   /* 光标目标也改回那件货：否则宿主放回去后，落位逻辑又把它往屏幕角上推，买的那一刻已经不在货上（mini：3 次里 1 次「没选中」） | Also set the cursor target back to that item: otherwise after the host puts it back, the placement logic pushes it toward the screen corner again and at the moment of buying it is no longer on the goods (observed on the second Mac: 1 in 3 times 「没选中」(not selected)) */ } }   // 从货架起拖：落在背包类物品区 = 买光标选中的那件（光标一直留在货上）；别处松手不买 | Drag started from the shelf: dropped on an inventory-type item area = buy the item selected by the cursor (the cursor stays on the goods throughout); releasing elsewhere does not buy
-            else if(_controls.navigation_mode && _controls.pointer_slot==i && _controls.finger[i].pointer_dragged && _relAsked) { int rr=dm_ui_item_result(_relSeq); if(rr<0) rr=dm_ui_drop_last(); if(rr<0) rr=0; float dx,dy;   /* 这次的落点还没答上：用上一次移动时答过的；一次都没答过 = 放回原处。不再当「物品区」在落点硬按放下 | The drop point of this time has no answer yet: use the one answered at the last move; never answered = put back. No longer force a put-down at the drop point as "item area" */ if((rr==5 && dm_ui_drop_point(&dx,&dy)) || (rr==0 && dm_ui_origin_point(&dx,&dy))) dm_tc_pointer_release_at(&_controls,dx*self.bounds.size.width,dy*self.bounds.size.height);   /* 0 = 放回原处：放回物品原位的中心（宿主在「拿起」时记下的），不是手指最初按下的点 | 0 = put back: put back at the center of the item's original position (recorded by the host at "pick up"), not the point where the finger first pressed */ else { if(rr==7) { dm_shop_sell_cursor(); rr=0; } dm_tc_pointer_release(&_controls,rr<0?1:rr); } }   // 7 = 松在商人货架上：卖手上那件（没卖掉的由随后那下 A 放回原处）   // 没答上按物品区处理（照旧放下） | 7 = released on the vendor shelf: sell the item in hand (if not sold, the following A puts it back in place)   // No answer: handle as item area (put down as before)
+            if(_controls.navigation_mode && _controls.pointer_slot==i && _controls.finger[i].shop_drag) { int rk=_relAsked ? dm_ui_item_result(_relSeq) : 0; if(rk<0) rk=dm_ui_drop_last(); if(rk==5 && !dm_ui_drop_bag()) LOG("前端：%s拖出后松在背包格以外的物品区 → 不%s",_itemKind==8?"一叠":"货架上的货",_itemKind==8?"取":"买");   /* 装备槽、腰带格、那一叠自己身上都不成交 | Equipment slots, belt cells and that stack itself do not complete a deal */ else if((rk==5 || rk==11) && self.bounds.size.width>0) { dm_tc_finger *sf=&_controls.finger[i]; float sux,suy; ui_norm(self,sf->aim_origin_x,sf->aim_origin_y,&sux,&suy); if(rk==11) { dm_ui_stack_cube_at(sux,suy); LOG("前端：高级仓库里的一叠拖到魔盒格上松手 → 1 件进魔盒"); } else if(_itemKind==8) { dm_ui_stack_take_at(sux,suy); LOG("前端：高级仓库里的一叠拖到背包松手 → 取 1 件"); } else { LOG("前端：货架上的货拖到背包松手 → 买"); dm_ui_shop_buy_at(sux,suy); } _controls.pointer_x=sf->aim_origin_x; _controls.pointer_y=sf->aim_origin_y;   /* 光标目标也改回那件货：否则宿主放回去后，落位逻辑又把它往屏幕角上推，买的那一刻已经不在货上（mini：3 次里 1 次「没选中」） | Also set the cursor target back to that item: otherwise after the host puts it back, the placement logic pushes it toward the screen corner again and at the moment of buying it is no longer on the goods (observed on the second Mac: 1 in 3 times 「没选中」(not selected)) */ } }   // 从货架起拖：落在背包类物品区 = 买光标选中的那件（光标一直留在货上）；别处松手不买 | Drag started from the shelf: dropped on an inventory-type item area = buy the item selected by the cursor (the cursor stays on the goods throughout); releasing elsewhere does not buy
+            else if(_controls.navigation_mode && _controls.pointer_slot==i && _controls.finger[i].pointer_dragged && _relAsked) { int rr=dm_ui_item_result(_relSeq); if(rr<0) rr=dm_ui_drop_last(); if(rr<0) rr=0; float dx,dy;   /* 这次的落点还没答上：用上一次移动时答过的；一次都没答过 = 放回原处。不再当「物品区」在落点硬按放下 | The drop point of this time has no answer yet: use the one answered at the last move; never answered = put back. No longer force a put-down at the drop point as "item area" */ if((rr==5 && dm_ui_drop_point(&dx,&dy)) || (rr==0 && dm_ui_origin_point(&dx,&dy))) { CGPoint rp=ui_to_view(self,dx,dy); dm_tc_pointer_release_at(&_controls,rp.x,rp.y); }   /* 0 = 放回原处：放回物品原位的中心（宿主在「拿起」时记下的），不是手指最初按下的点；宿主给的是界面矩形归一化，竖屏要换回视图点 | 0 = put back: put back at the center of the item's original position (recorded by the host at "pick up"), not the point where the finger first pressed; the host gives UI-rectangle normalization, which portrait converts back to view points */ else { if(rr==7) { dm_shop_sell_cursor(); rr=0; } dm_tc_pointer_release(&_controls,rr<0?1:rr); } }   // 7 = 松在商人货架上：卖手上那件（没卖掉的由随后那下 A 放回原处）   // 没答上按物品区处理（照旧放下） | 7 = released on the vendor shelf: sell the item in hand (if not sold, the following A puts it back in place)   // No answer: handle as item area (put down as before)
             _relAsked=NO;
             if(_controls.navigation_mode && _controls.pointer_slot==i && _itemAsked) { _itemAsked=NO; dm_tc_pointer_item(&_controls,dm_ui_item_result(_itemSeq)); [self bindTapSync]; }   // 松手时还没告诉过：现在取（没答上 = 按别处处理） | Not yet told at release: fetch now (no answer = handle as elsewhere)
             unsigned wt=_controls.world_tap_seq;
@@ -969,14 +1030,14 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
             if(_controls.stack_take_seq!=sts) { dm_stash_take(1); LOG("前端：双击高级仓库里的一叠 → 取 1 件"); }
             if(_controls.ident_seq!=ids) dm_ui_identify_hovered();   // 物品区双击未鉴定物品 = 免费鉴定（宿主走游戏自己的鉴定函数） | Double tap on an unidentified item in the item area = free identify (the host calls the game's own identify function)
             if(_controls.use_seq!=us) dm_ui_use_item();   // 物品区双击 = 使用 / 购买 / 装备（宿主按光标下物品走原生入口） | Double tap in the item area = use / buy / equip (the host goes through the native entry for the item under the cursor)
-            if(_controls.world_tap_seq!=wt && self.bounds.size.width>0) { float wx,wy; world_norm(self,_controls.world_tap_x,_controls.world_tap_y,&wx,&wy); dm_ui_world_tap((float)(_controls.world_tap_x/self.bounds.size.width),(float)(_controls.world_tap_y/self.bounds.size.height),wx,wy); }   // 游戏态点世界：点目标 = 交互，点空地不发令 | World tap in game mode: tapping a target = interact; tapping empty ground issues no command
+            if(_controls.world_tap_seq!=wt && self.bounds.size.width>0) { float wx,wy,ux,uy; world_norm(self,_controls.world_tap_x,_controls.world_tap_y,&wx,&wy); ui_norm(self,_controls.world_tap_x,_controls.world_tap_y,&ux,&uy); dm_ui_world_tap(ux,uy,wx,wy); }   // 游戏态点世界：点目标 = 交互，点空地不发令（ux/uy 界面矩形归一化，wx/wy 整窗世界归一化） | World tap in game mode: tapping a target = interact; tapping empty ground issues no command (ux/uy normalized to the UI rectangle, wx/wy world-normalized over the whole window)
             // 单纯点了一件物品（没拖、没触发使用 / 鉴定 / 取一件 / 长按）：光标留在它上面，说明框一直在，点别处 / 点另一件 / 关面板才收——同下面的技能图标。
             // 原先一律松手后 2.8 秒收，玩家读长说明读到一半框没了、要再点一次。拖放、使用之后光标停在落点上的那种仍按 2.8 秒收（不然放完东西说明框一直盖着）
             // A plain tap on an item (no drag, no use / identify / take-one / long press triggered): the cursor stays on it and the description stays up until a tap elsewhere / on another item / the panel closes - same as the skill icons below.
             // It used to be put away 2.8 seconds after release in every case, so a player reading a long description lost it halfway and had to tap again. When the cursor rests on the drop point after a drag or a use, it is still put away after 2.8 seconds (otherwise the description would keep covering things after an item is placed)
             BOOL itemTap=_controls.item_tap_seq!=its && !dragged && _controls.use_seq==us && _controls.ident_seq==ids && _controls.stack_take_seq==sts && _controls.long_press_seq==lps && _controls.mouse_click_seq==mc;
             if(wasPtr && _controls.navigation_mode) _tipUntil=(_controls.tap_move_seq!=tm || itemTap) ? -1 : _controls.last_time_s+(_controls.mouse_click_seq!=mc ? 0.05 : 2.8);   // 点的是技能图标 / 属性「+」（选中待确认）：光标留在上面，原版高亮和说明框一直在，点别处 / 点另一个 / 关面板才收   // 说明框：松手后 2.8 秒自己收（游戏的说明框要点后约 0.8 秒才出来，实测；留约 2 秒看）；点的是空处 / 普通按钮 = 立即收 | Tapped a skill icon / stat "+" (selected, awaiting confirmation): the cursor stays on it and the original game's highlight and tooltip stay until tapping elsewhere / tapping another / closing the panel   // Tooltip: closes by itself 2.8 seconds after release (the game's tooltip takes about 0.8 seconds after the tap to appear, measured; leaving about 2 seconds to read); tapped empty space / an ordinary button = close immediately
-            if(_controls.mouse_click_seq!=mc && self.bounds.size.width>0) { float nx=_controls.mouse_click_x/self.bounds.size.width, ny=_controls.mouse_click_y/self.bounds.size.height; dm_ui_touch(0,nx,ny); dm_ui_touch(2,nx,ny); }   // 非物品区点按 = 界面鼠标点击 | Tap outside the item area = UI mouse click
+            if(_controls.mouse_click_seq!=mc && self.bounds.size.width>0) { float nx,ny; ui_norm(self,_controls.mouse_click_x,_controls.mouse_click_y,&nx,&ny); dm_ui_touch(0,nx,ny); dm_ui_touch(2,nx,ny); }   // 非物品区点按 = 界面鼠标点击 | Tap outside the item area = UI mouse click
             break; }
         [self recordTouch:t slot:slot phase:phase];
     }
@@ -1173,8 +1234,10 @@ static void touch_ui_message(const char *cat,const char *act,const char *arg) {
     { static int last = -1; int f = mtl_fps_target(); if (f != last) { last = f; l.preferredFrameRateRange = f == 30 ? CAFrameRateRangeMake(30, 30, 30) : CAFrameRateRangeMake(60, 60, 60); } }   // 省电模式（30 帧）：帧率提示一起降，ProMotion 屏才会真降刷新率 | Power-saving mode (30 fps): lower the frame rate hint as well; only a ProMotion screen actually lowers the refresh rate
     DmMetalView *v = g_touch_view;
     if (v) {
-        if (g_full) { static int lx = -1, ly, lw, lh, lrh, lrw; int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h);   // 界面矩形由宿主定（开机后才有、切档会变）：变了就让容器重摆游戏视图 | The UI rectangle is decided by the host (available only after boot, changes when the profile switches): on change, have the container re-lay out the game view
-            if (dm_screen_real(&rw, &rh) && (x != lx || y != ly || w != lw || h != lh || rh != lrh || rw != lrw)) { lx = x; ly = y; lw = w; lh = h; lrh = rh; lrw = rw; [v.superview setNeedsLayout]; [v.superview layoutIfNeeded]; } }   // 当拍摆到位：自绘控件不比游戏画的界面晚一拍 | Laid out within the same tick: custom-drawn widgets are not one tick later than the UI drawn by the game
+        if (g_full || g_portrait) { static int lx = -1, ly, lw, lh, lrh, lrw; int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h);   // 界面矩形由宿主定（开机后才有、切档会变）：变了就让容器重摆游戏视图 | The UI rectangle is decided by the host (available only after boot, changes when the profile switches): on change, have the container re-lay out the game view
+            if (dm_screen_real(&rw, &rh) && (x != lx || y != ly || w != lw || h != lh || rh != lrh || rw != lrw)) { lx = x; ly = y; lw = w; lh = h; lrh = rh; lrw = rw;
+                if (g_portrait) { [v setNeedsLayout]; [v layoutIfNeeded]; }   // 竖屏：视图不换 frame，直接重排（界面带变了） | Portrait: the view frame does not change, lay out directly (the UI band changed)
+                else { [v.superview setNeedsLayout]; [v.superview layoutIfNeeded]; } } }   // 当拍摆到位：自绘控件不比游戏画的界面晚一拍 | Laid out within the same tick: custom-drawn widgets are not one tick later than the UI drawn by the game
         [v tickTouchControls:CACurrentMediaTime()];
         [g_touch_view refreshPortalBinding];
     }
@@ -1225,6 +1288,7 @@ static CGRect letterbox_rect(CGRect f) {
 UIView *front_ios_view(CGRect frame) {
     front_game_res(1);   // 「真全屏」开没开（g_full）是它第一次被调时按屏幕比例定的；下面摆视图要用，不能指望别处碰巧先调过 | whether "true fullscreen" is on (g_full) is decided from the screen aspect ratio the first time this is called; the view layout below needs it and cannot count on something else happening to have called it first
     CGRect full = frame; frame = letterbox_rect(frame);
+    if (g_portrait) mtl_set_ui_rect_fn(ui_rect_frac);   // 竖屏：画面比与窗口不一致时会套居中容器，界面仍要按界面矩形下移并剪裁（与横屏 iPad 真全屏同一套） | Portrait: a mismatched window gets a centered container, but the UI still has to be shifted down and clipped by the UI rectangle (same mechanism as landscape iPad true fullscreen)
     dm_tc_set_tall_scale(UIDevice.currentDevice.userInterfaceIdiom==UIUserInterfaceIdiomPad);   // UIKit 点数：仅 iPad 开启有上限的平板缩放 | UIKit points: enable the bounded tablet profile only on iPad.
     DmMetalView *v = [[DmMetalView alloc] initWithFrame:frame];
     // 本地改动：设备方向变化 = 转屏动画的开始（界面方向锁不拦这个通知），用它进入「控件层保持可见 + 重画」时段。
@@ -1249,6 +1313,7 @@ UIView *front_ios_view(CGRect frame) {
             v.opaque = NO; v.layer.opaque = NO; v.backgroundColor = UIColor.clearColor; g_layer = ml; mtl_set_ui_rect_fn(ui_rect_frac);
             LOG("画面：窗口 %.0fx%.0f 比 16:9 窄 → 真全屏已开：出图层铺满整窗；游戏视图跟宿主的界面矩形走（局内贴底、局外居中），启动先按居中的 %.0fx%.0f 摆", full.size.width, full.size.height, frame.size.width, frame.size.height); return box; }
         LOG("画面：窗口 %.0fx%.0f 与游戏画面比例不同 → 游戏视图 %.0fx%.0f 居中（左右各留 %.0f 点、上下各留 %.0f 点）", full.size.width, full.size.height, frame.size.width, frame.size.height, frame.origin.x - full.origin.x, frame.origin.y - full.origin.y); return box; }
+    if (g_portrait) LOG("画面：竖屏 %.0fx%.0f → 3D 铺满整窗，界面矩形按 1950:2160 贴底 / 局外居中（出图层整窗）", full.size.width, full.size.height);
     return v;
 }
 
@@ -1260,19 +1325,26 @@ void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 // iPhone 17 Pro Max → 2868x1320. The handheld profile still uses the original game's height 720 × screen aspect ratio (width rounded to a multiple of 8, 1568x720), and is only used with DM_OPMODE=0 / script switching.
 // DM_GAME_RES=WIDTHxHEIGHT (docked mode; handheld scales by 720/900) overrides: DM_GAME_RES=1600x900 is the original game's 16:9 floor (negative control), DM_GAME_RES=1952x900 is the earlier default
 uint64_t front_game_res(int docked) {
-    static double aspect; static unsigned fw, fh;
-    if (!aspect) {
-        CGRect b = UIScreen.mainScreen.nativeBounds; aspect = fmax(b.size.width, b.size.height) / fmin(b.size.width, b.size.height);
-        const char *e = getenv("DM_GAME_RES"); if (e && sscanf(e, "%ux%u", &fw, &fh) == 2) aspect = (double)fw / fh;
-        else { fw = (unsigned)fmax(b.size.width, b.size.height); fh = (unsigned)fmin(b.size.width, b.size.height);
-            // 比 16:9 窄的屏（iPad 4:3）：游戏界面按屏高缩放、按 ≥16:9 设计，4:3 下面板横向放不下。按屏宽取 16:9，画面居中、上下留黑边
-            // 第二步（真全屏，缺省）：局内画面按屏幕原生比例出、3D 铺满，界面由宿主按 16:9 摆并贴底；前端各页与读取画面仍是 16:9 居中留边（dm_uiscreen）。
-            // DM_IPAD_FULL=0 退回上面那种全程 16:9 加黑边
-            // Screens narrower than 16:9 (iPad 4:3): the game UI scales by screen height and is designed for ≥16:9; on 4:3 the panels do not fit horizontally. Take 16:9 by screen width, center the picture, black bars top and bottom
-            // Step two (true fullscreen, default): the in-run picture is output at the screen's native aspect ratio with 3D filling it, and the UI is laid out by the host at 16:9 and anchored to the bottom; front-end pages and the loading screen are still 16:9 centered with margins (dm_uiscreen).
-            // DM_IPAD_FULL=0 falls back to the above: 16:9 with black bars throughout
-            if (aspect < 16.0 / 9 - 0.01) { const char *fu = getenv("DM_IPAD_FULL");
-                if (!fu || atoi(fu)) { g_full = 1; dm_uiscreen_enable(DM_UISCREEN_BOTTOM); } else { aspect = 16.0 / 9; fh = (unsigned)llround(fw * 9.0 / 16 / 2) * 2; } } }
+    static double aspect; static unsigned fw, fh; static int dir = -1;
+    if (dir != g_res_dir) {   // 启动方向决定整张画面的宽高（竖屏 = 短边为宽）；方向变了整个缓存重算 | the launch orientation decides the picture's width/height (portrait = short side is the width); a change recomputes the whole cache
+        dir = g_res_dir;
+        CGRect b = UIScreen.mainScreen.nativeBounds; double sw = fmin(b.size.width, b.size.height), sh = fmax(b.size.width, b.size.height);
+        fw = (unsigned)sw; fh = (unsigned)sh; aspect = sw / sh;
+        if (g_portrait) {   // 竖屏：原生竖画面，界面由 dm_uiscreen 按 1950:2160 改写（1206 宽 → 1336 高）；DM_GAME_RES 不参与 | Portrait: native upright picture; dm_uiscreen rewrites the UI to 1950:2160 (1206 wide -> 1336 high); DM_GAME_RES does not apply
+            dm_uiscreen_set_portrait(1); dm_uiscreen_enable(DM_UISCREEN_BOTTOM);
+        } else {
+            dm_uiscreen_set_portrait(0);
+            const char *e = getenv("DM_GAME_RES"); if (e && sscanf(e, "%ux%u", &fw, &fh) == 2) aspect = (double)fw / fh;
+            else {
+                // 比 16:9 窄的屏（iPad 4:3）：游戏界面按屏高缩放、按 ≥16:9 设计，4:3 下面板横向放不下。按屏宽取 16:9，画面居中、上下留黑边
+                // 第二步（真全屏，缺省）：局内画面按屏幕原生比例出、3D 铺满，界面由宿主按 16:9 摆并贴底；前端各页与读取画面仍是 16:9 居中留边（dm_uiscreen）。
+                // DM_IPAD_FULL=0 退回上面那种全程 16:9 加黑边
+                // Screens narrower than 16:9 (iPad 4:3): the game UI scales by screen height and is designed for ≥16:9; on 4:3 the panels do not fit horizontally. Take 16:9 by screen width, center the picture, black bars top and bottom
+                // Step two (true fullscreen, default): the in-run picture is output at the screen's native aspect ratio with 3D filling it, and the UI is laid out by the host at 16:9 and anchored to the bottom; front-end pages and the loading screen are still 16:9 centered with margins (dm_uiscreen).
+                // DM_IPAD_FULL=0 falls back to the above: 16:9 with black bars throughout
+                if (aspect < 16.0 / 9 - 0.01) { const char *fu = getenv("DM_IPAD_FULL");
+                    if (!fu || atoi(fu)) { g_full = 1; dm_uiscreen_enable(DM_UISCREEN_BOTTOM); } else { aspect = 16.0 / 9; fh = (unsigned)llround(fw * 9.0 / 16 / 2) * 2; } } }
+        }
     }
     if (fw && docked) return (uint64_t)fh << 32 | fw;
     uint64_t h = docked ? 900 : 720, w = (uint64_t)llround(h * aspect / 8) * 8;
@@ -1670,8 +1742,8 @@ static void touch_script_start(void) {
         // 是游戏视图归一化坐标，直接乘本视图宽高（不走 world_rect：真全屏下世界按整窗算、界面按游戏视图算）。贴边控件用它，同一份脚本各种屏都点得中。
         // tap_ui <widget name>[@<panel name>] [timeout seconds=10]: wait for this UI widget to become visible → land one real touch point (finger 0) at its center. The position is computed by the host with the widget's own hit function (dm_ui_watch),
         // in game-view normalized coordinates, multiplied directly by this view's width and height (not via world_rect: in true fullscreen the world is computed on the whole window and the UI on the game view). Use it for edge-anchored widgets; the same script then hits them on every screen.
-        if(ui_on && (++ui_tick%12)==0) { float nx=0, ny=0; CGSize vs=g_touch_view.bounds.size;
-            if(dm_ui_watch_pos(&nx,&ny)) { ui_on=0; dm_ui_watch(NULL); double px=nx*vs.width, py=ny*vs.height;
+        if(ui_on && (++ui_tick%12)==0) { float nx=0, ny=0;
+            if(dm_ui_watch_pos(&nx,&ny)) { ui_on=0; dm_ui_watch(NULL); CGPoint wp=ui_to_view(g_touch_view,nx,ny); double px=wp.x, py=wp.y;
                 LOG("[script] tap_ui %s：控件在视图点 (%.0f,%.0f)，落触点",ui_name.UTF8String,px,py); [g_touch_view scriptPhase:@"down" slot:0 at:[NSString stringWithFormat:@"=%.1f,%.1f",px,py]]; tu_up=now+0.12; }
             else if(now>=ui_dead) { ui_on=0; dm_ui_watch(NULL); LOG("[script] 【红】tap_ui %s 超时：没有这个可见控件，没点",ui_name.UTF8String); } }
         // 落后了（游戏读条 / 长帧时计时器几百毫秒没跑）：整份时刻表往后顺延落后的量，只执行同一时刻的那几步，后面各步照原间隔走。

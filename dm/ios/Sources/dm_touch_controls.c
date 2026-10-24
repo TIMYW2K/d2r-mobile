@@ -17,7 +17,20 @@
 static int g_tall_scale, g_swap_above;
 void dm_tc_set_tall_scale(int on) { g_tall_scale = !!on; }
 void dm_tc_set_swap_above(int above) { g_swap_above = !!above; }
+/* 竖屏：界面带（贴底 / 居中那一块，点）与顶部安全区（点）。界面带高 < 视图高 = 竖屏（横屏不设，行为逐字不变）。
+   技能扇区、底栏、选择条按界面带摆；底栏 / 腰带的 v4 设计像素按界面带高换算（u4），不按视图高。
+   Portrait: the UI band (the bottom-anchored / centered block, in points) and the top safe inset (points). Band height < view height = portrait (not set in landscape, behaviour unchanged).
+      The skill fan, bottom bar and selector follow the UI band; the v4 design pixels of the bottom bar / belt convert by the band height (u4), not the view height. */
+static float g_ui_x, g_ui_y, g_ui_w, g_ui_h, g_top;
+void dm_tc_set_ui_band(float x, float y, float w, float h) {
+    g_ui_x = isfinite(x) ? x : 0; g_ui_y = isfinite(y) ? y : 0;
+    g_ui_w = isfinite(w) && w > 0 ? w : 0; g_ui_h = isfinite(h) && h > 0 ? h : 0;
+}
+void dm_tc_set_safe_top(float top) { g_top = isfinite(top) && top > 0 ? top : 0; }
+static int band_on(const dm_tc_layout *l) { return g_ui_h > 0 && g_ui_h < l->height - 0.5f; }
+static float band_u4(const dm_tc_layout *l) { return band_on(l) ? g_ui_h / 1320.0f : l->height / 1320.0f; }
 float dm_tc_scale_for_size(float width, float height) {
+    if (g_ui_h > 0 && g_ui_h < height - 0.5f) return 1.0f;   // 竖屏：控件保持常规手机大小（主钮 40 点、技能 26 点），不随界面带缩小；横屏界面带 = 整视图，照旧 | Portrait: controls keep their normal phone size (main 40 pt, skills 26 pt), not shrunk with the UI band; in landscape the band is the whole view, unchanged
     float fit=fminf(width/667.0f,height/375.0f);
     return g_tall_scale ? fminf(1.15f,fmaxf(1.0f,fit)) : fminf(1.0f,fit);
 }
@@ -42,17 +55,20 @@ void dm_tc_layout_make(dm_tc_layout *l, float width, float height) {
     l->width = isfinite(width) && width > 0 ? width : 0;
     l->height = isfinite(height) && height > 0 ? height : 0;
     float k = scale_for(l);
+    int port = band_on(l);   // 竖屏：底栏与技能扇区按界面带摆（界面带底边 = 视图底边） | Portrait: the bottom bar and skill fan follow the UI band (its bottom edge is the view's bottom edge)
+    float band_bottom = port ? g_ui_y + g_ui_h : l->height;
     l->tablet=g_tall_scale; l->swap_above=g_swap_above;
     // 右拇指技能扇区：主钮在下，四个技能保持原大小并留出独立触控间隔。
     // 技能扇区锚点避开侧边与底部安全区。
     // Right-thumb skill fan: main button at the bottom, the four skills keep their original size with independent touch gaps.
     // The skill fan anchors avoid the side and bottom safe areas.
-    float main_x=l->width-g_safe_r-86*k, main_y=l->height-88*k-fmaxf(24*k,g_safe_b+8*k);
+    float main_x=l->width-g_safe_r-86*k, main_y=band_bottom-88*k-fmaxf(24*k,g_safe_b+8*k);
     if (g_tall_scale && height<340) main_y=fmaxf(main_y,190*k);
     // 整组向右下移动；小尺寸平板窗口保留原有底栏间隔。
     // Move the whole fan down-right. Compact tablet windows need the original belt clearance.
     main_x+=12*k;
-    if (!(g_tall_scale && height<340)) main_y+=28*k;
+    if (!port && !(g_tall_scale && height<340)) main_y+=28*k;
+    if (port) main_y = band_bottom - 158*k;   // 竖屏：整组抬到底栏 / 经验条 / 选择条之上（主钮中心约 716 点，选择条 783、底栏格 847） | Portrait: lift the whole fan above the bottom bar / exp bar / selector (main centre ≈716 pt; selector 783, bar cells 847)
     l->target[DM_TC_MAIN]=(dm_tc_target){main_x,main_y,40*k,DM_BTN_A};
     const float dx[4]={-96,-84,-34,34},dy[4]={18,-50,-92,-92};
     const uint64_t skill[4]={DM_BTN_B,DM_BTN_X,DM_BTN_Y,DM_BTN_R};
@@ -67,18 +83,18 @@ void dm_tc_layout_make(dm_tc_layout *l, float width, float height) {
     /* 腰带四列对十字键：左 = 第 1 列、上 = 第 2 列、下 = 第 3 列、右 = 第 4 列（原版实测：按「右」第 4 列减、按「下」第 3 列减；首版把后两个写反了，真机才撞到） | The four belt columns map to the D-pad: left = column 1, up = column 2, down = column 3, right = column 4 (measured in the original game: pressing "right" decrements column 4, pressing "down" decrements column 3; the first version had the last two swapped, which was only hit on a real device) */
     const uint64_t bottom[5] = {DM_BTN_LEFT, DM_BTN_UP, DM_BTN_DOWN, DM_BTN_RIGHT, DM_BTN_PLUS};
     const int cell[5] = {1, 2, 3, 4, 5};
-    float u = l->height / 1320.0f;
+    float u = band_u4(l), by = (port ? g_ui_y : 0) + 1241.5f * u;   // 竖屏：底栏贴界面带底边（1241.5 是 v4 设计像素，按界面带高换算） | Portrait: the bar sits on the UI band's bottom edge (1241.5 is a v4 design pixel, converted by the band height)
     for (int i = 0; i < 5; ++i)
-        l->target[DM_TC_BELT1+i] = (dm_tc_target){l->width/2+(1090+120*cell[i]-1434)*u, 1241.5f*u, 57*u, bottom[i]};
+        l->target[DM_TC_BELT1+i] = (dm_tc_target){l->width/2+(1090+120*cell[i]-1434)*u, by, 57*u, bottom[i]};
     { const dm_tc_target *s4 = &l->target[DM_TC_SKILL4]; l->target[DM_TC_PORTAL] = (dm_tc_target){s4->x, s4->y-s4->r-12*k-26*k, 26*k, 0}; }
     // 小尺寸平板窗口：传送门放在技能三上方，避开右上角地图按钮。
     // Small tablet windows: put the portal above skill 3, clear of the top-right map control.
     if (g_tall_scale && height<340)
         l->target[DM_TC_PORTAL]=(dm_tc_target){main_x-34*k,main_y-156*k,26*k,0};
     /* 第 0 格难度与选择条：选择条 8 格同格宽、格距 120，中线对齐两球中线（效果图 1390），格心 y = 1051.5（七格之上、避开数值文字） | Cell 0 difficulty and the selector bar: the selector bar has 8 cells of the same cell width, cell pitch 120, centerline aligned with the centerline between the two orbs (mock 1390), cell center y = 1051.5 (above the seven cells, clear of the value text) */
-    l->diff = (dm_tc_target){l->width/2+(1090-1434)*u, 1241.5f*u, 57*u, 0};
-    for (int i = 0; i < 8; ++i) l->pick[i] = (dm_tc_target){l->width/2+(1390+(i-3.5f)*120-1434)*u, 1051.5f*u, 57*u, 0};
-    l->target[DM_TC_MAP] = (dm_tc_target){l->width-30*k, 30*k, 22*k, DM_BTN_MINUS};
+    l->diff = (dm_tc_target){l->width/2+(1090-1434)*u, by, 57*u, 0};
+    for (int i = 0; i < 8; ++i) l->pick[i] = (dm_tc_target){l->width/2+(1390+(i-3.5f)*120-1434)*u, (port ? g_ui_y : 0) + 1051.5f*u, 57*u, 0};
+    l->target[DM_TC_MAP] = (dm_tc_target){l->width-30*k, (port ? g_top : 0) + 30*k, 22*k, DM_BTN_MINUS};   // 竖屏放到顶部安全区（灵动岛）之下 | Portrait: below the top safe area (Dynamic Island)
     // 默认换组键沿传送门外弧向左排布，保持到主技能的半径不变。
     // Default: continue the portal's outer arc to its left, preserving the radius around the primary.
     const dm_tc_target *portal=&l->target[DM_TC_PORTAL];
@@ -99,6 +115,7 @@ void dm_tc_layout_make(dm_tc_layout *l, float width, float height) {
     l->joy_radius = 60*k;
     l->joy_x = fmaxf(90*k, g_safe_l + 60*k) + 30*k;
     l->joy_y = l->height - 115*k;
+    if (port) l->joy_y = band_bottom - 210*k;   // 竖屏：静止位抬到难度选择条（y≈783）与经验条之上，底盘整圈不压条（主钮在右侧不受影响） | Portrait: raise the rest position above the difficulty selector (≈783 pt) and the exp bar so the whole base clears them (the right-side fan is unaffected)
     l->joy_zone_r = l->width*0.40f; l->joy_zone_t = l->height*0.45f;
     l->joy_min_x = l->joy_radius + 8*k; l->joy_max_y = l->height - l->joy_radius - 8*k;
 }
@@ -437,7 +454,7 @@ int dm_tc_portal_ack(dm_tc_state *s,uint64_t epoch,uint64_t identity,uint64_t sc
 int dm_tc_belt_outside(const dm_tc_state *s, float x, float y) {
     if (s->navigation_mode || !s->belt_open || s->belt_rows <= 1) return 0;
     int hit = dm_tc_hit(&s->layout, x, y); if (hit >= DM_TC_BELT1 && hit <= DM_TC_BELT4) return 0;
-    float u = s->layout.height / 1320.0f;
+    float u = band_u4(&s->layout);
     for (int r = 1; r < s->belt_rows && r < 4; ++r) for (int c = 0; c < 4; ++c) {
         const dm_tc_target *t = &s->layout.target[DM_TC_BELT1+c];
         if (fabsf(x - t->x) <= 60*u && fabsf(y - (t->y - (165.0f + 162.0f*(r-1))*u)) <= 53.75f*u) return 0;
@@ -475,7 +492,7 @@ void dm_tc_begin_at(dm_tc_state *s, int slot, float x, float y, double now_s) {
     }
     int hit = dm_tc_hit(&s->layout, x, y);
     if (!s->navigation_mode && s->belt_open && s->belt_rows > 1) {   /* 腰带展开着：点上面几排 = 喝那一格；点腰带以外 = 只收起 | Belt expanded: tapping the upper rows = drink that cell; tapping outside the belt = only collapse */
-        float u = s->layout.height / 1320.0f;   /* 展开的几排是游戏自己画的：列与底排对齐，排距 162、第一排比底排高 165（效果图单位；真机 2868×1320 实量，行距由 gen_hud_v4.py 的 bpy 定，改那边要一起改） | The expanded rows are drawn by the game itself: columns align with the bottom row, row pitch 162, the first row is 165 above the bottom row (mock units; measured on a real device at 2868×1320; the row spacing is set by bpy in gen_hud_v4.py, and changing it there requires changing it here too) */
+        float u = band_u4(&s->layout);   /* 展开的几排是游戏自己画的：列与底排对齐，排距 162、第一排比底排高 165（效果图单位；真机 2868×1320 实量，行距由 gen_hud_v4.py 的 bpy 定，改那边要一起改） | The expanded rows are drawn by the game itself: columns align with the bottom row, row pitch 162, the first row is 165 above the bottom row (mock units; measured on a real device at 2868×1320; the row spacing is set by bpy in gen_hud_v4.py, and changing it there requires changing it here too) */
         for (int r = 1; r < s->belt_rows && r < 4; ++r) for (int c = 0; c < 4; ++c) {
             const dm_tc_target *t = &s->layout.target[DM_TC_BELT1+c];
             if (fabsf(x - t->x) <= 60*u && fabsf(y - (t->y - (165.0f + 162.0f*(r-1))*u)) <= 53.75f*u) {

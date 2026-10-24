@@ -145,6 +145,11 @@ int dm_tc_panel_mode(int nav, const dm_tc_scene *scene, int blocked);
 /* 坐标使用 UIKit 点；布局本身不画球、不声称游戏已绑定回城/腰带。 | Coordinates use UIKit points; the layout itself does not draw the orbs and does not claim the game has bound town portal/belt. */
 /* 安全区左右内缩（点）；在 init / resize 之前设，之后的布局按它把右侧技能键组与左摇杆移进安全区。缺省 0。 | Left/right safe-area insets (points); set before init / resize, and the layout afterwards uses them to move the right-side skill key group and the left stick into the safe area. Default 0. */
 void dm_tc_set_safe_insets(float left, float right);
+void dm_tc_set_safe_top(float top);   /* 顶部安全区（点）：竖屏把右上角地图键放到它下面 | Top safe inset (points): in portrait the top-right map button goes below it */
+/* 竖屏界面带（点，视图坐标）：界面绘制所在的贴底 / 居中那一块。设成「高 < 视图高」即按竖屏布局；不设 = 整个视图（横屏，行为不变）。
+   改完要调 dm_tc_resize 才会按新界面带排版。 | Portrait UI band (points, view coordinates): the bottom-anchored / centered block the UI is drawn in. Setting "height < view height" switches to the portrait layout; not setting it = the whole view (landscape, unchanged).
+   Call dm_tc_resize after changing it so the layout is rebuilt for the new band. */
+void dm_tc_set_ui_band(float x, float y, float w, float h);
 void dm_tc_set_edge_bottom(float bottom);   /* 屏幕底边归系统的那一条的高度（点）；0 = 没有。只约束移动摇杆的起手 | Height (points) of the strip along the bottom edge of the screen that belongs to the system; 0 = none. Constrains only where the movement stick may start */
 void dm_tc_layout_make(dm_tc_layout *layout, float width, float height);
 int dm_tc_hit(const dm_tc_layout *layout, float x, float y);

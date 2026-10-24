@@ -62,7 +62,8 @@ targets:
         UILaunchScreen: {}   # 声明启动屏，避免 iPhone 以旧尺寸兼容模式运行 | Declare a launch screen so iPhone uses its native screen size instead of legacy compatibility mode
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        UISupportedInterfaceOrientations:   # 游戏画面 16:9 横屏（1600x900），只允许横屏两向 | The game picture is 16:9 landscape (1600x900); only the two landscape orientations are allowed
+        UISupportedInterfaceOrientations:   # 竖屏与横屏都允许；实际方向在启动时按窗口宽高锁定（front_ios_set_launch_bounds），运行中不旋转 | both portrait and landscape are allowed; the actual orientation is locked from the window bounds at launch (front_ios_set_launch_bounds) and does not rotate at run time
+          - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationLandscapeLeft
         UIRequiresFullScreen: true

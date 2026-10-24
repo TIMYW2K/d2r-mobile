@@ -13,6 +13,12 @@ int dm_uiscreen_ingame(void);                // 1 = 局内（真全屏）；0 = 
 void dm_uiscreen_set_ingame(int on);          // 只许界面每帧那一处（dm_cursor.c）调 | May only be called from the per-frame UI site (dm_cursor.c)
 void dm_uiscreen_set_panel(int on);           // 局内开着大面板（功能页 / 箱子 / 商人 / 魔盒…，= 触摸前端的面板模式）：界面矩形移到正中；关掉回落前端选的摆法。触摸前端在界面消息回调里调 | A large panel open in a run (function pages / stash / vendor / cube..., = the touch front end's panel mode): the UI rectangle moves to the center; when closed it drops back to the placement the front end chose. Called by the touch front end in the UI message callback
 int dm_uiscreen_panel(void);                 // 上面那个状态：局内开着大面板 = 1 | The state above: a large panel open in a run = 1
+// 竖屏（启动方向锁定）：界面按 1950×2160 的设计比例排（宽 = 屏宽、高 = 偶(宽×2160/1950)），局内贴底、局外与面板态居中；
+// 与横屏的 16:9 改写互斥，出图分辨率始终用屏幕原生值（front_ios.m 的 front_game_res），不发「性能模式变化」通知。
+// Portrait (locked at launch): the UI keeps the 1950x2160 design ratio (width = screen width, height = even(width*2160/1950)), anchored to the bottom in a run and centered out of a run / with a panel open;
+// exclusive with the landscape 16:9 rewrite, the render resolution always uses the screen's native value (front_game_res in front_ios.m), and no "performance mode changed" notification is sent.
+void dm_uiscreen_set_portrait(int on);
+int dm_uiscreen_portrait(void);
 void *dm_cam_zoom_factor_slot(void);          // KZOOM TSD entry points at the live host scale used by the static main-text patch
 void dm_cam_zoom_set(float extent_scale);
 void dm_cam_zoom_reset(void);                                     // 复位到最远视野（1.00） | Reset to the widest view      // 0.80–1.0: pinched camera extent; 1.0 is the original view

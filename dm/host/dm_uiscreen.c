@@ -21,12 +21,19 @@
 #include <math.h>
 
 static _Atomic int g_mode = -1;              // -1 = 还没定（第一次用时看环境变量） | -1 = not decided yet (checks the environment variable on first use)
+static _Atomic int g_portrait;               // 竖屏：界面按 1950×2160 的设计比例排（宽 = 屏宽、高 = 宽×2160/1950），局外也改写 | Portrait: the UI keeps the 1950x2160 design ratio (width = screen width, height = width*2160/1950), and the height is rewritten out of a run too
 static _Atomic int g_rw, g_rh, g_uh;         // 真实宽高、写给游戏的界面高；g_rw == 0 = 没在改写 | Real width and height, and the UI height written to the game; g_rw == 0 = not rewriting
 static uint8_t *main_base(void) { static uint8_t *b; if (!b) for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) b = (uint8_t *)g_mod[i].base; return b; }
 static int mode(void) { int m = atomic_load(&g_mode); if (m >= 0) return m;
     const char *e = getenv("DM_UI_169"), *p = getenv("DM_UI_YPOS"); m = !(e && strcmp(e, "0")) ? DM_UISCREEN_OFF : p && !strcmp(p, "center") ? DM_UISCREEN_CENTER : p && !strcmp(p, "bottom") ? DM_UISCREEN_BOTTOM : DM_UISCREEN_TOP;
     int exp = -1; atomic_compare_exchange_strong(&g_mode, &exp, m); return atomic_load(&g_mode); }
 void dm_uiscreen_enable(int m) { atomic_store(&g_mode, m < DM_UISCREEN_OFF || m > DM_UISCREEN_BOTTOM ? DM_UISCREEN_OFF : m); }
+// 竖屏：游戏界面按 1950×2160 的设计比例排（宽 = 屏宽、高 = 偶(宽×2160/1950)，1206 宽 → 1336 高），界面矩形仍贴底 / 居中。
+// 与横屏的 16:9 改写互斥：打开竖屏就跳过 16:9 压缩，出图分辨率也用屏幕原生值（前端 front_game_res 给）。
+// Portrait: the game UI keeps the 1950x2160 design ratio (width = screen width, height = even(width*2160/1950), 1206 wide -> 1336 high), and the UI rectangle is still bottom-aligned / centered.
+// Exclusive with the landscape 16:9 rewrite: portrait skips the 16:9 squeeze, and the render resolution uses the screen's native value (given by the front end's front_game_res).
+void dm_uiscreen_set_portrait(int on) { atomic_store(&g_portrait, on != 0); }
+int dm_uiscreen_portrait(void) { return atomic_load(&g_portrait); }
 // 局内 / 局外（前端各页是按 16:9 整页设计的——点击区、标题、3D 人物是一体——整页居中留边；真全屏只在局内开）。
 // 唯一信号：dm_uiscreen_ingame()。定义 = HUDPanel 在且读取画面（LoadScreenPanel）不在，即读取画面两头都归局外：进局时读取画面撤掉后的第一帧起才算局内，
 // 出局时读取画面一盖上来就算局外。由界面每帧那一处（dm_cursor.c，游戏主线程）锁存，宿主各处与图形层都只读这一个值。
@@ -116,7 +123,8 @@ uint64_t front_game_res(int docked); void dm_oe_res_changed(void);
 // 所以在游戏取走 31 的那一刻（hle_oe.c，同一个线程、紧挨着它的比较之前）把真实高写回：同一帧里写回、比较、切换、游戏自己写成新值，中间没有一帧按 4:3 排界面。
 // When handling 31 the game compares the "screen width / height" globals with the new resolution (main+0xe10e10) and does not switch if they are equal. On leaving a run this pair still holds the 16:9 height we wrote, which happens to equal the value to switch to, so the game would think the switch is already done.
 // So at the moment the game takes 31 (hle_oe.c, same thread, right before its comparison) write the real height back: within the same frame come the write-back, comparison, switch, and the game writing the new value itself, with not a single frame laying out the UI at 4:3 in between.
-void dm_uiscreen_res_reread(void) { uint8_t *b = main_base(); int rw = atomic_load(&g_rw); if (!b || !rw) return; int32_t *g = (int32_t *)(b + 0x211da38);
+void dm_uiscreen_res_reread(void) { if (atomic_load(&g_portrait)) return;   // 竖屏从不改分辨率（屏幕宽高保持原生值），没有要写回的 | Portrait never changes the resolution (the screen width/height keep the native values), so there is nothing to write back
+    uint8_t *b = main_base(); int rw = atomic_load(&g_rw); if (!b || !rw) return; int32_t *g = (int32_t *)(b + 0x211da38);
     if (g[0] == rw && g[1] == atomic_load(&g_uh)) g[1] = atomic_load(&g_rh); atomic_store(&g_rw, 0); }
 // 游戏处理 31 时（main+0xe10df0–0xe10e0c）只接受「宽高都不超过窗口初始化时的尺寸 [main+0x211da30]」的新值：窗口贴图按启动时的参数位一次建好，之后只在里面改出图区域。
 // 所以启动时给屏幕原生值（最大的那个），窗口初始化完、界面每帧那一处第一次跑到时再切到前端的 16:9。
@@ -124,21 +132,26 @@ void dm_uiscreen_res_reread(void) { uint8_t *b = main_base(); int rw = atomic_lo
 // So give the screen's native value (the largest one) at startup, and switch to the front end's 16:9 once window initialization is done and the per-frame UI site first runs.
 static _Atomic int g_world, g_res_live;
 uint64_t dm_game_res(int docked) { uint64_t r = front_game_res(docked); uint32_t w = (uint32_t)r, h = (uint32_t)(r >> 32);   // 先问前端：iOS 前端在第一次被问时才决定开不开真全屏 | Ask the front end first: the iOS front end only decides whether to turn on true fullscreen the first time it is asked
-    if (atomic_load(&g_res_live) && mode() != DM_UISCREEN_OFF && !atomic_load(&g_world) && (uint64_t)w * 9 < (uint64_t)h * 16) h = (uint32_t)((uint64_t)w * 9 / 16) & ~1u;
+    if (atomic_load(&g_res_live) && mode() != DM_UISCREEN_OFF && !atomic_load(&g_portrait) && !atomic_load(&g_world) && (uint64_t)w * 9 < (uint64_t)h * 16) h = (uint32_t)((uint64_t)w * 9 / 16) & ~1u;   // 竖屏不压 16:9：画面与界面都用屏幕原生比例 | Portrait: no 16:9 squeeze, picture and UI both use the screen's native ratio
     return (uint64_t)h << 32 | w; }
 
 void dm_uiscreen_pump(void) {
     uint8_t *b = main_base(); if (!b) return;
+    int port = atomic_load(&g_portrait);   // 竖屏：界面高 = 偶(宽×2160/1950)，局外也改写；分辨率不变，不发 31 | Portrait: UI height = even(width*2160/1950), also rewritten out of a run; the resolution does not change, so no 31 is sent
     { int world = ((uint64_t (*)(uint32_t))(b + 0x45f9d0))(*(uint32_t *)(b + 0x2d20e4c)) != 0;
       int first = !atomic_exchange(&g_res_live, 1);
-      if ((atomic_exchange(&g_world, world) != world || (first && !world)) && mode() != DM_UISCREEN_OFF) { LOG("界面画面：%s → 游戏分辨率切到 %u x %u", world ? "玩家单位建立" : first ? "窗口已建好、在前端" : "玩家单位销毁", (unsigned)dm_game_res(1), (unsigned)(dm_game_res(1) >> 32)); dm_oe_res_changed(); } }
+      if (!port && (atomic_exchange(&g_world, world) != world || (first && !world)) && mode() != DM_UISCREEN_OFF) { LOG("界面画面：%s → 游戏分辨率切到 %u x %u", world ? "玩家单位建立" : first ? "窗口已建好、在前端" : "玩家单位销毁", (unsigned)dm_game_res(1), (unsigned)(dm_game_res(1) >> 32)); dm_oe_res_changed(); }
+      else if (port) atomic_store(&g_world, world); }
     static int reg; if (!reg) { reg = 1; if (gate_obs_present(OBS_UI_PROJECT)) { gate_obs_set(OBS_UI_PROJECT, ui_project_obs); atomic_store(&g_proj_on, 1); } } int32_t *g = (int32_t *)(b + 0x211da38); int m = mode(), rw = atomic_load(&g_rw);
-    if (!atomic_load(&g_world) && m != DM_UISCREEN_OFF) return;   // 不在局里：游戏自己按 16:9 出图，这对量不改写（出局那一下的写回见 dm_uiscreen_res_reread） | Not in a run: the game renders at 16:9 by itself, so this pair of values is not rewritten (for the write-back at the moment of leaving a run see dm_uiscreen_res_reread)
+    if (!port && !atomic_load(&g_world) && m != DM_UISCREEN_OFF) return;   // 不在局里：游戏自己按 16:9 出图，这对量不改写（出局那一下的写回见 dm_uiscreen_res_reread） | Not in a run: the game renders at 16:9 by itself, so this pair of values is not rewritten (for the write-back at the moment of leaving a run see dm_uiscreen_res_reread)
     if (m == DM_UISCREEN_OFF) { if (rw) { if (g[0] == rw && g[1] == atomic_load(&g_uh)) g[1] = atomic_load(&g_rh); atomic_store(&g_rw, 0); LOG("界面画面：关掉，屏幕高写回 %d", g[1]); } return; }   // 没打开过就什么都不碰 | If it was never turned on, touch nothing
     int w = g[0], h = g[1]; if (w <= 0 || h <= 0) return;
-    if (rw && w == rw && h == atomic_load(&g_uh)) return;   // 还是我们上次写的值 | Still the value we wrote last time
-    static int n; int uh = h; if ((long)w * 9 < (long)h * 16) { uh = (int)((long)w * 9 / 16) & ~1; g[1] = uh; }
+    if (rw && w == rw && h == atomic_load(&g_uh)) return;   // 还是我们写进去的界面高（游戏刚重写成真实值时才往下走） | Still the UI height we wrote in (only continue when the game has just rewritten it to the real value)
+    static int n; int uh = h;
+    if (port) uh = (int)((long)w * 2160 / 1950) & ~1;   // 1950:2160 = 竖屏界面设计比例（1206 宽 → 1336 高） | 1950:2160 is the portrait UI design ratio (1206 wide -> 1336 high)
+    else if ((long)w * 9 < (long)h * 16) uh = (int)((long)w * 9 / 16) & ~1;
     atomic_store(&g_rh, h); atomic_store(&g_uh, uh); atomic_store(&g_rw, w);
+    g[1] = uh;   // 竖屏也写：游戏按这对量排界面，不写就还是按 2622 排 | Portrait writes it too: the game lays out the UI from this pair, and without the write it would still lay out at 2622
     LOG("界面画面：游戏写入屏幕宽高 %d x %d（第 %d 次）→ 界面用 %d x %d，纵向位置 %d", w, h, ++n, w, uh, yoff());
 }
 int dm_screen_real(int *w, int *h) { int rw = atomic_load(&g_rw);
