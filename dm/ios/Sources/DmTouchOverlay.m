@@ -276,6 +276,10 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             const CGFloat ring = 5.0;                                   // 金属环宽（点） | metal ring width (points)
             CGFloat dx = kIslandBtnDx, dy = kIslandBtnDy;
             if (CGRectGetMidX(ir) > self.bounds.size.width * 0.5) dx = -dx;   // 岛在右：镜像向内 | right-side island: mirror inward
+            if (self.bounds.size.height > self.bounds.size.width) {
+                CGFloat pixel = 1.0 / MAX(1.0, self.window.screen.scale);
+                dx -= 2 * pixel; dy += 2 * pixel;
+            }
             CGRect inner = CGRectOffset(ir, dx, dy);                    // 内胶囊（125×36 竖/横，视方向） | inner capsule (125x36, orientation-dependent)
             CGRect outer = CGRectInset(inner, -ring, -ring);            // 外沿 135×46 | outer 135x46
             CGFloat ri = MIN(inner.size.width, inner.size.height) * 0.5;   // 内圆角 18 = 胶囊半径 | inner radius 18 = capsule radius
@@ -351,13 +355,14 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             CGContextSetLineWidth(c, 1.0); CGContextStrokeEllipseInRect(c, outer);
             CGContextSetStrokeColorWithColor(c, bronze(.34).CGColor);
             CGContextSetLineWidth(c, 0.8); CGContextStrokeEllipseInRect(c, inner);
-            UIFont *f1 = dm_game_font(MAX(12.0, pr * 0.62)); if (!f1) f1 = [UIFont boldSystemFontOfSize:MAX(12.0, pr * 0.62)];
-            UIFont *f2 = dm_game_font(MAX(6.0, pr * 0.27)); if (!f2) f2 = [UIFont boldSystemFontOfSize:MAX(6.0, pr * 0.27)];
-            NSMutableParagraphStyle *pc = [NSMutableParagraphStyle new]; pc.alignment = NSTextAlignmentCenter;
-            [@"D2" drawInRect:CGRectMake(outer.origin.x, py - pr * 0.70, outer.size.width, pr * 0.80)
-               withAttributes:@{NSFontAttributeName:f1, NSForegroundColorAttributeName:[UIColor colorWithWhite:.96 alpha:.98], NSParagraphStyleAttributeName:pc}];
-            [@"PAL" drawInRect:CGRectMake(outer.origin.x, py + pr * 0.22, outer.size.width, pr * 0.42)
-                withAttributes:@{NSFontAttributeName:f2, NSForegroundColorAttributeName:bronze(.92), NSParagraphStyleAttributeName:pc}];
+            // Use the original D / II app artwork inside the existing metal ring.
+            UIImage *palIcon = [UIImage imageNamed:@"d2_pal"];
+            if (palIcon) {
+                CGContextSaveGState(c); [fp addClip]; [palIcon drawInRect:inner]; CGContextRestoreGState(c);
+            } else {
+                UIFont *font = dm_game_font(pr) ?: [UIFont boldSystemFontOfSize:pr];
+                [@"DⅡ" drawInRect:inner withAttributes:@{NSFontAttributeName:font, NSForegroundColorAttributeName:bronze(.92)}];
+            }
         }
     }
 

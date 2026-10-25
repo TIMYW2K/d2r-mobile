@@ -6091,7 +6091,10 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src0, id<MTLTe
     // when the ratio difference is < 1% (the remainder from the game width being a multiple of 8 in the full-screen setup, e.g. 1952x900 versus 2868x1320 differs by 0.17%) fill directly, leaving no few-pixel border
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    // Portrait phone output tolerates a small native-size mismatch without side bars.
+    double aspect_error = fabs((dw / dh) / ((double)cw / ch) - 1);
+    double fill_tolerance = cw < ch && dw < dh ? 0.03 : 0.01;
+    if (aspect_error < fill_tolerance) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     static double last_vp[4];   // 视口变化时记一行（真机屏幕级验收 screen_check.py 核宽高比用） | Log one line when the viewport changes (used by the real-device screen-level acceptance screen_check.py to check the aspect ratio)
     if (memcmp(last_vp, &vp, sizeof last_vp)) { memcpy(last_vp, &vp, sizeof last_vp);
@@ -6122,7 +6125,10 @@ static int present_encode_m4(CBUF cb, id<MTLTexture> src0, id<MTLTexture> dst, c
     present_pipeline(dst.pixelFormat);
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    // Portrait phone output tolerates a small native-size mismatch without side bars.
+    double aspect_error = fabs((dw / dh) / ((double)cw / ch) - 1);
+    double fill_tolerance = cw < ch && dw < dh ? 0.03 : 0.01;
+    if (aspect_error < fill_tolerance) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     RPD *rp = [RPD new];
     rp.colorAttachments[0].texture = dst;

@@ -71,6 +71,7 @@ static void dm_pal_try_scheme(NSArray<NSString *> *schemes, NSUInteger i) {
     }];
 }
 static void dm_pal_open(void) {
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     if (dm_pal_open_bundle(@"com.toolsmiles.Diablo2-Helper")) { LOG("前端：D2 Pal 圆钮 → 按 bundle ID 打开 D2 Pal Pro"); return; }
     LOG("前端：D2 Pal 圆钮 → bundle ID 未打开，试 URL scheme");
     dm_pal_try_scheme(@[@"d2pal://", @"d2palpro://", @"diablo2-helper://"], 0);
@@ -1067,7 +1068,10 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         int slot=-1;
         if(t==_palTouch) { CGPoint p=[t locationInView:self]; _palTouch=nil;
             if(!strcmp(phase,"ended") && !_navigation && !_feMode && !_padMode && dm_tc_pal_button(&_controls.layout, NULL, NULL, NULL) && hypot(p.x-_palP0.x,p.y-_palP0.y)<=14 && CACurrentMediaTime()-_palT0<0.8) {
-                LOG("前端：D2 Pal 圆钮 → 打开外部 App (%.0f,%.0f)",p.x,p.y); dm_pal_open(); }
+                LOG("前端：D2 Pal 圆钮 → 打开外部 App (%.0f,%.0f)",p.x,p.y);
+                [self cancelControlsFrom:"pal_open"];
+                // Finish the UIKit touch callback before switching applications.
+                dispatch_async(dispatch_get_main_queue(), ^{ dm_pal_open(); }); }
             continue; }
         if(t==_mapTouch) { CGPoint p=[t locationInView:self]; _mapTouch=nil;
             if(!strcmp(phase,"ended") && !_navigation && hypot(p.x-_mapP0.x,p.y-_mapP0.y)<=14 && CACurrentMediaTime()-_mapT0<0.6) { CGSize z=self.bounds.size;
@@ -1403,6 +1407,8 @@ static CGRect letterbox_rect(CGRect f) {
         return CGRectMake(f.origin.x, f.origin.y + vy, f.size.width, vh); }
     uint64_t r = front_game_res(1); double gw = (double)(uint32_t)r, gh = (double)(r >> 32);
     if (f.size.width <= 0 || f.size.height <= 0 || gw <= 0 || gh <= 0) return f;
+    // In-game portrait output follows the full window, including small native-resolution rounding differences.
+    if (g_portrait && gw < gh && f.size.width < f.size.height) return f;
     double ga = gw / gh, wa = f.size.width / f.size.height; if (fabs(wa / ga - 1) < 0.01) return f;
     CGFloat w = f.size.width, h = f.size.height;
     if (wa > ga) w = floor(h * ga); else h = floor(w / ga);   // 窗口更宽：左右留边；窗口更窄：上下留边 | Window wider: margins left and right; window narrower: margins top and bottom
@@ -1720,7 +1726,7 @@ static void background_wait_save(void) {
     uint64_t n = 0; int froze = 0; double ms = 0;
     mtl_present_discard(1);
     dm_save_wait(2.5, &n, &froze, &ms);   // 游戏停着（暂停菜单开着）时冻住世界、临时放开暂停存这一次，存完写回（diag.c） | If the game is stopped (pause menu open), freeze the world and temporarily release the pause for this one save, then write it back (diag.c)
-    mtl_present_discard(0);
+    // Keep presents discarded until foreground recovery; do not refill a stopped display link.
     LOG("前端：进后台等游戏存盘 %.0f ms，期间存档提交 %llu 次%s%s", ms, (unsigned long long)n, froze ? "（原先暂停着：冻结世界存盘、已恢复暂停）" : "", n ? "" : "【红】（2.5 秒内没等到）");
 }
 // 失活时也请游戏存一次盘（查 #22 发现的缺口）：上划进多任务界面时 App 多半只「失活」、不进后台，在那里直接划掉进程
@@ -1738,17 +1744,26 @@ static void resign_save(void) {
 // 场景生命周期（main.m 的 SceneDelegate 调）：0 失活 1 进后台 2 回前台 3 激活
 // Scene lifecycle (called by SceneDelegate in main.m): 0 resign active, 1 enter background, 2 return to foreground, 3 become active
 void front_ios_focus_event(int ev) {
+    static BOOL suspended;
+    if (ev < 0 || ev > 3) return;
+    // Recover even when activation arrives without the expected foreground callback.
+    if (ev == 3 && suspended) front_ios_focus_event(2);
     static const char *k[] = {"sceneWillResignActive", "sceneDidEnterBackground", "sceneWillEnterForeground", "sceneDidBecomeActive"};
     { uint64_t guest_ns(void); LOG("前端：%s（客体时钟 %.3f s，声卡回调累计 %llu）", k[ev], guest_ns() / 1e9, (unsigned long long)dm_audio_render_calls()); }   // 两个读数：核对后台那段没算进游戏时间、回来后声卡回调继续涨 | Two readings: to check that the background period was not counted into game time and that audio device callbacks keep increasing after return
     switch (ev) {
         case 0: [g_touch_view cancelControls]; { void dm_gamepad_reset(void); dm_gamepad_reset(); } dm_focus_set(2); resign_save(); break;   // 手柄的键和摇杆一并清零：按着键切走、在后台松开，回来不会补「松开」 | Controller buttons and sticks are zeroed as well: if a button is held while switching away and released in the background, no "release" is delivered on return
         // 进后台：客体时钟一并冻结（等效 Switch 挂起）——否则游戏线程挡在提交处、墙钟照走，回来时游戏内时间一下跳过整段后台时长（补拍 / 动画 / 冷却全跟着跳）
         // Entering background: the guest clock is frozen as well (equivalent to Switch suspend) -- otherwise the game thread is blocked at submission while the wall clock keeps running, and on return in-game time jumps over the whole background duration at once (catch-up ticks / animations / cooldowns all jump with it)
-        case 1: dm_focus_set(3); dm_ui_lifecycle(1); g_audio_bg = 1; audio_apply(); { void dm_cloud_flush(int); dm_cloud_flush(1); }   // iCloud：局内攒下的存档切后台时传掉（cloud_ios.m） | iCloud: saves accumulated in the run are uploaded when going to background (cloud_ios.m)
+        case 1: if (suspended) break;
+            suspended = YES;
+            { void mtl_present_discard(int); mtl_present_discard(1); }
+            dm_focus_set(3); dm_ui_lifecycle(1); g_audio_bg = 1; audio_apply(); { void dm_cloud_flush(int); dm_cloud_flush(1); }   // iCloud：局内攒下的存档切后台时传掉（cloud_ios.m） | iCloud: saves accumulated in the run are uploaded when going to background (cloud_ios.m)
             background_wait_save();   // 进后台先让游戏存一次盘并等提交完成，再挂起：手机上切出去后进程随时可能被系统回收，原版 5 分钟才自动存一次 | On entering background, first have the game save once and wait for the commit to finish, then suspend: on a phone the process may be reclaimed by the system at any time after switching away, and the original game only auto-saves every 5 minutes
             guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); break;   // 挂起返回前在途 GPU 已清空 | In-flight GPU work is already drained before the suspend returns
         case 2: dm_ui_lifecycle(0); { void dm_update_foreground(void); dm_update_foreground(); void dm_cloud_foreground(void); dm_cloud_foreground(); }   // 回前台时人若停在选角页，重查一次新版本（dm/host/dm_update.c；局内不查） | If the player is on the character select page when returning to foreground, check for a new version once more (dm/host/dm_update.c; not checked in a run)
-            { void dm_3d_scale_resumed(void); dm_3d_scale_resumed(); } dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); g_audio_bg = g_audio_intr = 0; audio_apply(); dm_focus_set(2); break;   // 回前台一律当打断已过：进后台时系统自己会发一次「被打断」（真机实测），却不保证回来时补发「结束」；会话若真还被占，启动声卡失败不致命、激活时重试 | Returning to foreground always treats the interruption as over: when entering background the system itself sends one "interrupted" (measured on a real device) but does not guarantee an "ended" on return; if the session is really still occupied, failing to start the audio device is not fatal and is retried on activation
+            { void dm_3d_scale_resumed(void); dm_3d_scale_resumed(); } guest_clock_freeze_for(1, 0); dm_gfx_suspend(0);
+            { void mtl_present_discard(int); mtl_present_discard(0); }
+            suspended = NO; g_audio_bg = g_audio_intr = 0; audio_apply(); dm_focus_set(2); break;   // 回前台一律当打断已过：进后台时系统自己会发一次「被打断」（真机实测），却不保证回来时补发「结束」；会话若真还被占，启动声卡失败不致命、激活时重试 | Returning to foreground always treats the interruption as over: when entering background the system itself sends one "interrupted" (measured on a real device) but does not guarantee an "ended" on return; if the session is really still occupied, failing to start the audio device is not fatal and is retried on activation
         case 3: dm_focus_set(1); audio_apply(); break;   // 激活时再对一次音频：上次恢复没成（会话还被占）的在这里重试 | Reconcile audio once more on activation: a previous resume that failed (session still occupied) is retried here
     }
 }

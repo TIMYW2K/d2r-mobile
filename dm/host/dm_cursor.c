@@ -2361,21 +2361,18 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
         int duy = uh > 0 ? (int)lround(MM_SHIFT_UP_PX * 2160.0 / (double)uh) : 8;       // 25 px → 布局单位 | 25 px in layout units
         int port = dm_uiscreen_portrait();
         if (port) {
-            // 本地改动：竖屏小地图居中，并保持顶部贴顶上提后的高度（MV_LIFT 已跳过 AutoMap，这里单独写）。
-            // 屏宽按界面带换算成 2160 高的布局单位（402 点屏 ≈1950）；小地图宽 650 时 x = -(宽 + 650)/2 ≈ -1300。
-            // Local change: portrait minimap centred, keeping the same top height as the safe-area lift (MV_LIFT now skips
-            // AutoMap, so this pump positions it). Screen width in 2160-high layout units (a 402-pt screen is ~1950); with
-            // a 650-wide minimap x = -(width + 650)/2 ~= -1300.
+            // The negative top-lift made the minimap invisible on device. Keep its native positive Y
+            // until that render/clipping path is verified, and centre the scaled width within the UI band.
             if (mini_on) {
                 int uwu = uh > 0 ? (int)lround(2160.0 * (double)uw / (double)uh) : 1950;
-                int want_x = -(uwu + ww) / 2;
-                int base_x = cfg == 1 ? 0 : -ww;   // 左微缩贴左（x=0），右微缩贴右（x=-宽） | mini-left flush left (x=0), mini-right flush right (x=-width)
+                float sc = *(float *)(w + 0x80);
+                if (!(sc > 0.1f && sc < 10)) sc = 1.0f;
+                int want_x = -(int)lround((uwu + ww * sc) / 2.0);
+                int base_x = cfg == 1 ? 0 : -ww;
                 g_mv_base = base_x; g_mv_base_on = 1;
                 mv_offset(MV_SAFE, w, 0, want_x - base_x, 0); g_mv_base_on = 0;
-                int lift = uh > 0 ? (int)lround((double)uy * 2160.0 / (double)uh) : 0;
-                int st = atomic_load(&g_safe_t);
-                if (lift > 0 && st > 0) lift = lift > st ? lift - st : 0;
-                mv_offset(MV_SAFE, w, 1, -lift, 0);
+                // Leave the native Y offset alone; restore any adjustment owned by this guard.
+                mv_offset(MV_SAFE, w, 1, 0, 0);
             } else {
                 mv_offset(MV_SAFE, w, 0, 0, 0);
                 mv_offset(MV_SAFE, w, 1, 0, 0);
@@ -2419,16 +2416,22 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
 #define DM_MERC_SCALE 1.32f
     { uint64_t p = ui_panel(root, "HireablesPanel");
       if (p && *(float *)(p + 0x80) != 1.0f) *(float *)(p + 0x80) = 1.0f;
-      int ul = atomic_load(&g_safe_l), ulc = (int)((float)ul / DM_MERC_SCALE);
+      int sx=0, sy=0, sw=0, sh=0; dm_ui_rect(&sx,&sy,&sw,&sh);
+      int port = dm_uiscreen_portrait();
+      int dx = port && sh > 0 ? (int)lround(10.0 * 2160 / sh) : 0;
+      int dy = port && sh > 0 ? (int)lround(-40.0 * 2160 / sh / DM_MERC_SCALE) : 0;
+      int ul = atomic_load(&g_safe_l) + dx, ulc = (int)((float)ul / DM_MERC_SCALE);
       uint64_t ch = p ? *(uint64_t *)(p + 0x58) : 0, n = p ? *(uint64_t *)(p + 0x60) : 0;
       static float lg;
       for (uint64_t k = 0; ch && k < n && k < 40; k++) { uint64_t c = *(uint64_t *)(ch + 8 * k); if (!c) continue;
           if (*(float *)(c + 0x80) != DM_MERC_SCALE) { *(float *)(c + 0x80) = DM_MERC_SCALE;
               if (lg != DM_MERC_SCALE) { lg = DM_MERC_SCALE; LOG("佣兵头像：放大到 %.2f 倍（只缩放头像，名字字号不动）", (double)DM_MERC_SCALE); } }
           int32_t x0 = *(int32_t *)(c + 0x70);
-          mv_offset(MV_SAFE, c, 0, ulc, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
+          mv_offset(MV_SAFE, c, 0, ulc, 1); mv_offset(MV_SAFE, c, 1, dy, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
     uint64_t h = ui_panel(root, "HUDWarnings");
-    if (h) { int32_t x0 = *(int32_t *)(h + 0x70); mv_offset(MV_SAFE, h, 0, -u, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
+    if (h) { int32_t x0 = *(int32_t *)(h + 0x70); int ux=0, uy=0, uw=0, uh=0; dm_ui_rect(&ux,&uy,&uw,&uh);
+        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(5.0 * 2160 / uh) : 0;
+        mv_offset(MV_SAFE, h, 0, -u-dx, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
 
     // 本地改动：技能树那排页内标签里「毒素和白骨术」六个字在 300 单位宽的文字框里放不下（布局开着
     // truncateWithEllipsis，会被截断）。上一版把四个文字框加宽摊开 —— 但**底框（TabK 与它里面的 Background）是
