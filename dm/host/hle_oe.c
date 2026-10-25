@@ -44,7 +44,13 @@ static void mq_push(uint32_t m) {
     pthread_mutex_unlock(&g_mq_lock);
 }
 void dm_oe_res_changed(void) { if (getenv("DM_TEST_OE_FOCUS_FIRST")) mq_push(MSG_FOCUS);   /* 测试：让 31 排在一条焦点通知后面（iOS 包启动时的顺序） | Test: queue 31 behind a focus notification (the order at iOS app startup) */
-    if (g_ntf_perfmode) mq_push(MSG_PERFMODE); else LOG("【红】分辨率要切，但游戏没打开性能模式变化通知"); }   // 出图分辨率该变了（dm_uiscreen.c）：让游戏重读参数位 | the render resolution should change (dm_uiscreen.c): make the game re-read the parameter bits
+    // 本地改动（构建 8.1）：游戏没打开「性能模式变化通知」也照推 31。游戏自己的 31 处理（重取分辨率）
+    // 与订阅开关无关；7.1 真机从未出现过 31，不能先赌订阅开过——这一行会说明有没有开，31 仍会进队列。
+    // Local change (build 7.2): push 31 even when the game has not enabled the "performance mode changed"
+    // notification. The game's own 31 handling (re-read the resolution) does not depend on the subscription switch,
+    // and build 7.1 never delivered a 31 on device; this line records whether it was enabled while 31 is still queued.
+    if (!g_ntf_perfmode) LOG("oe 分辨率切换：游戏未打开性能模式变化通知，仍推 31");
+    mq_push(MSG_PERFMODE); }   // 出图分辨率该变了（dm_uiscreen.c）：让游戏重读参数位 | the render resolution should change (dm_uiscreen.c): make the game re-read the parameter bits
 // 只对 GetOperationMode 报的运行模式（手柄 / 触屏布局切换让游戏重载布局用，dm_padmode.c）：m ≥ 0 报 m 并推一次运行模式通知，m < 0 报回真值再推一次。
 // 手柄样式（hle_hid.c connected_id）与性能模式照真值，所以不弹「重新连接控制器」、出图分辨率不变
 // Operation mode reported to GetOperationMode only (used to make the game reload layouts when switching between controller / touch layouts, dm_padmode.c):
@@ -363,7 +369,7 @@ HLE_FORCE("_ZN2nn2oe25TryPopNotificationMessageEPj", "系统通知队列；前�
 // bool arguments: Switch callers do not extend them, declared as unsigned and only the low 8 bits are looked at
 HLE_FORCE("_ZN2nn2oe28SetResumeNotificationEnabledEb", "恢复通知开关；宿主的恢复以焦点通知 15 表达", void, h_oe_SetResumeNtf, unsigned on) { (void)on; }
 HLE_FORCE("_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb", "运行模式变化通知开关", void, h_oe_SetOpModeNtf, unsigned on) { g_ntf_opmode = on & 0xff; }
-HLE_FORCE("_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb", "性能模式变化通知开关", void, h_oe_SetPerfModeNtf, unsigned on) { g_ntf_perfmode = on & 0xff; }
+HLE_FORCE("_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb", "性能模式变化通知开关", void, h_oe_SetPerfModeNtf, unsigned on) { int was = g_ntf_perfmode; g_ntf_perfmode = on & 0xff; if (was != g_ntf_perfmode) LOG("oe 性能模式变化通知：%s", g_ntf_perfmode ? "开" : "关"); }
 
 // nn::settings::LanguageCode = struct { char string[8]; }，8 字节按值返回在 x0
 // nn::settings::LanguageCode = struct { char string[8]; }, 8 bytes returned by value in x0

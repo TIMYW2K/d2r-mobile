@@ -247,7 +247,13 @@ static UIInterfaceOrientation dm_scene_orientation(UIView *v) {
     // landscape orientation, so the capsule never jumps to the portrait position (which looks like it vanished).
     static UIInterfaceOrientation lastLandscape = UIInterfaceOrientationUnknown;
     if (UIInterfaceOrientationIsLandscape(o)) { lastLandscape = o; return o; }
-    if (v.bounds.size.width > v.bounds.size.height && lastLandscape != UIInterfaceOrientationUnknown) return lastLandscape;
+    // 本地改动（构建 8.1）：判断「窗口还是横的」必须看窗口尺寸，不能看游戏视图。留边时游戏视图是 402×184 的横条，
+    // 窗口已经转成竖屏 402×874 之后它仍然宽>高，方向会被一直误读成横屏（7.1 真机 g_portrait 始终为 0 的根因）。
+    // Local change (build 7.2): "the window is still landscape" must look at the window size, not the game view. When
+    // letterboxed, the game view is a 402x184 strip and stays wider than tall after the window has rotated to portrait
+    // 402x874, so the orientation was read as landscape forever (the root cause of g_portrait staying 0 in build 7.1).
+    CGSize wz = v.window ? v.window.bounds.size : v.bounds.size;
+    if (wz.width > wz.height && lastLandscape != UIInterfaceOrientationUnknown) return lastLandscape;
     return o;
 }
 static BOOL dm_island_on_right(UIView *v) {
@@ -747,11 +753,19 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     // not count as an exit (dm_uiscreen_ingame is briefly 0, judging by it would snap back to landscape on every map change).
     { static UIInterfaceOrientation lastO = UIInterfaceOrientationUnknown; UIInterfaceOrientation o = dm_scene_orientation(self);
       static int lastIngame = -1; int ingame = dm_uiscreen_ingame(); BOOL maskDirty = NO;
-      if (lastO != UIInterfaceOrientationUnknown && o != lastO) {
-          [self rotationChanged:"scene"];
-          if (UIInterfaceOrientationIsPortrait(o)) { if (ingame) { dm_orient_apply(1); maskDirty = YES; } }   // 局内转到竖屏：切游戏分辨率 | rotated to portrait in a run: switch the game resolution
-          else if (g_portrait) { dm_orient_apply(0); maskDirty = YES; } }                                     // 转回横屏：切回去 | rotated back to landscape: switch back
-      lastO = o;
+      // 本地改动（构建 8.1）：方向判定每拍都做，不只看「变化那一拍」——读取画面期间转成竖屏（那时
+      // dm_uiscreen_ingame 还是 0）不会错过，进局第一拍补切；转屏途中读到 Unknown 不更新 lastO，
+      // 免得下一次真方向被当成没变化。
+      // Local change (build 7.2): decide every tick instead of only on the change tick -- a rotation to portrait
+      // during the loading screen (when dm_uiscreen_ingame is still 0) is not missed and is applied on the first
+      // in-run tick; Unknown readings during the rotation do not overwrite lastO, so the next real orientation is
+      // not mistaken for "no change".
+      if (o != UIInterfaceOrientationUnknown) {
+          if (lastO != UIInterfaceOrientationUnknown && o != lastO) [self rotationChanged:"scene"];
+          lastO = o;
+          if (UIInterfaceOrientationIsLandscape(o)) { if (g_portrait) { dm_orient_apply(0); maskDirty = YES; } }   // 转回横屏：切回去 | rotated back to landscape: switch back
+          else if (ingame && !g_portrait) { dm_orient_apply(1); maskDirty = YES; }                                // 局内竖屏：切游戏分辨率 | portrait in a run: switch the game resolution
+      }
       if (lastIngame >= 0 && ingame != lastIngame) maskDirty = YES;   // 进出局：支持方向跟着变（局内四向 / 局外横屏） | entering / leaving a run: the supported orientations follow (all four in a run / landscape outside)
       lastIngame = ingame;
       static double backDeadline;
@@ -1264,7 +1278,7 @@ static void touch_ui_message(const char *cat,const char *act,const char *arg) {
     if (v) {
         if (g_full || g_portrait) { static int lx = -1, ly, lw, lh, lrh, lrw; int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h);   // 界面矩形由宿主定（开机后才有、切档会变）：变了就让容器重摆游戏视图 | The UI rectangle is decided by the host (available only after boot, changes when the profile switches): on change, have the container re-lay out the game view
             if (dm_screen_real(&rw, &rh) && (x != lx || y != ly || w != lw || h != lh || rh != lrh || rw != lrw)) { lx = x; ly = y; lw = w; lh = h; lrh = rh; lrw = rw;
-                if (g_portrait) { [v setNeedsLayout]; [v layoutIfNeeded]; }   // 竖屏：视图不换 frame，直接重排（界面带变了） | Portrait: the view frame does not change, lay out directly (the UI band changed)
+                if (g_portrait) { UIView *host = v.superview ?: v; [host setNeedsLayout]; [host layoutIfNeeded]; [v setNeedsLayout]; [v layoutIfNeeded]; }   // 竖屏：容器与视图一起重排（界面带变了） | Portrait: re-lay out the container and the view (the UI band changed)
                 else { [v.superview setNeedsLayout]; [v.superview layoutIfNeeded]; } } }   // 当拍摆到位：自绘控件不比游戏画的界面晚一拍 | Laid out within the same tick: custom-drawn widgets are not one tick later than the UI drawn by the game
         [v tickTouchControls:CACurrentMediaTime()];
         [g_touch_view refreshPortalBinding];
@@ -1301,8 +1315,15 @@ static void dm_orient_apply(int p) {
     if (p) mtl_set_ui_rect_fn(ui_rect_frac); else if (!g_full) mtl_set_ui_rect_fn(NULL);   // 竖屏：界面按界面矩形下移并剪裁；横屏 iPhone 不需要 | Portrait: shift and clip the UI to the UI rectangle; landscape iPhone does not need it
     void dm_oe_res_changed(void);
     dm_oe_res_changed();   // 让游戏按新方向重取分辨率（31）；竖屏 1206x2622 要过宿主放宽后的上限（dm_uiscreen.c） | Have the game reread the resolution (31); portrait 1206x2622 needs the host-widened cap (dm_uiscreen.c)
-    DmMetalView *v = g_touch_view; if (v) [v setNeedsLayout];
-    LOG("前端：局内方向 → %s（游戏分辨率 %u x %u）", p ? "竖屏" : "横屏", (unsigned)r, (unsigned)(r >> 32));
+    // 本地改动（构建 8.1）：竖屏 / 回横屏都要换游戏视图的 frame。启动是竖窗套着留边容器，只 setNeedsLayout
+    // 自己不会让容器重摆，游戏视图会停在 402×184 的横条上（真机截图就是横条居中）。
+    // Local change (build 7.2): both directions change the game view's frame. The app launches in a portrait window
+    // inside the letterbox container; asking only the game view to lay out does not make the container re-place it,
+    // so the game view stayed the 402x184 landscape strip (exactly the centered strip in the device screenshot).
+    DmMetalView *v = g_touch_view;
+    if (v) { UIView *host = v.superview ?: v; [host setNeedsLayout]; [host layoutIfNeeded]; [v setNeedsLayout]; [v layoutIfNeeded]; }
+    LOG("前端：局内方向 → %s（游戏分辨率 %u x %u，视图 %.0fx%.0f）", p ? "竖屏" : "横屏", (unsigned)r, (unsigned)(r >> 32),
+        v ? v.bounds.size.width : 0.0, v ? v.bounds.size.height : 0.0);
 }
 static CGRect letterbox_rect(CGRect f) {
     if (g_full && f.size.width > 0 && f.size.height > 0) {   // 真全屏：游戏视图跟宿主的读数走（纵向位置只有那一个来源），每拍比对、变了重摆 | True fullscreen: the game view follows the host's readings (the only source for the vertical position); compared every tick and re-laid out on change
