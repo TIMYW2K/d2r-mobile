@@ -994,6 +994,7 @@ static int no_bc(void) {
     return v;
 }
 static int bc_unpack(uint32_t nvn_fmt, uint32_t *pf, int *bpp) { return no_bc() && nvn_bc_unpacked(nvn_fmt, pf, bpp); }
+static int xv_present(uint64_t ser);   // 窗口（交换链）贴图登记表，定义在下方 | Window (swapchain) texture registry, defined below
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "贴图格式 %#x Metal 无对应（首例）", t->d.format); return nil; }
@@ -1013,6 +1014,20 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         case 9: d.textureType = MTLTextureTypeCubeArray; d.arrayLength = t->d.depth; break;
         case 10: RED_ONCE(1, "缓冲贴图（TARGET_BUFFER）未实现"); return nil;
         default: d.textureType = MTLTextureType2D; break;
+    }
+    // 交换链贴图按长边方形分配：启动横屏时游戏按 2622x1206 建纹理，局内转竖屏 1206x2622 超出高度，
+    // 31 只改出图区域、不重建纹理，出图裁切就会越界 / 被等比居中成上下黑边。这里只放大 Metal 侧分配，
+    // NVN 上报的宽高（nvnTextureGetWidth/Height）与存储大小不变；多占约 44 MB（3 张 BGRA8）。
+    // Allocate swapchain textures square on the long edge: at the landscape launch the game builds them as
+    // 2622x1206; an in-run portrait switch to 1206x2622 exceeds the height, and 31 only changes the crop
+    // region without rebuilding the texture, so the present crop goes out of bounds / gets letterboxed.
+    // Only the Metal allocation grows; the NVN-reported width/height and storage size stay unchanged.
+    if (d.textureType == MTLTextureType2D && t->serial && xv_present(t->serial)) {
+        NSUInteger side = d.width > d.height ? d.width : d.height;
+        if (side > d.width || side > d.height) {
+            MLOG("交换链贴图按方形分配 %lux%lu（NVN 上报 %ux%u），供局内转屏出图", (unsigned long)side, (unsigned long)side, t->d.width, t->d.height);
+            d.width = d.height = side;
+        }
     }
     d.storageMode = MTLStorageModePrivate;   // 渲染目标与素材都放 GPU 私有存储（可用无损压缩） | Render targets and assets both go in GPU private storage (lossless compression available)
     d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)

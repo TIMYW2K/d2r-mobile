@@ -1263,6 +1263,16 @@ static uint64_t present_period(const win_t *o) {
     return hz > 0 ? (uint64_t)(itv * 1e9 / hz) : 0;
 }
 int (*g_nvn_loadscreen_up)(void);   // 宿主登记：读取画面此刻是否开着（diag.c 订阅界面消息时填；图形单测里为空 = 不设闸） | host registration: whether the loading screen is up right now (filled in when diag.c subscribes to UI messages; null in graphics unit tests = no gate)
+// 竖屏整屏出图：交换链贴图已按长边方形分配，出图区域不再用游戏启动时写死的横屏裁切。
+// 只在「前端已转竖屏」且「游戏的屏幕宽高已变竖屏（31 被接受）」后覆盖，转屏过渡帧保持原裁切。
+// 前端与 dm_uiscreen 提供真实屏幕尺寸；图形单测不链接它们时符号为空，保持原行为。
+// Portrait full-screen present: the swapchain texture is allocated square on the long edge, so the crop no longer
+// uses the landscape crop fixed at launch. It is only overridden once the front end is in portrait AND the game's
+// screen width/height are already portrait (31 accepted); transition frames keep the original crop.
+// The front end / dm_uiscreen provide the real screen size; when the graphics unit tests do not link them the
+// symbols are null and the old behaviour stays.
+extern int dm_uiscreen_portrait(void) __attribute__((weak));
+extern int dm_screen_real(int *w, int *h) __attribute__((weak));
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++;
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
@@ -1274,7 +1284,17 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     gfx_enter();
     uint64_t t0 = now_ns();
     if (idx >= 0 && idx < o->ntex && idx < 4) {   // 只入队，立即返回；ticket 存翻译队列的任务号 | Enqueue only and return at once; ticket holds the translation queue's job number
-        xjob j = {XJ_PRESENT, 0, NULL, snap_tex(o->tex[idx]), present_period(o) / 1e9}; memcpy(j.crop, o->crop, sizeof j.crop);
+        int crop[4]; memcpy(crop, o->crop, sizeof crop);
+        int pw = 0, ph = 0;
+        if (dm_uiscreen_portrait && dm_uiscreen_portrait() && dm_screen_real && dm_screen_real(&pw, &ph) && pw > 0 && ph > pw) {
+            int want[4] = {0, 0, pw, ph}; static int last[4], have;
+            if (!have || memcmp(last, want, sizeof want)) {
+                memcpy(last, want, sizeof want); have = 1;
+                LOG("[nvn] 出图裁切改按竖屏整屏 %dx%d（游戏原裁切 %d,%d %dx%d）", pw, ph, crop[0], crop[1], crop[2], crop[3]);
+            }
+            memcpy(crop, want, sizeof crop);
+        }
+        xjob j = {XJ_PRESENT, 0, NULL, snap_tex(o->tex[idx]), present_period(o) / 1e9}; memcpy(j.crop, crop, sizeof j.crop);
         o->ticket[idx] = x_push(&j); }
     gfx_leave();
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
