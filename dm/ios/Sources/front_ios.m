@@ -33,6 +33,7 @@ void dm_gamepad_start(void (*on_mode)(int pad)); void dm_gamepad_touched(void); 
 #include "../../host/dm_custom.h"
 static NSString *SWT(const char *k) { return @(dm_ui(k)); }   // 我们自己的界面文字（中英表 dm/i18n/ui_text.tsv，语言跟原版设置走） | our own UI text (Chinese-English string table dm/i18n/ui_text.tsv, language follows the original game's setting)
 static _Atomic int g_touch_frontend=1;   // 不在局内（启动即是）：scene.game 为假 | Not in a run (true right at launch): scene.game is false
+static _Atomic int g_back_frontend;      // 真正的退出信号（FrontEndNavigation:ToFrontEnd）：tick 取走后请求转回横屏 | the real exit signal (FrontEndNavigation:ToFrontEnd): the tick takes it and asks to rotate back to landscape
 static void hud_stack_watch(void);   // 底部 UI v4 面板栈看门（定义见 touch_ui_message 前） | Bottom UI v4 panel stack watch (defined before touch_ui_message)
 // 旧生命周期实验可省略桥；生产Sources自动包含强实现。
 // The old lifecycle experiment may omit the bridge; production Sources automatically include the strong implementation.
@@ -90,23 +91,20 @@ static int g_full;
 // The game view is still the whole window (no g_full container); UI touch points and the custom HUD are normalized to the UI rectangle.
 static int g_portrait, g_res_dir;   // g_res_dir = 方向代号（启动方向变一次加 1，见 front_ios_set_launch_bounds） | orientation generation (incremented whenever the launch orientation is set, see front_ios_set_launch_bounds)
 int front_ios_portrait(void) { return g_portrait; }
+// 局内才允许转屏：启动与所有前端页面一律横屏（用户 2026-10-23 反馈：竖屏启动会卡在版号画面）
+// Rotate only in a run: the launch and every front-end page stay landscape (user feedback 2026-10-23: a portrait launch hung on the version label).
+// 局内允许四向；竖屏时局内换图的读取画面（dm_uiscreen_ingame 短暂为 0）仍要许可竖屏，否则系统会把它转回横屏。
+// In a run all four orientations are allowed; while already portrait the in-run loading screen (dm_uiscreen_ingame is
+// briefly 0) must keep portrait allowed, or the system would rotate it back to landscape.
+int front_ios_ingame_autorotate(void) { return g_portrait || dm_uiscreen_ingame(); }
+static void dm_orient_apply(int p);
 void front_ios_set_launch_bounds(CGRect b, UIInterfaceOrientation o) {
-    // 以启动时的界面方向为准（iOS 26 的 effectiveGeometry 已经是最终方向），读不到才退回窗口宽高：
-    // 只按 coordinateSpace.bounds 判，某些系统版本在 willConnect 这一刻还按竖屏尺寸给，横屏启动会被误锁成竖屏。
-    // Prefer the launch interface orientation (on iOS 26 effectiveGeometry already holds the final one) and fall back to the
-    // window bounds only when it is unknown: bounds alone can still be portrait-sized at willConnect on some system versions,
-    // which would wrongly lock a landscape launch to portrait.
-    // 只要有一个信号说横屏就按横屏（保住原有横屏，绝不因为某个信号晚一拍就把横屏锁成竖屏）；
-    // 两个信号都说竖屏（或都读不到、窗口是竖的）才锁竖屏。
-    // Landscape wins if either signal says landscape (never lock an existing landscape launch to portrait just because one
-    // signal lags); portrait only when both say portrait (or both are unknown and the window is taller than wide).
-    int ol = o == UIInterfaceOrientationLandscapeLeft || o == UIInterfaceOrientationLandscapeRight ? 1 :
-             o == UIInterfaceOrientationPortrait || o == UIInterfaceOrientationPortraitUpsideDown ? 0 : -1;
-    int bl = b.size.width > b.size.height + 0.5 ? 1 : b.size.height > b.size.width + 0.5 ? 0 : -1;
-    int p = ol == 1 || bl == 1 ? 0 : ol == 0 || bl == 0 ? 1 : b.size.height > b.size.width + 0.5;
-    if (p == g_portrait) return;
-    g_portrait = p; ++g_res_dir; g_full = 0;   // 分辨率缓存按新方向重算；竖屏不套真全屏容器 | recompute the resolution cache for the new orientation; portrait uses no true-fullscreen container
-    LOG("前端：启动方向 %s（窗口 %.0fx%.0f，界面方向 %ld）", p ? "竖屏（方向锁定）" : "横屏", b.size.width, b.size.height, (long)o);
+    // 整体先横屏启动：前端页面 / 读取画面完全沿用横屏布局，竖屏只在局内由用户转屏进入。
+    // Launch landscape as a whole: front-end pages / loading screens keep the landscape layout; portrait is only entered in a run when the user rotates.
+    (void)b; (void)o;
+    if (g_portrait) { g_portrait = 0; ++g_res_dir; }
+    g_full = 0;
+    LOG("前端：启动横屏（竖屏仅在局内转屏可用）");
 }
 static CGRect world_rect(UIView *v) { UIView *b = v.superview; int x, y, w, h, rw = 0, rh = 0; if (!g_full || !b) return v.bounds; dm_ui_rect(&x, &y, &w, &h);
     return dm_screen_real(&rw, &rh) && h > 0 && h < rh ? [v convertRect:b.bounds fromView:b] : v.bounds; }   // 局外（界面矩形就是整个画面）时世界与游戏视图重合 | Out of a run (the UI rectangle is the whole picture) the world and the game view coincide
@@ -119,6 +117,10 @@ static CGRect ui_rect_view(UIView *v) {
     if (!g_portrait) return v.bounds;
     int x = 0, y = 0, w = 0, h = 0, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h);
     if (!dm_screen_real(&rw, &rh) || rh <= 0 || w <= 0 || h <= 0) return v.bounds;
+    // 转屏过渡：视图已经竖过来但游戏还没按竖屏重设分辨率（或视图还是横的）时按整窗摆，避免拿旧宽算出超大的界面带。
+    // Rotation transition: the view is already upright but the game has not switched to the portrait resolution yet (or the
+    // view is still landscape): use the whole window, so an old width cannot produce an oversized UI band.
+    if (rw > rh || v.bounds.size.width > v.bounds.size.height) return v.bounds;
     CGFloat k = v.bounds.size.height / rh;
     return CGRectMake(v.bounds.origin.x + x * k, v.bounds.origin.y + y * k, w * k, h * k);
 }
@@ -738,9 +740,32 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     // 本地改动：方向一变（转屏动画开始）就进入「保持重画」时段；effectiveGeometry 在旋转一开始就会变。
     // Local change: a change of interface orientation (the rotation animation starting) enters the repaint window;
     // effectiveGeometry flips right at the start of the rotation.
+    // 本地改动：局内转屏 / 退出回横屏。启动与前端固定横屏，只有局内允许竖屏；退出信号用 FrontEndNavigation:ToFrontEnd，
+    // 局内换图的读取画面不能当退出（dm_uiscreen_ingame 会短暂变 0，按它判断一换图就跳回横屏）。
+    // Local change: in-run rotation / back to landscape on exit. The launch and the front end are fixed to landscape and
+    // portrait is allowed only in a run; the exit signal is FrontEndNavigation:ToFrontEnd, the in-run loading screen must
+    // not count as an exit (dm_uiscreen_ingame is briefly 0, judging by it would snap back to landscape on every map change).
     { static UIInterfaceOrientation lastO = UIInterfaceOrientationUnknown; UIInterfaceOrientation o = dm_scene_orientation(self);
-      if (lastO != UIInterfaceOrientationUnknown && o != lastO) [self rotationChanged:"scene"];
-      lastO = o; }
+      static int lastIngame = -1; int ingame = dm_uiscreen_ingame(); BOOL maskDirty = NO;
+      if (lastO != UIInterfaceOrientationUnknown && o != lastO) {
+          [self rotationChanged:"scene"];
+          if (UIInterfaceOrientationIsPortrait(o)) { if (ingame) { dm_orient_apply(1); maskDirty = YES; } }   // 局内转到竖屏：切游戏分辨率 | rotated to portrait in a run: switch the game resolution
+          else if (g_portrait) { dm_orient_apply(0); maskDirty = YES; } }                                     // 转回横屏：切回去 | rotated back to landscape: switch back
+      lastO = o;
+      if (lastIngame >= 0 && ingame != lastIngame) maskDirty = YES;   // 进出局：支持方向跟着变（局内四向 / 局外横屏） | entering / leaving a run: the supported orientations follow (all four in a run / landscape outside)
+      lastIngame = ingame;
+      static double backDeadline;
+      if (atomic_exchange(&g_back_frontend, 0)) {   // 回前端：先许可横屏，再请求系统转回横屏；方向真变过来时上面那段切游戏分辨率 | back to the front end: allow landscape first, then ask the system; the block above switches the game resolution once the orientation really changes
+          maskDirty = YES; backDeadline = now + 1.0;
+          if (@available(iOS 16.0, *)) { UIWindowScene *ws = self.window.windowScene;
+              if (ws) { [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
+                  [ws requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscape]
+                      errorHandler:^(NSError *e) { if (e) LOG("前端：请求转回横屏失败：%s", e.localizedDescription.UTF8String); }]; } }
+      }
+      if (backDeadline && now > backDeadline) { backDeadline = 0;   // 系统没转（请求失败等）：至少把游戏切回横屏 | the system did not rotate (request failed etc.): at least switch the game back to landscape
+          if (g_portrait && !ingame) { dm_orient_apply(0); maskDirty = YES; } }
+      if (maskDirty) { UIViewController *root = self.window.rootViewController; [root setNeedsUpdateOfSupportedInterfaceOrientations]; }
+    }
     { int dm_padmode_busy(void); BOOL hide=_feMode || _padMode || dm_padmode_busy();
       // 本地改动：转屏过渡期间不藏控件层（手柄模式 / 前端页面照旧藏）。| Local change: keep the control layer visible
       // during a rotation transition (controller mode / front-end pages still hide it).
@@ -1190,6 +1215,9 @@ static void hud_stack_watch(void) {
 // The original game's panel state only decides widget purpose / visibility; MouseMove messages are not mistaken for mouse injection.
 static void touch_ui_message(const char *cat,const char *act,const char *arg) {
     if(!strcmp(cat,"PanelManager")) hud_stack_message(act,arg);
+    // 退出到前端（真正离开这一局，不是局内换图的读取画面）：置标志，tick 里请求转回横屏。
+    // Leaving for the front end (really exiting the run, not an in-run map-change loading screen): set the flag; the tick asks to rotate back to landscape.
+    if(!strcmp(cat,"FrontEndNavigation") && !strcmp(act,"ToFrontEnd")) atomic_store(&g_back_frontend,1);
     static dm_tc_scene scene; static uint64_t sceneEpoch=1,worldEpoch=1;
     dm_tc_scene before=scene;
     dm_tc_set_panel_state(dm_ui_panel_state());   // 储藏箱开着等状态位：读宿主从游戏面板树发布的值（变化时宿主会发 DM:PanelState 触发到这里） | State bits such as stash open: read the value the host publishes from the game's panel tree (on change the host sends DM:PanelState, which triggers this)
@@ -1258,6 +1286,24 @@ static CADisplayLink *g_rate_link;
 // on a real iPhone the picture ratio = the screen ratio, which takes this path with no container and unchanged behavior.
 uint64_t front_game_res(int docked); void mtl_set_ui_rect_fn(void (*fn)(double *y, double *h));
 static void ui_rect_frac(double *fy, double *fh) { int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h); if (dm_screen_real(&rw, &rh) && rh > 0) { *fy = (double)y / rh; *fh = (double)h / rh; } }
+// 局内方向切换（横屏启动后唯一允许的运行时转屏）：改方向、重算画面分辨率、按新方向注册界面矩形，再让游戏重取分辨率（31）。
+// 局外一律横屏：tick 离开局内时调这里回横屏，并向系统请求转回横屏。
+// In-run orientation switch (the only runtime rotation allowed after the landscape launch): change the orientation,
+// recompute the picture resolution, register the UI rectangle for the new orientation, then have the game reread the
+// resolution (31). Out of a run it is always landscape: the tick calls this with 0 when leaving a run and asks the system
+// to rotate back to landscape.
+static void dm_orient_apply(int p) {
+    p = p != 0;
+    if (p == g_portrait) return;
+    g_portrait = p; ++g_res_dir;
+    if (p) g_full = 0;   // 竖屏不套真全屏容器（3D 铺满整窗） | portrait uses no true-fullscreen container (3D fills the window)
+    uint64_t r = front_game_res(1);   // 重算方向缓存，并把竖屏开关同步给宿主 | recompute the orientation cache and sync the host's portrait flag
+    if (p) mtl_set_ui_rect_fn(ui_rect_frac); else if (!g_full) mtl_set_ui_rect_fn(NULL);   // 竖屏：界面按界面矩形下移并剪裁；横屏 iPhone 不需要 | Portrait: shift and clip the UI to the UI rectangle; landscape iPhone does not need it
+    void dm_oe_res_changed(void);
+    dm_oe_res_changed();   // 让游戏按新方向重取分辨率（31）；竖屏 1206x2622 要过宿主放宽后的上限（dm_uiscreen.c） | Have the game reread the resolution (31); portrait 1206x2622 needs the host-widened cap (dm_uiscreen.c)
+    DmMetalView *v = g_touch_view; if (v) [v setNeedsLayout];
+    LOG("前端：局内方向 → %s（游戏分辨率 %u x %u）", p ? "竖屏" : "横屏", (unsigned)r, (unsigned)(r >> 32));
+}
 static CGRect letterbox_rect(CGRect f) {
     if (g_full && f.size.width > 0 && f.size.height > 0) {   // 真全屏：游戏视图跟宿主的读数走（纵向位置只有那一个来源），每拍比对、变了重摆 | True fullscreen: the game view follows the host's readings (the only source for the vertical position); compared every tick and re-laid out on change
         // 局内（真实画面比 16:9 窄、界面矩形比画面矮）= 界面矩形，贴底；局外（前端各页、读取画面，游戏整体按 16:9 出）= 窗口里居中的那块 16:9。宿主还没读到画面宽高前按局外摆
@@ -1326,10 +1372,10 @@ void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 // DM_GAME_RES=WIDTHxHEIGHT (docked mode; handheld scales by 720/900) overrides: DM_GAME_RES=1600x900 is the original game's 16:9 floor (negative control), DM_GAME_RES=1952x900 is the earlier default
 uint64_t front_game_res(int docked) {
     static double aspect; static unsigned fw, fh; static int dir = -1;
-    if (dir != g_res_dir) {   // 启动方向决定整张画面的宽高（竖屏 = 短边为宽）；方向变了整个缓存重算 | the launch orientation decides the picture's width/height (portrait = short side is the width); a change recomputes the whole cache
+    if (dir != g_res_dir) {   // 方向决定整张画面的宽高（竖屏 = 短边为宽，横屏 = 长边为宽）；方向变了整个缓存重算 | the orientation decides the picture's width/height (portrait = short side is the width, landscape = long side is the width); a change recomputes the whole cache
         dir = g_res_dir;
         CGRect b = UIScreen.mainScreen.nativeBounds; double sw = fmin(b.size.width, b.size.height), sh = fmax(b.size.width, b.size.height);
-        fw = (unsigned)sw; fh = (unsigned)sh; aspect = sw / sh;
+        fw = (unsigned)(g_portrait ? sw : sh); fh = (unsigned)(g_portrait ? sh : sw); aspect = (double)fw / fh;
         if (g_portrait) {   // 竖屏：原生竖画面，界面由 dm_uiscreen 按 1950:2160 改写（1206 宽 → 1336 高）；DM_GAME_RES 不参与 | Portrait: native upright picture; dm_uiscreen rewrites the UI to 1950:2160 (1206 wide -> 1336 high); DM_GAME_RES does not apply
             dm_uiscreen_set_portrait(1); dm_uiscreen_enable(DM_UISCREEN_BOTTOM);
         } else {

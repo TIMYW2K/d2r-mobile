@@ -123,8 +123,10 @@ uint64_t front_game_res(int docked); void dm_oe_res_changed(void);
 // 所以在游戏取走 31 的那一刻（hle_oe.c，同一个线程、紧挨着它的比较之前）把真实高写回：同一帧里写回、比较、切换、游戏自己写成新值，中间没有一帧按 4:3 排界面。
 // When handling 31 the game compares the "screen width / height" globals with the new resolution (main+0xe10e10) and does not switch if they are equal. On leaving a run this pair still holds the 16:9 height we wrote, which happens to equal the value to switch to, so the game would think the switch is already done.
 // So at the moment the game takes 31 (hle_oe.c, same thread, right before its comparison) write the real height back: within the same frame come the write-back, comparison, switch, and the game writing the new value itself, with not a single frame laying out the UI at 4:3 in between.
-void dm_uiscreen_res_reread(void) { if (atomic_load(&g_portrait)) return;   // 竖屏从不改分辨率（屏幕宽高保持原生值），没有要写回的 | Portrait never changes the resolution (the screen width/height keep the native values), so there is nothing to write back
-    uint8_t *b = main_base(); int rw = atomic_load(&g_rw); if (!b || !rw) return; int32_t *g = (int32_t *)(b + 0x211da38);
+void dm_uiscreen_res_reread(void) { uint8_t *b0 = main_base();   // 31 取走的这一刻（同一线程、游戏比较之前）先把分辨率上限放宽，转屏 1206×2622 才不会被「窗口初始化尺寸」挡下 | At the moment 31 is taken (same thread, before the game compares) widen the resolution cap first, so the portrait 1206x2622 is not rejected by the "window initialization size"
+    if (b0) { int32_t *cap = (int32_t *)(b0 + 0x211da30); if (cap[0] < 4096 || cap[1] < 4096) { LOG("界面画面：分辨率上限 %d x %d → 4096 x 4096（31 取走前）", cap[0], cap[1]); cap[0] = cap[1] = 4096; } }
+    if (atomic_load(&g_portrait)) return;   // 竖屏从不改分辨率（屏幕宽高保持原生值），没有要写回的 | Portrait never changes the resolution (the screen width/height keep the native values), so there is nothing to write back
+    uint8_t *b = b0; int rw = atomic_load(&g_rw); if (!b || !rw) return; int32_t *g = (int32_t *)(b + 0x211da38);
     if (g[0] == rw && g[1] == atomic_load(&g_uh)) g[1] = atomic_load(&g_rh); atomic_store(&g_rw, 0); }
 // 游戏处理 31 时（main+0xe10df0–0xe10e0c）只接受「宽高都不超过窗口初始化时的尺寸 [main+0x211da30]」的新值：窗口贴图按启动时的参数位一次建好，之后只在里面改出图区域。
 // 所以启动时给屏幕原生值（最大的那个），窗口初始化完、界面每帧那一处第一次跑到时再切到前端的 16:9。
@@ -137,6 +139,14 @@ uint64_t dm_game_res(int docked) { uint64_t r = front_game_res(docked); uint32_t
 
 void dm_uiscreen_pump(void) {
     uint8_t *b = main_base(); if (!b) return;
+    // 分辨率上限 [main+0x211da30] = 窗口初始化时的尺寸：启动横屏是 2622×1206，局内转竖屏要 1206×2622，高度过不了上限，
+    // 游戏就把 31 直接跳过（main+0xe10df0 起逐项比较宽高）。放宽到 4096×4096；游戏每次窗口初始化 / 切档都会重写这个值，所以每帧对一次。
+    // Resolution cap [main+0x211da30] = the size at window initialization: the landscape launch is 2622x1206 while an
+    // in-run portrait switch needs 1206x2622, which fails the height check and makes the game skip 31 (width/height are
+    // compared one by one from main+0xe10df0). Widen it to 4096x4096; the game rewrites it on every window initialization /
+    // profile switch, so re-check it every frame.
+    { int32_t *cap = (int32_t *)(b + 0x211da30);
+      if (cap[0] < 4096 || cap[1] < 4096) { LOG("界面画面：分辨率上限 %d x %d → 4096 x 4096", cap[0], cap[1]); cap[0] = cap[1] = 4096; } }
     int port = atomic_load(&g_portrait);   // 竖屏：界面高 = 偶(宽×2160/1950)，局外也改写；分辨率不变，不发 31 | Portrait: UI height = even(width*2160/1950), also rewritten out of a run; the resolution does not change, so no 31 is sent
     { int world = ((uint64_t (*)(uint32_t))(b + 0x45f9d0))(*(uint32_t *)(b + 0x2d20e4c)) != 0;
       int first = !atomic_exchange(&g_res_live, 1);
@@ -146,6 +156,7 @@ void dm_uiscreen_pump(void) {
     if (!port && !atomic_load(&g_world) && m != DM_UISCREEN_OFF) return;   // 不在局里：游戏自己按 16:9 出图，这对量不改写（出局那一下的写回见 dm_uiscreen_res_reread） | Not in a run: the game renders at 16:9 by itself, so this pair of values is not rewritten (for the write-back at the moment of leaving a run see dm_uiscreen_res_reread)
     if (m == DM_UISCREEN_OFF) { if (rw) { if (g[0] == rw && g[1] == atomic_load(&g_uh)) g[1] = atomic_load(&g_rh); atomic_store(&g_rw, 0); LOG("界面画面：关掉，屏幕高写回 %d", g[1]); } return; }   // 没打开过就什么都不碰 | If it was never turned on, touch nothing
     int w = g[0], h = g[1]; if (w <= 0 || h <= 0) return;
+    if (port ? w > h : w < h) return;   // 转屏过渡：游戏还是旧方向的宽高，先不按旧宽算界面高（竖屏拿 2622 会算出 2904） | Rotation transition: the game still has the old orientation's width/height; do not derive the UI height from the old width (portrait would compute 2904 from 2622)
     if (rw && w == rw && h == atomic_load(&g_uh)) return;   // 还是我们写进去的界面高（游戏刚重写成真实值时才往下走） | Still the UI height we wrote in (only continue when the game has just rewritten it to the real value)
     static int n; int uh = h;
     if (port) uh = (int)((long)w * 2160 / 1950) & ~1;   // 1950:2160 = 竖屏界面设计比例（1206 宽 → 1336 高） | 1950:2160 is the portrait UI design ratio (1206 wide -> 1336 high)
