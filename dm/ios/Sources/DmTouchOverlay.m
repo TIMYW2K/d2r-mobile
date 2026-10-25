@@ -209,8 +209,15 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     // Cell 5 (now a six-cell layout; formerly cell 6) = the original game's cross button replacing the whole cell (border included); frame 1 while held. Two states: with unspent points it is red + an outer gold glow (the original game's "points available" hint), otherwise the default color (gold cross on dark base)
     { NSArray *s6=ui[@"slots"][5]; BOOL held=s && (s->buttons & DM_BTN_PLUS), alert=h.points>0 || h.quest_unread;
       UIImage *btn=v4img(alert?(held?@"lvl_1.png":@"lvl_0.png"):(held?@"lvl_d1.png":@"lvl_d0.png")); CGRect r=CGRectMake(X([s6[0] doubleValue]),[s6[1] doubleValue]*u+oy,([s6[2] doubleValue]-[s6[0] doubleValue])*u,([s6[3] doubleValue]-[s6[1] doubleValue])*u);
-      if(h.points>0) { CGContextSaveGState(c); CGContextSetShadowWithColor(c,CGSizeZero,10*u,[UIColor colorWithRed:1 green:.82 blue:.35 alpha:.95].CGColor); [btn drawInRect:r]; CGContextRestoreGState(c); }
-      if(btn) [btn drawInRect:r]; }
+      if (s && dm_tc_pal_button(&s->layout, NULL, NULL, NULL)) {
+          // Replace only the portrait menu cell; its metal frame remains part of the bar.
+          UIImage *palIcon = [UIImage imageNamed:@"d2_pal"];
+          if (palIcon) [palIcon drawInRect:CGRectInset(r, 9*u, 9*u)];
+      } else {
+          if(h.points>0) { CGContextSaveGState(c); CGContextSetShadowWithColor(c,CGSizeZero,10*u,[UIColor colorWithRed:1 green:.82 blue:.35 alpha:.95].CGColor); [btn drawInRect:r]; CGContextRestoreGState(c); }
+          if(btn) [btn drawInRect:r];
+      }
+    }
     // 经验条：底槽 + 描边 + 填充（本级‰）+ 20 等分刻度，同效果图
     // Experience bar: base groove + outline + fill (‰ of the current level) + 20 equal tick marks, same as the mockup
     NSDictionary *e=ui[@"exp"]; CGFloat x0=[e[@"x0"] doubleValue], x1=[e[@"x1"] doubleValue], y=[e[@"y"] doubleValue], eh=[e[@"h"] doubleValue];
@@ -318,50 +325,6 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                 CGContextSetRGBStrokeColor(c,.26,.29,.28,.55);              // 面板细边，与圆钮 face 描边一致 | face hairline, like the round buttons' face stroke
                 CGContextSetLineWidth(c,1.0); [face stroke];
                 CGContextRestoreGState(c);
-            }
-        }
-    }
-
-    // 本地改动：竖屏局内右上角的 D2 Pal 外链圆钮（地图键下方）——金属环 + 深色面板，写 D2 / PAL。
-    // 只在竖屏游戏态出现；面板态（navigationMode）与前端 / 手柄模式（整层隐藏）都不画。位置由 dm_tc_pal_button 统一给出。
-    // Local change: portrait-only D2 Pal shortcut under the map button -- metal ring + dark face, labelled D2 / PAL.
-    // Drawn only in-game in portrait; panel mode (navigationMode) and the front end / controller mode (layer hidden) do not show it.
-    if (!self.navigationMode && self.controls) {
-        float px = 0, py = 0, pr = 0;
-        if (dm_tc_pal_button(&self.controls->layout, &px, &py, &pr) && pr > 0) {
-            CGRect outer = CGRectMake(px - pr, py - pr, pr * 2, pr * 2);
-            CGFloat ring = MAX(3.0, pr * 0.17);
-            CGRect inner = CGRectInset(outer, ring, ring);
-            UIBezierPath *op = [UIBezierPath bezierPathWithOvalInRect:outer];
-            UIBezierPath *fp = [UIBezierPath bezierPathWithOvalInRect:inner];
-            UIBezierPath *band = (UIBezierPath *)[op copy];
-            [band appendPath:[fp bezierPathByReversingPath]];
-            CGContextSaveGState(c);
-            CGContextSetShadowWithColor(c, CGSizeMake(0, 1.5), 4.0, [UIColor colorWithWhite:0 alpha:.55].CGColor);
-            CGContextSetFillColorWithColor(c, [UIColor colorWithWhite:.03 alpha:.92].CGColor);
-            CGContextFillEllipseInRect(c, outer);
-            CGContextRestoreGState(c);
-            if (self->_socketV[0]) {
-                CGContextSaveGState(c); [band addClip]; [self->_socketV[0] drawInRect:outer]; CGContextRestoreGState(c);
-            } else {
-                CGContextSetFillColorWithColor(c, bronze(.70).CGColor); CGContextFillEllipseInRect(c, outer);
-                CGContextSetFillColorWithColor(c, [UIColor colorWithWhite:.045 alpha:.95].CGColor); CGContextFillEllipseInRect(c, inner);
-            }
-            CGContextSaveGState(c); [fp addClip];
-            const CGFloat well[] = {.021,.021,.021,.95, .072,.072,.072,.95};
-            dm_button_gradient(c, inner, well, 2);
-            CGContextRestoreGState(c);
-            CGContextSetStrokeColorWithColor(c, [UIColor colorWithWhite:0 alpha:.86].CGColor);
-            CGContextSetLineWidth(c, 1.0); CGContextStrokeEllipseInRect(c, outer);
-            CGContextSetStrokeColorWithColor(c, bronze(.34).CGColor);
-            CGContextSetLineWidth(c, 0.8); CGContextStrokeEllipseInRect(c, inner);
-            // Use the original D / II app artwork inside the existing metal ring.
-            UIImage *palIcon = [UIImage imageNamed:@"d2_pal"];
-            if (palIcon) {
-                CGContextSaveGState(c); [fp addClip]; [palIcon drawInRect:inner]; CGContextRestoreGState(c);
-            } else {
-                UIFont *font = dm_game_font(pr) ?: [UIFont boldSystemFontOfSize:pr];
-                [@"DⅡ" drawInRect:inner withAttributes:@{NSFontAttributeName:font, NSForegroundColorAttributeName:bronze(.92)}];
             }
         }
     }

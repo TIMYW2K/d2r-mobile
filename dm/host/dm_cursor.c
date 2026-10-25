@@ -1826,7 +1826,9 @@ static int mv_allowed(int own, uint64_t w) {
         for (unsigned i = 0; i < sizeof k / sizeof *k; i++) if (!strcmp(nm, k[i])) return 1; return 0; }
     case MV_CUBE: return !strcmp(nm, "HoradricCubeLayout") || !strcmp(nm, "PlayerInventoryExpansionLayout") || !strcmp(nm, "Text0") || !strcmp(nm, "Text1");
     case MV_TROVE: return pn && !strcmp(pn, "BankTabs");   // 储藏箱页签条的子控件（各页签的图） | child widgets of the stash tab bar (the image of each tab)
-    case MV_SAFE: return !strcmp(nm, "AutoMap") || !strcmp(nm, "HUDWarnings") || (pn && !strcmp(pn, "HireablesPanel"));
+    case MV_SAFE: return (pn && !strcmp(pn, "HUDPanel") &&
+        (!strcmp(nm, "Overlay") || !strcmp(nm, "ExpBar") || !strcmp(nm, "SkillButton6") ||
+         !strcmp(nm, "LevelUpButton") || !strcmp(nm, "LevelUpFlourish"))) || !strcmp(nm, "AutoMap") || !strcmp(nm, "HUDWarnings") || (pn && !strcmp(pn, "HireablesPanel"));
     }
     return 0;
 }
@@ -2340,6 +2342,7 @@ static _Atomic int g_safe_l;   // 左安全区：左上角的佣兵 / 队友头�
 void dm_ui_safe_left(int units) { atomic_store(&g_safe_l, units < 0 ? 0 : units > 800 ? 800 : units); }
 void dm_ui_safe_right(int units) { atomic_store(&g_safe_r, units < 0 ? 0 : units > 800 ? 800 : units); }
 void dm_ui_safe_top(int units) { atomic_store(&g_safe_t, units < 0 ? 0 : units > 800 ? 800 : units); }
+static int ui_touch_mode(void);
 static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     static uint64_t next; if (fr < next) return; next = fr + 6; int u = atomic_load(&g_safe_r);   // 切全屏再切回时游戏把矩形写回贴边，6 帧内补回 | After switching to fullscreen and back the game writes the rect back to the edge; restored within 6 frames
     g_mv_want[MV_SAFE] = dm_uiscreen_ingame();   // 条件：在局内。小地图的「上移 25px / 右移 120px」是绝对值，没有安全区也要生效；其余项 delta 为 0 = 写回，无副作用 | Condition: in-game. The minimap's fixed +25 px up / +120 px right offsets must apply even without a safe area; the other entries get delta 0 (= restore) and are unaffected
@@ -2432,6 +2435,21 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); int ux=0, uy=0, uw=0, uh=0; dm_ui_rect(&ux,&uy,&uw,&uh);
         int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(5.0 * 2160 / uh) : 0;
         mv_offset(MV_SAFE, h, 0, -u-dx, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
+
+    // UIKit paints these decorations at the portrait band's exact scale. The native copy can
+    // show underneath at a smaller scale; move only duplicate art away, retaining Belt/orb contents.
+    // The position guard restores original positions when returning to landscape/controller mode.
+    { uint64_t hud = ui_panel(root, "HUDPanel");
+      uint64_t ch = hud ? *(uint64_t *)(hud + 0x58) : 0, n = hud ? *(uint64_t *)(hud + 0x60) : 0;
+      int portrait_touch = dm_uiscreen_portrait() && ui_touch_mode();
+      for (uint64_t i = 0; ch && i < n && i < 256; i++) {
+          uint64_t w = *(uint64_t *)(ch + 8*i); if (!w) continue;
+          const char *name = (const char *)*(uint64_t *)(w + 8);
+          if (!name || (strcmp(name, "Overlay") && strcmp(name, "ExpBar") && strcmp(name, "SkillButton6") &&
+                        strcmp(name, "LevelUpButton") && strcmp(name, "LevelUpFlourish"))) continue;
+          mv_offset(MV_SAFE, w, 0, portrait_touch ? 30000 : 0, 1);
+      }
+    }
 
     // 本地改动：技能树那排页内标签里「毒素和白骨术」六个字在 300 单位宽的文字框里放不下（布局开着
     // truncateWithEllipsis，会被截断）。上一版把四个文字框加宽摊开 —— 但**底框（TabK 与它里面的 Background）是
@@ -2870,7 +2888,6 @@ static void ui_panel_state_pump(uint64_t root) {   // 游戏主线程，每帧 |
 // Everything else passes through unchanged: gamepad / keyboard and mouse mode; pages with two panels side by side (stash / vendor / Horadric Cube / single-item slot / mercenary page, which have no empty band); descriptions of skills, attributes and buttons (no item under the cursor); name plates in the world.
 // Game main thread only (the gate callback runs there).
 // Test switch DM_TEST_TIPDOCK=1: ignore the mode (the Mac host is the gamepad version; use it to see the effect); =0: turn it off entirely
-static int ui_touch_mode(void);
 // 说明框占的地方（给提示框让位用，见 ui_note_dock_pump）：提交时只有目标矩形和文字，框的大小游戏在提交函数里面量（main+0xb0f998），入口拿不到，
 // 按文字估：行数 = 换行数 + 1，每行 0.038 × 屏高，上下边 0.03 × 屏高（Mac 16:10 截图标定：15 行长说明在 900 高界面里占 515）；
 // 横向以目标中线为中、半宽 0.25 × 屏高（比实测最宽的一行还宽，宁可多让）；纵向照原版：目标正下方放得下就在下、否则在上。界面坐标（与提交参数同一套）

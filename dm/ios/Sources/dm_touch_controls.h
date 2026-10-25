@@ -153,8 +153,8 @@ void dm_tc_set_ui_band(float x, float y, float w, float h);
 void dm_tc_set_edge_bottom(float bottom);   /* 屏幕底边归系统的那一条的高度（点）；0 = 没有。只约束移动摇杆的起手 | Height (points) of the strip along the bottom edge of the screen that belongs to the system; 0 = none. Constrains only where the movement stick may start */
 void dm_tc_layout_make(dm_tc_layout *layout, float width, float height);
 int dm_tc_hit(const dm_tc_layout *layout, float x, float y);
-/* 竖屏局内右上角的 D2 Pal 外链圆钮：圆心 / 半径（点）。geo 取自地图键下方，只在竖屏界面带生效；返回 0 = 不显示。
-   Portrait-only round shortcut under the map button that opens D2 Pal Pro; returns 0 when it should not be shown. */
+/* 竖屏药水栏菜单格的 D2 Pal 入口，返回圆心/半径（点）；横屏返回 0，保留原菜单功能。
+   Portrait belt-bar menu cell for D2 Pal; landscape returns 0. */
 int dm_tc_pal_button(const dm_tc_layout *layout, float *x, float *y, float *r);
 #define DM_TC_POINTER_LIFT_PT 40.0f   // 功能页拖动时物品抬在手指上方的点数（× 控件缩放） | Number of points the item is lifted above the finger while dragging on function pages (× widget scale)
 void dm_tc_set_swap_above(int above);   // 0：传送门左侧外弧，1：技能区上方；修改后调用 resize | 0: left of portal on outer arc, 1: above skill fan; call resize after changing.

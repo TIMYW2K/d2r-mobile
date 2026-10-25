@@ -86,6 +86,7 @@ void dm_tc_layout_make(dm_tc_layout *l, float width, float height) {
     float u = band_u4(l), by = (port ? g_ui_y : 0) + 1241.5f * u;   // 竖屏：底栏贴界面带底边（1241.5 是 v4 设计像素，按界面带高换算） | Portrait: the bar sits on the UI band's bottom edge (1241.5 is a v4 design pixel, converted by the band height)
     for (int i = 0; i < 5; ++i)
         l->target[DM_TC_BELT1+i] = (dm_tc_target){l->width/2+(1090+120*cell[i]-1434)*u, by, 57*u, bottom[i]};
+    if (port) l->target[DM_TC_MENU].button = 0; // Portrait menu cell opens D2 Pal in UIKit, never sends PLUS.
     { const dm_tc_target *s4 = &l->target[DM_TC_SKILL4]; l->target[DM_TC_PORTAL] = (dm_tc_target){s4->x, s4->y-s4->r-12*k-26*k, 26*k, 0}; }
     // 小尺寸平板窗口：传送门放在技能三上方，避开右上角地图按钮。
     // Small tablet windows: put the portal above skill 3, clear of the top-right map control.
@@ -132,19 +133,13 @@ int dm_tc_hit(const dm_tc_layout *l, float x, float y) {
     if (l->swap.r > 0 && sx*sx+sy*sy <= l->swap.r*l->swap.r) return DM_TC_SWAP;
     return DM_TC_NONE;
 }
-/* 本地改动：竖屏局内右上角新增一个打开 D2 Pal Pro 的圆钮。圆心接在地图键（灵动岛下、距右边 30k）正下方：
-   地图键半径 22k + 间隔 12k + 自己的半径 22k，合计中心下移 56k。只在竖屏界面带里出现（横屏 / 面板态不显示）。
-   Local change: a portrait-only round shortcut to D2 Pal Pro sits directly under the map button (30k from the right,
-   below the Dynamic Island): map radius 22k + gap 12k + own radius 22k = 56k below the map centre. */
+/* Portrait-only D2 Pal entry: reuse the belt bar's menu cell geometry.
+   Landscape returns 0 and keeps its original PLUS/menu binding. */
 int dm_tc_pal_button(const dm_tc_layout *l, float *x, float *y, float *r) {
     if (!l || !band_on(l)) return 0;
-    float k = scale_for(l);
-    const dm_tc_target *m = &l->target[DM_TC_MAP];
-    if (!(m->r > 0) || !(k > 0)) return 0;
-    float rad = 22 * k, cx = m->x, cy = m->y + m->r + 12 * k + rad;
-    if (cx + rad > l->width - 8 * k) cx = l->width - rad - 8 * k;
-    if (cy + rad > l->height - 8 * k) return 0;
-    if (x) *x = cx; if (y) *y = cy; if (r) *r = rad;
+    const dm_tc_target *m = &l->target[DM_TC_MENU];
+    if (!(m->r > 0)) return 0;
+    if (x) *x = m->x; if (y) *y = m->y; if (r) *r = m->r;
     return 1;
 }
 

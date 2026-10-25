@@ -957,8 +957,8 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     if(_pendEnd) { UITouch *pt=_pendEnd; _pendFire=YES; [self finishTouches:[NSSet setWithObject:pt] phase:"ended"]; _pendFire=NO; _pendEnd=nil; _finalAsked=NO; }   // 新手指落下前先把挂着的抬起放行 | Before a new finger lands, let the pending lift through first
     for(UITouch *t in ts) {
         int slot=-1;
-        // 本地改动：竖屏右上角 D2 Pal 圆钮优先认领（在腰带展开判断之前也无妨：它不在腰带区）。
-        // Local change: the portrait D2 Pal circle claims its finger first (it is outside the belt area anyway).
+        // Portrait belt-menu cell opens D2 Pal; claim it before PLUS/menu or belt-outside handling.
+        // Landscape has no Pal target, so its existing menu path is unchanged.
         if (!_navigation && !_padMode && !_palTouch) {
             CGPoint pp = [t locationInView:self]; float px=0, py=0, pr=0;
             if (dm_tc_pal_button(&_controls.layout, &px, &py, &pr) && hypot(pp.x-px, pp.y-py) <= pr) {
