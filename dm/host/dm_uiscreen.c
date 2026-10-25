@@ -77,10 +77,12 @@ static void ui_project_obs(const uint64_t *regs) {
 }
 int dm_ui_proj_dy(void) { return atomic_load(&g_proj_on) && atomic_load(&g_ingame) ? yoff() : 0; }
 // The signed static patch in patch_nso.py multiplies the game's per-frame orthographic extents by this live value.
-// 1.0 is the original, farther view; pinching inward reduces the extent to 0.80 (1.25x magnification).
-#define DM_ZOOM_MIN_EXTENT 0.80f
-#define DM_ZOOM_DEFAULT_EXTENT 1.0f
-static _Atomic uint32_t g_zoom_factor_bits = 0x3f800000u; // float 1.0: preserve the original camera view
+// 本地改动（用户要求镜头范围整体拉大 25%）：远景 = 原视野 ×1.25（1.25），近景 = 原视野（1.00），两档一起 ×1.25。
+// Local change (user asked for 25% more camera range): far = original extent x1.25 (1.25), close = original extent (1.00),
+// i.e. both stops are scaled by 1.25 from the previous 1.00 / 0.80.
+#define DM_ZOOM_MIN_EXTENT 1.00f
+#define DM_ZOOM_DEFAULT_EXTENT 1.25f
+static _Atomic uint32_t g_zoom_factor_bits = 0x3fa00000u; // float 1.25: 25% wider than the original camera view
 void dm_3d_scale_reset_level(void);
 int dm_custom_get(const char *key);
 
@@ -98,12 +100,11 @@ void dm_cam_zoom_set(float extent_scale) {
     }
 }
 float dm_cam_zoom_factor(void) {
-    // 本地改动：视野比例是一个独立的连续量（1.00 = 最远/初始，0.80 = 最近），只由双指缩放改变。
-    // 选项 zoom 只是「是否允许双指缩放」的开关，不再强行改这个值 —— 上一版就是在这里和手势打架，
-    // 捏合刚把视野设成 0.80，下一帧又被强制写回 1.00，表现就是「只能放大一下、缩放不回去」。
-    // Local change: the view extent is an independent continuous value (1.00 = widest/initial, 0.80 = closest),
+    // 本地改动：视野比例是一个独立的连续量（1.25 = 最远/初始，1.00 = 最近），只由双指缩放改变。
+    // 选项 zoom 只是「是否允许双指缩放」的开关，不再强行改这个值。
+    // Local change: the view extent is an independent continuous value (1.25 = widest/initial, 1.00 = closest),
     // changed only by the pinch gesture. The zoom option merely allows or blocks the gesture and no longer forces
-    // the value (that is what fought the gesture in the previous build).
+    // the value.
     union { float f; uint32_t u; } bits = { .u = atomic_load(&g_zoom_factor_bits) };
     float f = bits.f;
     if (!(f >= DM_ZOOM_MIN_EXTENT && f <= DM_ZOOM_DEFAULT_EXTENT)) f = DM_ZOOM_DEFAULT_EXTENT;

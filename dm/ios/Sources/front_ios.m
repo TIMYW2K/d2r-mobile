@@ -12,6 +12,8 @@ double dm_brightness_now(void) { return g_dm_brightness; }
 static volatile int g_dm_thermal = -1;
 int dm_thermal_now(void) { return g_dm_thermal; }   // 最近的温控档位（0 正常 / 1 微热 / 2 严重 / 3 危急；−1 = 未读）   // 最近一次读到的屏幕亮度（−1 = 未读） | Most recent thermal state (0 nominal / 1 fair / 2 serious / 3 critical; −1 = not read)   // Most recently read screen brightness (−1 = not read)
 #import <QuartzCore/CAMetalLayer.h>
+#import <objc/message.h>
+#include <dlfcn.h>
 #import <WebKit/WebKit.h>   // 本地改动：过场动画播放层用 WKWebView（系统模块会自动链接 WebKit.framework） | local change: the cutscene layer uses WKWebView (the system module auto-links WebKit.framework)
 #import <Metal/Metal.h>
 #include <signal.h>
@@ -32,6 +34,47 @@ void dm_gamepad_start(void (*on_mode)(int pad)); void dm_gamepad_touched(void); 
 #include "../../host/dm_i18n.h"
 #include "../../host/dm_custom.h"
 static NSString *SWT(const char *k) { return @(dm_ui(k)); }   // 我们自己的界面文字（中英表 dm/i18n/ui_text.tsv，语言跟原版设置走） | our own UI text (Chinese-English string table dm/i18n/ui_text.tsv, language follows the original game's setting)
+// 本地改动：竖屏 D2 Pal 圆钮 —— 先按 bundle ID 直接拉起（最准，Pro 版），不行再试常见 URL scheme，
+// 最后回退 App Store 页面（没装时让玩家自己装）。openURL 本身不需要白名单，所以不往 Info.plist 加查询 scheme。
+// Local change: the portrait D2 Pal button -- first launch by bundle id (exact, the Pro app), then try the likely URL
+// schemes, and finally fall back to the App Store page (so a player without the app can install it). openURL itself
+// needs no whitelist, so Info.plist does not need LSApplicationQueriesSchemes.
+static BOOL dm_pal_open_bundle(NSString *bundle) {
+    Class ws_class = NSClassFromString(@"LSApplicationWorkspace");
+    if (!ws_class) {
+        dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_LAZY);
+        ws_class = NSClassFromString(@"LSApplicationWorkspace");
+    }
+    if (!ws_class) return NO;
+    id (*get_ws)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+    if (![ws_class respondsToSelector:@selector(defaultWorkspace)]) return NO;
+    id ws = get_ws((id)ws_class, @selector(defaultWorkspace));
+    if (!ws || ![ws respondsToSelector:@selector(openApplicationWithBundleID:)]) return NO;
+    BOOL (*open_app)(id, SEL, NSString *) = (BOOL (*)(id, SEL, NSString *))objc_msgSend;
+    return open_app(ws, @selector(openApplicationWithBundleID:), bundle);
+}
+static void dm_pal_open_store(void) {
+    NSURL *u = [NSURL URLWithString:@"itms-apps://apps.apple.com/us/app/d2-pal-pro-for-diablo2/id1562555975"];
+    [UIApplication.sharedApplication openURL:u options:@{} completionHandler:^(BOOL ok) {
+        if (!ok) {
+            NSURL *web = [NSURL URLWithString:@"https://apps.apple.com/us/app/d2-pal-pro-for-diablo2/id1562555975"];
+            [UIApplication.sharedApplication openURL:web options:@{} completionHandler:nil];
+        }
+    }];
+}
+static void dm_pal_try_scheme(NSArray<NSString *> *schemes, NSUInteger i) {
+    if (i >= schemes.count) { dm_pal_open_store(); return; }
+    NSURL *u = [NSURL URLWithString:schemes[i]];
+    if (!u) { dm_pal_try_scheme(schemes, i + 1); return; }
+    [UIApplication.sharedApplication openURL:u options:@{} completionHandler:^(BOOL ok) {
+        if (!ok) dm_pal_try_scheme(schemes, i + 1);
+    }];
+}
+static void dm_pal_open(void) {
+    if (dm_pal_open_bundle(@"com.toolsmiles.Diablo2-Helper")) { LOG("前端：D2 Pal 圆钮 → 按 bundle ID 打开 D2 Pal Pro"); return; }
+    LOG("前端：D2 Pal 圆钮 → bundle ID 未打开，试 URL scheme");
+    dm_pal_try_scheme(@[@"d2pal://", @"d2palpro://", @"diablo2-helper://"], 0);
+}
 static _Atomic int g_touch_frontend=1;   // 不在局内（启动即是）：scene.game 为假 | Not in a run (true right at launch): scene.game is false
 static _Atomic int g_back_frontend;      // 真正的退出信号（FrontEndNavigation:ToFrontEnd）：tick 取走后请求转回横屏 | the real exit signal (FrontEndNavigation:ToFrontEnd): the tick takes it and asks to rotate back to landscape
 static void hud_stack_watch(void);   // 底部 UI v4 面板栈看门（定义见 touch_ui_message 前） | Bottom UI v4 panel stack watch (defined before touch_ui_message)
@@ -300,6 +343,10 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     // only fire on a short, nearly-still release.
     UITouch *_islandTouch; CGPoint _islandP0; double _islandT0;
     BOOL _islandFired;   // 长按已经触发过（松手不再重复） | long press already fired
+    // 本地改动：竖屏局内右上角 D2 Pal 外链圆钮。记下按在圆钮上的手指，抬起时短按、几乎没动才打开。
+    // Local change: portrait-only D2 Pal shortcut at the top right. Remember the finger on the circle and open
+    // the app only on a short, nearly-still release.
+    UITouch *_palTouch; CGPoint _palP0; double _palT0;
     UIView *_rsCover;   // 一键重开期间的黑屏（宿主 dm_cursor.c 经 g_dm_restart_cover_hook 开关）：盖在窗口最上层（整屏，含真全屏的留边），不露主菜单，吞掉这段时间的触点 | Black screen during one-tap restart (toggled by the host's dm_cursor.c via g_dm_restart_cover_hook): covers the top of the window (whole screen, including the true-fullscreen margins), does not reveal the main menu, and swallows touch points during this period
     int _navigation;
     CALayer *_mgLabel[12], *_mgMark[12];   // 小地图任务终点：每个终点一个名牌 / 符号层 + 一个灰十字层（mapGoalSync） | Minimap quest goals: one nameplate / symbol layer + one grey cross layer per goal (mapGoalSync)
@@ -409,10 +456,10 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 - (void)hudBlocked:(int)n { _overlay.hudBlocked=n>0; _overlay.dialogOnly=n<0; dm_tc_set_joy_block(&_controls,n<0); [_overlay setNeedsDisplay]; }   // 只开着讲话文字框 / 对话菜单：点底座那一下不起摇杆（只关它，人不走） | only the speech text box / dialogue menu is open: a tap on the base starts no stick (it only closes it, the character does not move)
 // 前端页面（主菜单 / 选角 / 建角 / 读取画面，即不在局内）：不显示摇杆与技能圆钮，触点直接当原生点击交给游戏界面（dm_ui_touch → 鼠标消息，dm_cursor.c）
 // Front-end pages (main menu / character select / character creation / loading screen, i.e. not in a run): no stick or round skill buttons shown; touch points are given straight to the game UI as native clicks (dm_ui_touch → mouse messages, dm_cursor.c)
-- (void)padMode:(BOOL)pad { _padMode=pad; _overlay.hidden=_feMode || pad; _info.hidden=_feMode; if(_verLabel) _verLabel.hidden=!_feMode; if(pad) { _pinching=NO; _tipUntil=-2; dm_tc_cancel_all(&_controls); [self pushFrom:"padmode" phase:"none"]; } }   // 手柄模式藏触屏控件层（dm_gamepad.m 回调） | Controller mode hides the touch controls layer (dm_gamepad.m callback)
-- (void)frontendMode:(BOOL)fe { _feMode=fe; _overlay.hidden=fe || _padMode; _info.hidden=fe; if(_verLabel) _verLabel.hidden=!fe; if(fe) { _pinching=NO; _pendEnd=nil; _finalAsked=NO; for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:"frontend" phase:"none"]; } }   // 版本号只在前端页显示 | version label only on front-end pages
+- (void)padMode:(BOOL)pad { _padMode=pad; _overlay.hidden=_feMode || pad; _info.hidden=_feMode; if(_verLabel) _verLabel.hidden=!_feMode; if(pad) { _pinching=NO; _palTouch=nil; _tipUntil=-2; dm_tc_cancel_all(&_controls); [self pushFrom:"padmode" phase:"none"]; } }   // 手柄模式藏触屏控件层（dm_gamepad.m 回调） | Controller mode hides the touch controls layer (dm_gamepad.m callback)
+- (void)frontendMode:(BOOL)fe { _feMode=fe; _overlay.hidden=fe || _padMode; _info.hidden=fe; if(_verLabel) _verLabel.hidden=!fe; if(fe) { _pinching=NO; _pendEnd=nil; _finalAsked=NO; _palTouch=nil; for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:"frontend" phase:"none"]; } }   // 版本号只在前端页显示 | version label only on front-end pages
 - (void)navigationMode:(int)n {
-    if (n) _pinching=NO;
+    if (n) { _pinching=NO; _palTouch=nil; }
     if (_navigation==n) return;
     dm_tc_set_navigation_mode(&_controls,n); _navigation=n; atomic_store(&g_nav_pub,n);   // 内部按非零归一 | Internally normalized to non-zero
     static int pad=-1; if(pad<0) { const char *e=getenv("DM_TOUCH_NAV_PAD"); pad=e && e[0]=='1'; }   // 面板态的五个虚拟手柄圆钮：缺省不给（点按 / 双击 / 拖放 / 点页签 / 面板外点按已全部替代，圆钮还压着背包格右半边）；DM_TOUCH_NAV_PAD=1 调试时叫回来 | The five round virtual controller buttons of panel mode: not shown by default (tap / double tap / drag and drop / tab tap / tap outside the panel have replaced them all, and the round buttons also sat over the right half of the inventory cells); DM_TOUCH_NAV_PAD=1 brings them back for debugging
@@ -472,11 +519,13 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 - (void)handlePinch:(UIPinchGestureRecognizer *)pinch {
     if (_feMode || _navigation) { _pinching = NO; return; }
     // 本地改动：双指缩放只有两个镜头大小，没有中间过渡 ——
-    //   两指分开（scale > 1）= 放大到近景（视野 0.80）；两指捏合（scale < 1）= 回到远景（视野 1.00）。
+    //   两指分开（scale > 1）= 放大到近景（视野 1.00）；两指捏合（scale < 1）= 回到远景（视野 1.25）。
+    //   两档都在原视野上 ×1.25（用户要求镜头范围拉大 25%）。
     //   拖动过程中不改视野，松手才切换一次，所以不会有"半拉近"的过渡比例。
     // Local change: exactly two camera levels, no intermediate ratios. Spreading the fingers switches to the close
-    // view (extent 0.80); pinching them together switches back to the far view (extent 1.00). Nothing changes while
-    // the fingers move -- the switch happens once, on release.
+    // view (extent 1.00); pinching them together switches back to the far view (extent 1.25). Both stops are 1.25x
+    // the original view range (the user asked for 25% more). Nothing changes while the fingers move -- the switch
+    // happens once, on release.
     if (!dm_custom_get("zoom")) {
         if (_pinching) { _pinching = NO; LOG("前端：双指缩放被选项关闭，本次手势忽略"); }
         return;
@@ -486,7 +535,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
         _pinching = YES;
         [self cancelControlsFrom:"pinch_began"];
         LOG("前端：双指缩放开始（当前视野 %.2f，松手后切到%s）", (double)_pinchStartExtent,
-            _pinchStartExtent > 0.90 ? "近景 0.80" : "远景 1.00");
+            _pinchStartExtent > 1.12 ? "近景 1.00" : "远景 1.25");
     } else if (pinch.state == UIGestureRecognizerStateEnded ||
                pinch.state == UIGestureRecognizerStateCancelled ||
                pinch.state == UIGestureRecognizerStateFailed) {
@@ -494,8 +543,8 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
         if (pinch.state != UIGestureRecognizerStateEnded) return;      // 被打断就不切
         float cur = dm_cam_zoom_factor();
         float target = cur;
-        if (pinch.scale > 1.02) target = 0.80f;                        // 分开 ⇒ 近景
-        else if (pinch.scale < 0.98) target = 1.00f;                   // 捏合 ⇒ 远景
+        if (pinch.scale > 1.02) target = 1.00f;                        // 分开 ⇒ 近景
+        else if (pinch.scale < 0.98) target = 1.25f;                   // 捏合 ⇒ 远景
         if (target != cur) {
             dm_cam_zoom_set(target);
             LOG("前端：双指缩放 → 视野 %.2f（画面放大 %.2fx，两档之一）", (double)target, (double)(1.0f / target));
@@ -579,7 +628,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     _pendEnd=nil; _finalAsked=NO;
     for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:source phase:"none"];
     if(_uiDragOn) { _uiDragOn=NO; dm_ui_drag_end(); }
-    _mapTouch=_mapBackTouch=_bindTouch=nil;
+    _mapTouch=_mapBackTouch=_bindTouch=_palTouch=nil;
 }
 // 技能绑定入口（技能为空时一个单色十字，点击进入绑定技能）：游戏态下触点落在技能钮（主攻击大钮 A 与 F1–F4，含当前组）上——
 //   空位：这根手指不进手势层，点一下 = 给这个位选技能（dm_ui_bind_begin，宿主开技能树）；
@@ -858,6 +907,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         if(_uiDragOn && _controls.pointer_slot==i) { _uiDragOn=NO; dm_ui_drag_end(); }
         dm_tc_cancel_finger(&_controls,i); _slot[i]=nil; }
     if(_mapTouch && touch_done(_mapTouch)) { LOG("前端：【红】清理残留触摸（小地图那根）"); _mapTouch=nil; }
+    if(_palTouch && touch_done(_palTouch)) { LOG("前端：【红】清理残留触摸（D2 Pal 圆钮那根）"); _palTouch=nil; }
     if(_mapBackTouch && touch_done(_mapBackTouch)) { LOG("前端：【红】清理残留触摸（全屏地图那根）"); _mapBackTouch=nil; }
     if(_bindTouch && touch_done(_bindTouch)) { LOG("前端：【红】清理残留触摸（空技能位那根）"); _bindTouch=nil; }
     if(_uiFinger && touch_done(_uiFinger)) { LOG("前端：【红】清理残留触摸（界面手指）"); _uiFinger=nil;   // 宿主那头一并收：在拖就结束滚动拖，否则作废这次界面点击（相 3 清 g_ut_phase / 删除长按） | Clean up on the host side too: if dragging, end the scroll drag; otherwise void this UI click (phase 3 clears g_ut_phase / removes the long press)
@@ -906,6 +956,16 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     if(_pendEnd) { UITouch *pt=_pendEnd; _pendFire=YES; [self finishTouches:[NSSet setWithObject:pt] phase:"ended"]; _pendFire=NO; _pendEnd=nil; _finalAsked=NO; }   // 新手指落下前先把挂着的抬起放行 | Before a new finger lands, let the pending lift through first
     for(UITouch *t in ts) {
         int slot=-1;
+        // 本地改动：竖屏右上角 D2 Pal 圆钮优先认领（在腰带展开判断之前也无妨：它不在腰带区）。
+        // Local change: the portrait D2 Pal circle claims its finger first (it is outside the belt area anyway).
+        if (!_navigation && !_padMode && !_palTouch) {
+            CGPoint pp = [t locationInView:self]; float px=0, py=0, pr=0;
+            if (dm_tc_pal_button(&_controls.layout, &px, &py, &pr) && hypot(pp.x-px, pp.y-py) <= pr) {
+                _palTouch=t; _palP0=pp; _palT0=CACurrentMediaTime();
+                LOG("前端：D2 Pal 圆钮按下 (%.0f,%.0f)", pp.x, pp.y);
+                continue;
+            }
+        }
         { int ex=0; _controls.belt_rows=dm_belt_rows(&ex); _controls.belt_open=ex; CGPoint q=[t locationInView:self];   // 腰带展开着点别处：先收腰带，这一下不再做别的（不开地图、不点世界、不进绑定） | Tapping elsewhere while the belt is expanded: collapse the belt first, and this tap does nothing else (no map, no world tap, no binding)
           if(dm_tc_belt_outside(&_controls,q.x,q.y)) { dm_belt_expand(0); LOG("前端：腰带展开着点别处 (%.0f,%.0f) → 只收腰带",q.x,q.y); continue; } }
         if(!_navigation && !_bindTouch && !dm_ui_bind_active()) { BOOL em=NO; CGPoint bp=[t locationInView:self]; uint64_t bk=[self skillKeyAt:bp empty:&em]; if(bk && em) { _bindTouch=t; _bindKey=bk; _bindP0=bp; _mapT0=CACurrentMediaTime(); continue; } }
@@ -929,6 +989,10 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
         CGPoint p = [_islandTouch locationInView:self];
         CGFloat dx = p.x - _islandP0.x, dy = p.y - _islandP0.y;
         if (dx * dx + dy * dy > 900) _islandTouch = nil;
+    }
+    if (_palTouch && [ts containsObject:_palTouch]) {   // 移开 14 点 = 不再算点按 | moved 14 pt: no longer a tap
+        CGPoint p = [_palTouch locationInView:self];
+        if (hypot(p.x - _palP0.x, p.y - _palP0.y) > 14) _palTouch = nil;
     }
     if (_pinching) return;
     if(_swallow.count) { NSMutableSet *r=[ts mutableCopy]; for(UITouch *t in ts) if([_swallow containsObject:t]) [r removeObject:t]; if(!r.count) return; ts=r; }
@@ -1001,6 +1065,10 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     uint64_t released_skill_buttons = 0;
     for(UITouch *t in ts) {
         int slot=-1;
+        if(t==_palTouch) { CGPoint p=[t locationInView:self]; _palTouch=nil;
+            if(!strcmp(phase,"ended") && !_navigation && !_feMode && !_padMode && dm_tc_pal_button(&_controls.layout, NULL, NULL, NULL) && hypot(p.x-_palP0.x,p.y-_palP0.y)<=14 && CACurrentMediaTime()-_palT0<0.8) {
+                LOG("前端：D2 Pal 圆钮 → 打开外部 App (%.0f,%.0f)",p.x,p.y); dm_pal_open(); }
+            continue; }
         if(t==_mapTouch) { CGPoint p=[t locationInView:self]; _mapTouch=nil;
             if(!strcmp(phase,"ended") && !_navigation && hypot(p.x-_mapP0.x,p.y-_mapP0.y)<=14 && CACurrentMediaTime()-_mapT0<0.6) { CGSize z=self.bounds.size;
                 // 小地图那一块底下也是游戏世界：NPC / 物件 / 掉落物站在那里时，点它应当是交互而不是切地图（恰西在铁匠铺前点不到）。

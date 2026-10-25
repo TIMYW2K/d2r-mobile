@@ -286,7 +286,20 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             [band appendPath:[face bezierPathByReversingPath]];
             if (self->_portalCapsule) {
                 // The bundled capsule art already contains the metal ring and the dark face.
-                [self->_portalCapsule drawInRect:outer];
+                // 本地改动：美术是竖版 46×135（横屏贴左右边时用），竖屏壳体是横版 135×46 —— 旋转 90° 按原比例画，
+                // 不再把竖图硬拉成横图（之前内胶囊的圆角 / 金属环被拉扁）。
+                // Local change: the art is a vertical 46x135 capsule (for the landscape left/right edge); the portrait shell is
+                // horizontal 135x46 -- rotate it 90 degrees and keep its proportions instead of stretching the vertical art.
+                if (outer.size.width > outer.size.height) {
+                    CGContextSaveGState(c);
+                    CGContextTranslateCTM(c, CGRectGetMidX(outer), CGRectGetMidY(outer));
+                    CGContextRotateCTM(c, (CGFloat)M_PI_2);
+                    [self->_portalCapsule drawInRect:CGRectMake(-outer.size.height / 2, -outer.size.width / 2,
+                                                                outer.size.height, outer.size.width)];
+                    CGContextRestoreGState(c);
+                } else {
+                    [self->_portalCapsule drawInRect:outer];
+                }
             } else {         // 只留 5 点环带；内胶囊画面板，不再挖空 | only the 5 pt band; the inner capsule gets a face instead of a hole
                 CGContextSaveGState(c);
                 CGContextSaveGState(c); [face addClip];                     // ① 面板：圆钮同款深色渐变，填满内胶囊 | (1) face: same dark gradient as the round buttons, fills the inner capsule
@@ -302,6 +315,49 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                 CGContextSetLineWidth(c,1.0); [face stroke];
                 CGContextRestoreGState(c);
             }
+        }
+    }
+
+    // 本地改动：竖屏局内右上角的 D2 Pal 外链圆钮（地图键下方）——金属环 + 深色面板，写 D2 / PAL。
+    // 只在竖屏游戏态出现；面板态（navigationMode）与前端 / 手柄模式（整层隐藏）都不画。位置由 dm_tc_pal_button 统一给出。
+    // Local change: portrait-only D2 Pal shortcut under the map button -- metal ring + dark face, labelled D2 / PAL.
+    // Drawn only in-game in portrait; panel mode (navigationMode) and the front end / controller mode (layer hidden) do not show it.
+    if (!self.navigationMode && self.controls) {
+        float px = 0, py = 0, pr = 0;
+        if (dm_tc_pal_button(&self.controls->layout, &px, &py, &pr) && pr > 0) {
+            CGRect outer = CGRectMake(px - pr, py - pr, pr * 2, pr * 2);
+            CGFloat ring = MAX(3.0, pr * 0.17);
+            CGRect inner = CGRectInset(outer, ring, ring);
+            UIBezierPath *op = [UIBezierPath bezierPathWithOvalInRect:outer];
+            UIBezierPath *fp = [UIBezierPath bezierPathWithOvalInRect:inner];
+            UIBezierPath *band = (UIBezierPath *)[op copy];
+            [band appendPath:[fp bezierPathByReversingPath]];
+            CGContextSaveGState(c);
+            CGContextSetShadowWithColor(c, CGSizeMake(0, 1.5), 4.0, [UIColor colorWithWhite:0 alpha:.55].CGColor);
+            CGContextSetFillColorWithColor(c, [UIColor colorWithWhite:.03 alpha:.92].CGColor);
+            CGContextFillEllipseInRect(c, outer);
+            CGContextRestoreGState(c);
+            if (self->_socketV[0]) {
+                CGContextSaveGState(c); [band addClip]; [self->_socketV[0] drawInRect:outer]; CGContextRestoreGState(c);
+            } else {
+                CGContextSetFillColorWithColor(c, bronze(.70).CGColor); CGContextFillEllipseInRect(c, outer);
+                CGContextSetFillColorWithColor(c, [UIColor colorWithWhite:.045 alpha:.95].CGColor); CGContextFillEllipseInRect(c, inner);
+            }
+            CGContextSaveGState(c); [fp addClip];
+            const CGFloat well[] = {.021,.021,.021,.95, .072,.072,.072,.95};
+            dm_button_gradient(c, inner, well, 2);
+            CGContextRestoreGState(c);
+            CGContextSetStrokeColorWithColor(c, [UIColor colorWithWhite:0 alpha:.86].CGColor);
+            CGContextSetLineWidth(c, 1.0); CGContextStrokeEllipseInRect(c, outer);
+            CGContextSetStrokeColorWithColor(c, bronze(.34).CGColor);
+            CGContextSetLineWidth(c, 0.8); CGContextStrokeEllipseInRect(c, inner);
+            UIFont *f1 = dm_game_font(MAX(12.0, pr * 0.62)); if (!f1) f1 = [UIFont boldSystemFontOfSize:MAX(12.0, pr * 0.62)];
+            UIFont *f2 = dm_game_font(MAX(6.0, pr * 0.27)); if (!f2) f2 = [UIFont boldSystemFontOfSize:MAX(6.0, pr * 0.27)];
+            NSMutableParagraphStyle *pc = [NSMutableParagraphStyle new]; pc.alignment = NSTextAlignmentCenter;
+            [@"D2" drawInRect:CGRectMake(outer.origin.x, py - pr * 0.70, outer.size.width, pr * 0.80)
+               withAttributes:@{NSFontAttributeName:f1, NSForegroundColorAttributeName:[UIColor colorWithWhite:.96 alpha:.98], NSParagraphStyleAttributeName:pc}];
+            [@"PAL" drawInRect:CGRectMake(outer.origin.x, py + pr * 0.22, outer.size.width, pr * 0.42)
+                withAttributes:@{NSFontAttributeName:f2, NSForegroundColorAttributeName:bronze(.92), NSParagraphStyleAttributeName:pc}];
         }
     }
 

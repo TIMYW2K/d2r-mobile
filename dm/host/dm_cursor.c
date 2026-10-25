@@ -2121,6 +2121,12 @@ static void ui_lift_pump(uint64_t root, uint64_t fr) {
     g_mv_want[MV_LIFT] = lift != 0; if (!lift) { mv_restore(root, MV_LIFT); return; }   // 不上提（不在局内 / 不是真全屏）：全部写回原值 | No lift (not in-game / not true fullscreen): write everything back to the original values
     uint64_t ch = *(uint64_t *)(root + 0x58), n = *(uint64_t *)(root + 0x60);
     for (uint64_t k = 0; ch && k < n && k < 256; k++) { uint64_t p = *(uint64_t *)(ch + 8 * k); if (!p) continue; const char *nm = (const char *)*(uint64_t *)(p + 8);
+        // 本地改动：小地图改由 MV_SAFE 单独摆位（竖屏居中 + 上提）。以前两个守卫都写 AutoMap 的 y，条目又只按控件 + 字段
+        // 认（不分 owner），每 6 帧在「上提」和「写回原值」之间来回，真机看到的就是小地图上下闪。
+        // Local change: the minimap is positioned by MV_SAFE alone (portrait: centred + lifted). Both guards used to write
+        // AutoMap's y, and entries are matched by widget + field only (not by owner), so every 6 frames it alternated
+        // between "lifted" and "restored", which showed up as the minimap flickering on a real device.
+        if (nm && !strcmp(nm, "AutoMap")) continue;
         float ay = *(float *)(p + 0x4c); int layer = *(int32_t *)(p + 0x84); if (!(ay == 0 && layer <= -100)) continue;
         int32_t y0 = *(int32_t *)(p + 0x74); mv_offset(MV_LIFT, p, 1, -lift, 0);
         if (*(int32_t *)(p + 0x74) != y0) { static int lg; if (lg++ < 16) LOG("贴顶上提：%s（层 %d）y %d → %d", nm ? nm : "?", layer, y0, *(int32_t *)(p + 0x74)); } }
@@ -2348,11 +2354,34 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     uint64_t w = ui_panel(root, "AutoMap");
     if (w && *(uint64_t *)w == (uint64_t)m->base + 0x20c58a0) {   // 微缩放右那一档：面板矩形贴画面右边（x = -宽）；内移 = 再往左 u | The mini-on-the-right mode: the panel rect hugs the right edge of the screen (x = -width); moving inward = a further u to the left
         int cfg = *(volatile int32_t *)(m->base + 0x2d479f4), mini = *(volatile int32_t *)(m->base + 0x2d5c748); int32_t *rx = (int32_t *)(w + 0x70), *ry = (int32_t *)(w + 0x74), ww = *(int32_t *)(w + 0x78);
-        int on = cfg == 2 && mini && ww > 0 && ww < 4000; int32_t x0 = *rx, y0 = *ry;
+        int mini_on = mini && ww > 0 && ww < 4000;   // 任一微缩档（左 / 右） | either mini mode (left / right)
+        int on = cfg == 2 && mini_on; int32_t x0 = *rx, y0 = *ry;
         int ux = 0, uy = 0, uw = 0, uh = 0; dm_ui_rect(&ux, &uy, &uw, &uh);
         int dux = uh > 0 ? (int)lround(MM_SHIFT_RIGHT_PX * 2160.0 / (double)uh) : 33;   // 120 px → 布局单位 | 120 px in layout units
         int duy = uh > 0 ? (int)lround(MM_SHIFT_UP_PX * 2160.0 / (double)uh) : 8;       // 25 px → 布局单位 | 25 px in layout units
-        if (dm_uiscreen_portrait()) { dux = duy = 0; }   // 竖屏小地图由顶部贴顶上提统一摆位，不再额外右移 / 上移（120 px 在 402 点宽里过大） | Portrait: the minimap's position comes from the top lift alone; no extra right / up shift (120 px is too much in a 402-pt width)
+        int port = dm_uiscreen_portrait();
+        if (port) {
+            // 本地改动：竖屏小地图居中，并保持顶部贴顶上提后的高度（MV_LIFT 已跳过 AutoMap，这里单独写）。
+            // 屏宽按界面带换算成 2160 高的布局单位（402 点屏 ≈1950）；小地图宽 650 时 x = -(宽 + 650)/2 ≈ -1300。
+            // Local change: portrait minimap centred, keeping the same top height as the safe-area lift (MV_LIFT now skips
+            // AutoMap, so this pump positions it). Screen width in 2160-high layout units (a 402-pt screen is ~1950); with
+            // a 650-wide minimap x = -(width + 650)/2 ~= -1300.
+            if (mini_on) {
+                int uwu = uh > 0 ? (int)lround(2160.0 * (double)uw / (double)uh) : 1950;
+                int want_x = -(uwu + ww) / 2;
+                int base_x = cfg == 1 ? 0 : -ww;   // 左微缩贴左（x=0），右微缩贴右（x=-宽） | mini-left flush left (x=0), mini-right flush right (x=-width)
+                g_mv_base = base_x; g_mv_base_on = 1;
+                mv_offset(MV_SAFE, w, 0, want_x - base_x, 0); g_mv_base_on = 0;
+                int lift = uh > 0 ? (int)lround((double)uy * 2160.0 / (double)uh) : 0;
+                int st = atomic_load(&g_safe_t);
+                if (lift > 0 && st > 0) lift = lift > st ? lift - st : 0;
+                mv_offset(MV_SAFE, w, 1, -lift, 0);
+            } else {
+                mv_offset(MV_SAFE, w, 0, 0, 0);
+                mv_offset(MV_SAFE, w, 1, 0, 0);
+            }
+            if (*rx != x0 || *ry != y0) LOG("小地图竖屏：x %d → %d，y %d → %d（小地图宽 %d）", x0, *rx, y0, *ry, ww);
+        } else {
         // 内移量从「贴边」（x = -宽）算，不从控件此刻的值算：手柄 / 触屏切换让游戏把界面重建两遍，第二遍建出来的面板矩形带着我们上一遍挪过的值（实跑：-1564 → -2002 之后又 -2002 → -2440），
         // 照「现值当原值」再挪一次，小地图就往左多挪了一个安全区、切回触屏也不回来。所以把原位（贴边）交给 mv_offset，由它按原位 + 内移量写
         // The inward shift is computed from "flush against the edge" (x = -width), not from the widget's current value: switching between
@@ -2365,6 +2394,7 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
         mv_offset(MV_SAFE, w, 0, on ? (-u + dux) : 0, 0); g_mv_base_on = 0;
         mv_offset(MV_SAFE, w, 1, on ? -duy : 0, 0);   // 上移：y 减小；画质优先/强制/全屏不受影响（on 才生效） | up = smaller y; quality-first/forced/fullscreen are unaffected (only when on)
         if (*rx != x0 || *ry != y0) LOG("小地图位置：x %d → %d，y %d → %d（右移 %d px / 上移 %d px → %d/%d 布局单位）", x0, *rx, y0, *ry, MM_SHIFT_RIGHT_PX, MM_SHIFT_UP_PX, dux, duy);
+        }
     }
     // 头像栏 HireablesPanel：每个头像是建面板时从 Template 克隆出来的子控件（main+0x3a2c50 起的循环），位置在建的那一刻写进子控件矩形（0x3a2d98）、
     // 紧接着调一次子控件虚表 +0x10（0x3a2d94–0x3a2da4）让它按新矩形重算；之后不再排版。所以运行时光改面板矩形 / 子控件矩形画面不动，

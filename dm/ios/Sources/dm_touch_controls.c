@@ -132,6 +132,21 @@ int dm_tc_hit(const dm_tc_layout *l, float x, float y) {
     if (l->swap.r > 0 && sx*sx+sy*sy <= l->swap.r*l->swap.r) return DM_TC_SWAP;
     return DM_TC_NONE;
 }
+/* 本地改动：竖屏局内右上角新增一个打开 D2 Pal Pro 的圆钮。圆心接在地图键（灵动岛下、距右边 30k）正下方：
+   地图键半径 22k + 间隔 12k + 自己的半径 22k，合计中心下移 56k。只在竖屏界面带里出现（横屏 / 面板态不显示）。
+   Local change: a portrait-only round shortcut to D2 Pal Pro sits directly under the map button (30k from the right,
+   below the Dynamic Island): map radius 22k + gap 12k + own radius 22k = 56k below the map centre. */
+int dm_tc_pal_button(const dm_tc_layout *l, float *x, float *y, float *r) {
+    if (!l || !band_on(l)) return 0;
+    float k = scale_for(l);
+    const dm_tc_target *m = &l->target[DM_TC_MAP];
+    if (!(m->r > 0) || !(k > 0)) return 0;
+    float rad = 22 * k, cx = m->x, cy = m->y + m->r + 12 * k + rad;
+    if (cx + rad > l->width - 8 * k) cx = l->width - rad - 8 * k;
+    if (cy + rad > l->height - 8 * k) return 0;
+    if (x) *x = cx; if (y) *y = cy; if (r) *r = rad;
+    return 1;
+}
 
 static int skill_target(int target) {
     return target >= DM_TC_MAIN && target <= DM_TC_SKILL4;
