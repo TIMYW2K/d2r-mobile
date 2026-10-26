@@ -61,9 +61,20 @@ int main(int argc, char **argv) {
     assert(!dm_movie_decode_open(failed_read, NULL, &info, error, sizeof error) && error[0]);
     dm_movie_decode_close(NULL);
     void *vt[5] = {NULL, NULL, reader_open, reader_read, reader_close}; void *reader[3] = {vt, NULL, NULL};
-    void *bad[2]={0};mv_Extractor(bad,0);
-    assert(movie_source(bad,reader,"/nonexistent-d2r-movie.webm")==ST_TRY_AGAIN && !bad[1]);
-    assert(movie_source(bad,reader,argv[2])==ST_TRY_AGAIN && !bad[1]);
+    for(int missing=0;missing<2;missing++) {
+        void *bad[2]={0},*baddec[2]={0};mv_Extractor(bad,0);
+        assert(movie_source(bad,reader,missing?argv[2]:"/nonexistent-d2r-movie.webm")==ST_OK && bad[1]);
+        int tracks=-1;assert(movie_tracks(bad,&tracks)==ST_OK && !tracks);
+        mv_Decoder(baddec,3,4,0,0);
+        void *events[4]={(void *)1,(void *)2,0,0};movie_events(baddec,events);assert(movie_start(baddec)==ST_OK);
+        mvbuf empty;assert(movie_read_packet(bad,&empty)==ST_EOS && !empty.size);
+        assert(movie_send(baddec,0,0,0,0,4)==ST_OK);
+        int idx,left;int64_t pts;unsigned flags;
+        assert(movie_output_index(baddec,&idx,&pts,&flags,&left)==ST_OK && (flags&4));
+        void *meta=0;assert(movie_format(baddec,idx,&meta)==ST_EOS);free(meta);
+        movie_release_output(baddec,idx);movie_stop(baddec);movie_release(baddec);movie_release(bad);
+        assert(!bad[1] && !baddec[1] && !movie_pending);
+    }
     assert(opens==1 && closes==1);opens=closes=0;
     void **ext = calloc(2, sizeof(void *)), **dec = calloc(2, sizeof(void *));
     mv_SetAllocator(NULL, free_test, NULL, NULL);

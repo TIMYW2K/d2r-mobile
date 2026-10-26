@@ -420,23 +420,24 @@ HLE_FORCE("_ZN5movie12SetAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", "Movie
     (void)alloc; (void)realloc_; movie_free = fr; movie_user = user;
 }
 static int movie_source(void *self, void **reader, const char *path) {
-    if (!reader || !*reader || !path) return ST_TRY_AGAIN;
-    mvreal *m = calloc(1, sizeof *m);
-    if (!m) return ST_TRY_AGAIN;
-    m->reader = reader; m->refs = 1;
-    void **vt = *(void ***)reader;
-    if (!(((uint32_t (*)(void *, const char *, void **))vt[2])(reader, path, &m->handle) & 1))
-        { LOG("Movie: resource unavailable, skip %s",path);free(m);return ST_TRY_AGAIN; }
-    char error[160];
-    m->decode = dm_movie_decode_open(movie_read, m, &m->info, error, sizeof error);
-    if (!m->decode) { LOG("Movie: unsupported/corrupt resource, skip %s: %s",path,error);
-        ((void (*)(void *,void *))vt[4])(reader,m->handle);free(m);return ST_TRY_AGAIN; }
-    ((void **)self)[1] = m;
-    pthread_mutex_lock(&movie_lock); movie_pending = m; pthread_mutex_unlock(&movie_lock);
-    LOG("VP8 movie: %s, %d×%d, %.3f s", path, m->info.width, m->info.height, m->info.duration_us / 1e6);
+    mvreal *m=calloc(1,sizeof *m);if(!m) die("Movie: out of memory for source");
+    m->reader=reader;m->refs=1;
+    void **vt=reader?*(void ***)reader:NULL;char error[160]={0};
+    if(vt && path && (((uint32_t (*)(void *,const char *,void **))vt[2])(reader,path,&m->handle)&1))
+        m->decode=dm_movie_decode_open(movie_read,m,&m->info,error,sizeof error);
+    if(!m->decode) {
+        if(m->handle && vt) { ((void (*)(void *,void *))vt[4])(reader,m->handle);m->handle=NULL; }
+        // Native Setup ignores SetDataSource's status, then constructs a type-3
+        // decoder when track count is zero. Keep a valid shared object and emit
+        // EOS through the same events; returning an error alone is unsafe.
+        m->info=(dm_movie_info){2,2,100000};
+        LOG("Movie: missing/unsupported resource, controlled EOS fallback: %s (%s)",path?path:"?",error);
+    } else LOG("VP8 movie: %s, %d×%d, %.3f s",path,m->info.width,m->info.height,m->info.duration_us/1e6);
+    ((void **)self)[1]=m;
+    pthread_mutex_lock(&movie_lock);movie_pending=m;pthread_mutex_unlock(&movie_lock);
     return ST_OK;
 }
-static int movie_tracks(void *self, int *count) { (void)self; *count = 1; return ST_OK; }
+static int movie_tracks(void *self, int *count) { *count=movie(self)->decode?1:0; return ST_OK; }
 static void movie_metadata(void **out, mvreal *m) {
     mvmeta *meta = *out;
     if (!meta && !(meta = calloc(1, sizeof *meta))) die("Movie: out of memory for metadata");
@@ -450,7 +451,7 @@ static int movie_select(void *self, int index) { (void)self; return index ? ST_T
 static int movie_seek(void *self, int64_t pts) {
     mvreal *m = movie(self);
     pthread_mutex_lock(&movie_lock);
-    int r = dm_movie_decode_seek(m->decode, pts);
+    int r = m->decode ? dm_movie_decode_seek(m->decode, pts) : 0;
     m->eos = 0; m->pts = pts;
     movie_wake_input(m);
     pthread_mutex_unlock(&movie_lock);
@@ -460,7 +461,7 @@ static int movie_seek(void *self, int64_t pts) {
 static int movie_read_packet(void *self, mvbuf *buf) {
     mvreal *m = movie(self); const uint8_t *data = NULL; int size = 0;
     pthread_mutex_lock(&movie_lock);
-    int r = dm_movie_decode_read(m->decode, &data, &size, &m->pts);
+    int r = m->decode ? dm_movie_decode_read(m->decode, &data, &size, &m->pts) : 0;
     if (!r) m->pts = m->info.duration_us;
     buf->data = (void *)data; buf->cap = (uint64_t)size; buf->off = 0; buf->size = size;
     pthread_mutex_unlock(&movie_lock);
@@ -501,7 +502,7 @@ static int movie_send(void *self, int index, int off, int size, int64_t pts, uns
     pthread_mutex_lock(&movie_lock);
     if (!m->started) { pthread_mutex_unlock(&movie_lock); return ST_TRY_AGAIN; }
     /* Loop restart submits an empty EOS buffer without flag 4. */
-    int r = size || (flags & 4) ? dm_movie_decode_send(m->decode, !!(flags & 4), movie_enqueue, m) : 0;
+    int r = m->decode && (size || (flags & 4)) ? dm_movie_decode_send(m->decode, !!(flags & 4), movie_enqueue, m) : 0;
     if (r >= 0 && (flags & 4)) { m->eos = 1; r = movie_enqueue(m, NULL, 0, m->info.duration_us); }
     if (r < 0 && r != -ENOBUFS) { LOG("Movie: VP8 decode failed (%d), finish this playback",r);m->eos=1;r=movie_enqueue(m,NULL,0,m->info.duration_us); }
     if (r >= 0) { movie_signal(m->out); movie_wake_input(m); }
@@ -566,7 +567,7 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
     void, mv_Decoder, void **self, int type, int format, int mode, int priority) {
     (void)mode; (void)priority;
     pthread_mutex_lock(&movie_lock); mvreal *m = movie_pending; movie_pending = NULL;
-    if (!m || type != 2 || format != 4) die("Movie: unsupported decoder configuration (%d, %d)", type, format);
+    if (!m || (m->decode && type != 2) || format != 4) die("Movie: unsupported decoder configuration (%d, %d)", type, format);
     m->refs++; self[0] = (void *)movie_decoder_vt; self[1] = m; pthread_mutex_unlock(&movie_lock);
 }
 HLE_FORCE("_ZN5movie17GetThreadPriorityEv", "Movie: guest priority", int, mv_GetThreadPriority, void) { return 16; }
