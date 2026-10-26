@@ -20,3 +20,8 @@ static inline int nvn_probe_points(unsigned width,unsigned height,const int crop
     for(int i=0;i<5;i++) { points[i][0]=x+w*numer[i][0]/4;points[i][1]=y+h*numer[i][1]/4; }
     return 1;
 }
+
+static inline double nvn_present_expected_period(double requested_ms,double target_hz) {
+    double host=target_hz>0?1000.0/target_hz:1000.0/60;
+    return requested_ms>host?requested_ms:host;
+}

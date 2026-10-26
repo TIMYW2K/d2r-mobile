@@ -1104,7 +1104,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     if(!ts.count) return;
     uint64_t released_skill_buttons = 0;
     for(UITouch *t in ts) {
-        if(t==_pendEnd && !_pendFire) continue; // A repeated UIKit end cannot bypass the pending hit query.
+        if(dm_touch_end_defer(t==_pendEnd,_pendFire,!strcmp(phase,"cancelled"))) continue; // A repeated UIKit end cannot bypass the pending hit query.
         int slot=-1;
         if(t==_palTouch) { CGPoint p=[t locationInView:self]; _palTouch=nil;
             if(!strcmp(phase,"ended") && !_navigation && !_feMode && !_padMode && dm_tc_pal_button(&_controls.layout, NULL, NULL, NULL) && hypot(p.x-_palP0.x,p.y-_palP0.y)<=14 && CACurrentMediaTime()-_palT0<0.8) {

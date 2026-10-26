@@ -1399,7 +1399,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     // Actual presentation interval (windowed mode): taken 8 presents late (the presented callback has arrived by then), as the difference between the n-th and the (n−1)-th; −1 = discarded
     { int mtl_fps_target(void); int fps=mtl_fps_target();
       double target=dm_pace_hz(mtl_display_refresh(),fps>0?fps:60);
-      g_present_period_ring[o->presents % 16] = target>0 ? 1000.0/target : 1000.0/60; }
+      g_present_period_ring[o->presents % 16] = nvn_present_expected_period(period/1e6,target); }
     if (o->presents > 9) { uint64_t n = o->presents - 8; double a_ = mtl_presented_time(n), b_ = mtl_presented_time(n - 1);
         if (a_ < 0) trow(f - 8, "@presented_ms", -1); else if (a_ > 0 && b_ > 0) trow(f - 8, "@presented_ms", (a_ - b_) * 1e3);
         g_pres_period[g_presn % TWIN] = g_present_period_ring[n % 16];

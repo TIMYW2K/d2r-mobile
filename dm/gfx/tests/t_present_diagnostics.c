@@ -5,6 +5,7 @@ int main(void) {
  assert(!nvn_present_dropped(33.34,1000.0/30)); assert(nvn_present_dropped(66.67,1000.0/30));
  assert(!nvn_present_dropped(16.67,1000.0/60)); assert(nvn_present_dropped(33.34,1000.0/60));
  assert(nvn_present_dropped(-1,1000.0/30));assert(!nvn_present_dropped(0,1000.0/60));
+ assert(nvn_present_expected_period(16.67,30)>33.3);assert(nvn_present_expected_period(33.34,60)==33.34);
  unsigned points[5][2];int land[4]={0,0,2622,1206},port[4]={0,0,1206,2622},sub[4]={20,30,100,80};
  const int *crops[]={land,port,sub};
  for(int j=0;j<3;j++) { const int *c=crops[j]; assert(nvn_probe_points(2622,2622,c,points));
