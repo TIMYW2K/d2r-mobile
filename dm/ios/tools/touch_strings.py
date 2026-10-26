@@ -106,6 +106,8 @@ def build_sidecar(romfs):
     for name, items in TABLE.items():
         path, text = touch_layout.read_layout(romfs, None, suffix='/lng/strings/' + name)
         for key, (old, new) in items.items():
+            import movie_config
+            if key.startswith('MoviePlaybackHoldToSkip') and movie_config.enabled(): continue
             if key in FILE_ONLY: continue
             m = re.search(r'"Key":\s*"%s",.*?"zhCN":\s*("(?:[^"\\]|\\.)*")' % re.escape(key), text, re.S)
             if not m: raise SystemExit('touch_strings：%s 里没有键 %s' % (name, key))
@@ -133,6 +135,8 @@ def build(romfs, outdir):
         path, text = touch_layout.read_layout(romfs, None, suffix='/lng/strings/' + name)
         if not any(k in FILE_ONLY for k in items): continue
         for key, (old, new) in items.items():
+            import movie_config
+            if key.startswith('MoviePlaybackHoldToSkip') and movie_config.enabled(): continue
             if key not in FILE_ONLY: continue
             m = re.search(r'"Key":\s*"%s",.*?"zhCN":\s*("(?:[^"\\]|\\.)*")' % re.escape(key), text, re.S)
             if not m: raise SystemExit('touch_strings：%s 里没有键 %s' % (name, key))

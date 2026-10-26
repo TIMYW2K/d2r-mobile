@@ -1,0 +1,7 @@
+FFmpeg 7.1.1 -- LGPL version 2.1 or later.
+Source: https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz
+SHA256: 733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1
+Only Matroska/WebM demuxing, VP8 decoding and NV12 conversion enabled.
+No GPL or nonfree components enabled. Rebuild script: dm/ios/tools/build_ffmpeg_ios.sh.
+Adapter based on augustxxx-debug/d2r-mobile-plus e3756f8942b40eba6c851e881828a5b1bda17fd6 (MIT).
+Video assets remain in the user's original game resources; not distributed in this App.

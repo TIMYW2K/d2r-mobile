@@ -3,6 +3,7 @@
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
 #import "nvn_metalfx.h"
+#include "nvn_present_diagnostics.h"
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
 #import <ImageIO/ImageIO.h>
@@ -4986,7 +4987,7 @@ static uint64_t g_stall_t0, g_stall_n;   // 定义在显示节拍那段 | Define
 float dm_bright_k(void);   // 定义在下面 3D 画面加亮（弱定义，宿主 dm_bright.c 给强定义） | Defined below in the 3D brightening section (weak definition; the host dm_bright.c provides the strong one)
 static int mp_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_MAGENTA_PROBE_OFF"); v = !(e && *e && strcmp(e, "0")); } return v; }
 static int mp_fmt_ok(MTLPixelFormat f) { return f == MTLPixelFormatRGBA8Unorm || f == MTLPixelFormatRGBA8Unorm_sRGB || f == MTLPixelFormatBGRA8Unorm || f == MTLPixelFormatBGRA8Unorm_sRGB || f == MTLPixelFormatRGB10A2Unorm || f == MTLPixelFormatRGBA16Float; }
-static void mp_encode(CBUF cb, id<MTLTexture> src, int i) {
+static void mp_encode(CBUF cb, id<MTLTexture> src, int i, const int crop[4]) {
 #if !DM_NVN_M3
     uint64_t t_start = bp_now();   // 成本测量：CPU 耗时起点 | Cost measurement: CPU time start
     g_mp_fmt[i] = 0; g_mp_haslut[i] = 0;
@@ -4994,7 +4995,7 @@ static void mp_encode(CBUF cb, id<MTLTexture> src, int i) {
     os_unfair_lock_lock(&g_mp_lk); id<MTLTexture> lut = g_mp_lut; os_unfair_lock_unlock(&g_mp_lk);
     if (lut && (lut.pixelFormat != MTLPixelFormatRGBA16Float || lut.width < 2 || lut.height < 2 || lut.depth < 2)) lut = nil;
     NSUInteger w = src.width, h = src.height, bpp = src.pixelFormat == MTLPixelFormatRGBA16Float ? 8 : 4;
-    const NSUInteger px[5][2] = {{w / 2, h / 2}, {w / 4, h / 4}, {w * 3 / 4, h / 4}, {w / 4, h * 3 / 4}, {w * 3 / 4, h * 3 / 4}};
+    unsigned px[5][2]; if (!nvn_probe_points((unsigned)w,(unsigned)h,crop,px)) return;
     CENC e = [cb computeCommandEncoder];
     [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     for (int k = 0; k < 5; k++) enc_b_copy_texture_buffer(e, src, 0, 0, MTLOriginMake(px[k][0], px[k][1], 0), MTLSizeMake(1, 1, 1), g_mp_buf[i], k * 256, bpp, bpp);
@@ -5009,7 +5010,7 @@ static void mp_encode(CBUF cb, id<MTLTexture> src, int i) {
     cost_sum += cost_ns; cost_n++; if (cost_ns > cost_max) cost_max = cost_ns;
     if (cost_n % 600 == 0) { MLOG("紫闪探针 CPU 成本：前 %llu 次，平均 %.3f μs / 峰值 %.3f μs", (unsigned long long)cost_n, cost_sum / (double)cost_n / 1000, cost_max / 1000.0); }
 #else
-    (void)cb; (void)src; (void)i;
+    (void)cb; (void)src; (void)i; (void)crop;
 #endif
 }
 static void mp_px(MTLPixelFormat f, const uint8_t *p, int *r, int *g, int *b) {
@@ -6298,7 +6299,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     CBUF cb = g_present_cb[alloc_i];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
     if (!present_encode_m4(cb, src, dr.texture, crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; return 0; }
-    mp_encode(cb, src, alloc_i);
+    mp_encode(cb, src, alloc_i, crop);
     [cb endCommandBuffer];
 #endif
 #if !DM_NVN_M3

@@ -25,3 +25,5 @@ void dm_custom_init(const char *dir);   // 设置文件所在目录（iOS 外壳
 // The following are only for the UI wiring of the custom page
 void dm_custom_on_uimsg(const char *cat, const char *act, const char *arg);   // 选项页应用 / 默认 / 放弃（dm_cursor.c 的界面消息回调转来） | Options page apply / default / discard (forwarded from the UI message callback in dm_cursor.c)
 void dm_custom_ui_pump(unsigned long long root);                               // 游戏主线程每帧：选项页开着时读各行勾选框（控件名 TouchCustom_<键>） | Game main thread, every frame: while the options page is open, read the checkbox of each row (widget name TouchCustom_<key>)
+
+void dm_custom_prepare_ui_message(unsigned long long root,const char *cat,const char *act);

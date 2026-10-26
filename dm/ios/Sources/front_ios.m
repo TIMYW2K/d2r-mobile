@@ -144,6 +144,8 @@ int front_ios_ingame_autorotate(void) { return g_portrait || dm_uiscreen_ingame(
 static void dm_orient_apply(int p);
 static void dm_orientation_reconcile(const char *why);
 static unsigned g_orientation_resume_epoch;
+#include "dm_orientation_policy.h"
+#include "dm_touch_end_policy.h"
 void front_ios_set_launch_bounds(CGRect b, UIInterfaceOrientation o) {
     // 整体先横屏启动：前端页面 / 读取画面完全沿用横屏布局，竖屏只在局内由用户转屏进入。
     // Launch landscape as a whole: front-end pages / loading screens keep the landscape layout; portrait is only entered in a run when the user rotates.
@@ -362,7 +364,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     NSMutableDictionary<NSString *,UIImage *> *_mgImg;
     uint64_t _modifierPublishEndNS,_modifierPublishEpoch;
     uint64_t _touchEventSeq,_touchReceiptSeq,_touchPublishedEventSeq; // 仅 DM_TOUCH_CONTROL_LOG 开启时推进 | Advanced only when DM_TOUCH_CONTROL_LOG is on
-    UITouch *_pendEnd; double _pendEndTime,_pendWall; BOOL _pendFire,_finalAsked;   // 松手了但宿主的答案还没回：这根手指的「抬起」先挂着（见 finishTouches） | Released but the host's answer is not back yet: this finger's "lift" is held pending (see finishTouches)
+    UITouch *_pendEnd; double _pendEndTime,_pendWall; BOOL _pendFire,_finalAsked,_recoveringEnds;   // 松手了但宿主的答案还没回：这根手指的「抬起」先挂着（见 finishTouches） | Released but the host's answer is not back yet: this finger's "lift" is held pending (see finishTouches)
     int32_t _minLeft,_maxLeft; uint64_t _lastButtons; unsigned _touchAPresses,_touchShots; UITouch *_uiFinger; CGPoint _uiFeO; BOOL _uiFeDrag; BOOL _uiDragOn; UITouch *_mapTouch, *_mapBackTouch, *_bindTouch; UIView *_ghostDim; BOOL _ghostOn; uint64_t _bindKey; uint32_t _selId; double _statNext; double _tipUntil, _addAt; unsigned _mapWorldSeq; BOOL _mapWorldAsked; CGPoint _mapWorldPt; CGPoint _mapP0, _bindP0; double _mapT0; BOOL _pulseTicking; uint64_t _pulseEpoch,_pulseS0; double _pulseT0,_pulseSeen,_pulseFree; unsigned _itemSeq,_relSeq; BOOL _relAsked,_itemAsked; int _itemKind;
     double _rotHoldUntil;   // 转屏过渡「保持控件层可见 + 定时重画」的截止时刻（CACurrentMediaTime） | deadline of the rotation transition's "keep the control layer visible + repaint on a timer" window (CACurrentMediaTime)
 }
@@ -805,6 +807,19 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     // Local change: in-run rotation / back to landscape on exit. The launch and the front end are fixed to landscape and
     // portrait is allowed only in a run; the exit signal is FrontEndNavigation:ToFrontEnd, the in-run loading screen must
     // not count as an exit (dm_uiscreen_ingame is briefly 0, judging by it would snap back to landscape on every map change).
+    [self recoverEndedTouches];
+    { static dm_orientation_retry retry = {-1,0,0}; static unsigned retryEpoch;
+      if (retryEpoch != g_orientation_resume_epoch) { retryEpoch=g_orientation_resume_epoch; retry=(dm_orientation_retry){-1,0,0}; }
+      UIDeviceOrientation physical=UIDevice.currentDevice.orientation;
+      int posture=UIDeviceOrientationIsLandscape(physical)?0:physical==UIDeviceOrientationPortrait?1:-1;
+      CGSize windowSize=self.window.bounds.size;
+      BOOL settled=posture>=0 && windowSize.width>0 && windowSize.height>0 &&
+          (windowSize.height>windowSize.width)==posture && g_portrait==posture;
+      BOOL active=self.window.windowScene.activationState==UISceneActivationStateForegroundActive && front_ios_ingame_autorotate();
+      if (dm_orientation_retry_step(&retry,active,posture,settled,now)) {
+          dm_orientation_reconcile("posture-watchdog"); retryEpoch=g_orientation_resume_epoch;
+      }
+    }
     { static UIInterfaceOrientation lastO = UIInterfaceOrientationUnknown; UIInterfaceOrientation o = dm_scene_orientation(self);
       static int lastIngame = -1; int ingame = dm_uiscreen_ingame();
       static unsigned seenResume; BOOL maskDirty = seenResume != g_orientation_resume_epoch;
@@ -908,7 +923,23 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
 // Backstop (not treated as the root fix): scan before every press -- if a finger in a slot or recorded separately is already Ended / Cancelled (except _pendEnd, which is pending release),
 // some end path missed its cleanup: close it as cancelled and log one line (this line appearing = there is still an unfound path that misses cleanup; it includes which slot and which kind of finger)
 static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouchPhaseEnded || ph==UITouchPhaseCancelled; }
+- (void)recoverEndedTouches {
+    if (_recoveringEnds) return;
+    NSMutableSet<UITouch *> *ended=[NSMutableSet set], *cancelled=[NSMutableSet set];
+    for(int i=0;i<16;i++) { UITouch *t=_slot[i];
+        if (dm_touch_end_recover(t!=nil,t==_pendEnd,t.phase==UITouchPhaseEnded,t.phase==UITouchPhaseCancelled))
+            [(t.phase==UITouchPhaseCancelled?cancelled:ended) addObject:t];
+    }
+    if (!ended.count && !cancelled.count) return;
+    _recoveringEnds=YES;
+    @try {
+        LOG("触摸事件恢复：结束 %lu / 取消 %lu（保留挂起抬手）",(unsigned long)ended.count,(unsigned long)cancelled.count);
+        if (cancelled.count) [self finishTouches:cancelled phase:"cancelled"];
+        if (ended.count) [self finishTouches:ended phase:"ended"];
+    } @finally { _recoveringEnds=NO; }
+}
 - (void)sweepEndedSlots {
+    [self recoverEndedTouches];
     for(int i=0;i<16;i++) if(_slot[i] && _slot[i]!=_pendEnd && touch_done(_slot[i])) {
         LOG("前端：【红】清理残留触摸槽 %d（%s，阶段 %d，控件层 %s）", i, [_slot[i] isKindOfClass:DmScriptTouch.class] ? "脚本触摸" : "真触摸", (int)_slot[i].phase, _navigation ? "面板态" : "游戏态");
         if(_uiDragOn && _controls.pointer_slot==i) { _uiDragOn=NO; dm_ui_drag_end(); }
@@ -1045,6 +1076,8 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     }
 }
 - (void)finishTouches:(NSSet<UITouch *> *)ts phase:(const char *)phase {
+    NSSet<UITouch *> *ending=ts;
+    @try {
     // 本地改动：灵动岛单击 —— 抬起时短按（≤0.45 秒）且没移开才开门，然后清掉记录。
     // Local change: Dynamic Island tap -- fire the portal on a short release (<=0.45 s) that did not move, then clear.
     if (_islandTouch && [ts containsObject:_islandTouch]) {
@@ -1071,6 +1104,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     if(!ts.count) return;
     uint64_t released_skill_buttons = 0;
     for(UITouch *t in ts) {
+        if(t==_pendEnd && !_pendFire) continue; // A repeated UIKit end cannot bypass the pending hit query.
         int slot=-1;
         if(t==_palTouch) { CGPoint p=[t locationInView:self]; _palTouch=nil;
             if(!strcmp(phase,"ended") && !_navigation && !_feMode && !_padMode && dm_tc_pal_button(&_controls.layout, NULL, NULL, NULL) && hypot(p.x-_palP0.x,p.y-_palP0.y)<=14 && CACurrentMediaTime()-_palT0<0.8) {
@@ -1107,7 +1141,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
             else if(pf->pointer_dragged) { CGPoint ep=[t locationInView:self]; CGSize z=self.bounds.size; CGFloat lift=DM_TC_POINTER_LIFT_PT*dm_tc_scale_for_size(z.width,z.height);
                 dm_tc_move_at(&_controls,_controls.pointer_slot,ep.x,ep.y,CACurrentMediaTime());   // 抬起点可能比最后一次移动更远 | The lift point may be farther than the last move
                 { float nx,ny,ffx,ffy; ui_norm(self,ep.x,ep.y-lift,&nx,&ny); ui_norm(self,ep.x,ep.y,&ffx,&ffy); _relSeq=dm_ui_drop_query(nx,ny,ffy); } _relAsked=YES; _finalAsked=YES; wait=YES; }
-            if(wait) { _pendEnd=t; _pendEndTime=CACurrentMediaTime(); _pendWall=CACurrentMediaTime(); continue; }
+            if(wait) { _pendEnd=t; _pendEndTime=dm_touch_end_time(t.timestamp,_controls.finger[_controls.pointer_slot].start_time_s,CACurrentMediaTime()); _pendWall=CACurrentMediaTime(); continue; }
         }
         for(int i=0;i<16;i++) if(_slot[i]==t) {
             dm_tc_finger *released = &_controls.finger[i];
@@ -1134,7 +1168,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
             // 即使没有最后一次移动事件，抬起位置也可能变化；换组键滑出后仍要取消。
             // Press / move / lift all take the time of the event itself (same clock as tick): with a panel open the display link drops to 2 per second, and previously "the time of the previous display-link tick" was used, so a 0.12-second tap was measured as 0.5 seconds and not counted as a tap (tapping a tab did not switch)
             if(_controls.finger[i].target==DM_TC_SWAP) { CGPoint ep=[t locationInView:self];dm_tc_move_at(&_controls,i,ep.x,ep.y,CACurrentMediaTime()); }
-            if(_pendFire) dm_tc_end_at(&_controls,i,_pendEndTime); else dm_tc_end_at(&_controls,i,CACurrentMediaTime()); _slot[i]=nil; slot=i;
+            if(_pendFire) dm_tc_end_at(&_controls,i,_pendEndTime); else dm_tc_end_at(&_controls,i,dm_touch_end_time(t.timestamp,_controls.finger[i].start_time_s,CACurrentMediaTime())); _slot[i]=nil; slot=i;
             // 加点用手势不用按钮：第一下点技能图标 / 属性「+」= 选中（光标过去、出说明），同一个再点一下 = 加 1 点；换目标重新从选中开始
             // Spend points with a gesture, not a button: the first tap on a skill icon / stat "+" = select (cursor moves there, tooltip appears); tapping the same one again = add 1 point; changing target starts over from select
             if(_controls.tap_move_seq!=tm) { uint32_t hid=dm_ui_hit_id();
@@ -1165,6 +1199,23 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     uint64_t released_unheld = released_skill_buttons & ~_controls.buttons & ~cast_in_flight;
     if (released_unheld) dm_input_release_buttons(released_unheld);
     [self armPulseEnd];
+    } @finally {
+        // Every return path releases owned slots except the deliberate async pointer query.
+        // Use cancellation for an unhandled special route: never invent a click/cast.
+        uint64_t before=_controls.buttons; BOOL repaired=NO;
+        for(int i=0;i<16;i++) { UITouch *t=_slot[i];
+            if(t && t!=_pendEnd && [ending containsObject:t]) {
+                if(_uiDragOn && _controls.pointer_slot==i) { _uiDragOn=NO;dm_ui_drag_end(); }
+                dm_tc_cancel_finger(&_controls,i);_slot[i]=nil;repaired=YES;
+                LOG("触摸收尾：关闭未消费的结束槽 %d（阶段 %d）",i,(int)t.phase);
+            }
+        }
+        if(_uiFinger && [ending containsObject:_uiFinger]) { dm_ui_touch(3,0,0);_uiFinger=nil; }
+        if(_controls.pointer_slot<0) { _relAsked=NO;_itemAsked=NO; }
+        if(repaired) { [self pushFrom:"uitouch" phase:phase];
+            dm_input_release_buttons(before & ~_controls.buttons & ~(_controls.pulse_button|_controls.defer_button)); }
+    }
+
 }
 // 脉冲按键（副技能松手施放 / 功能页里点格、拖放的拿起与放下）：原版按一次即放一次，前端按下后要自己收回。
 // 收回按「游戏已取走」判，不按墙钟：游戏取手柄一卡（Mac 实测开功能页后约 0.4 s 没取），墙钟 0.12 s 的脉冲整段被漏掉 = 点了没反应。
@@ -1198,8 +1249,8 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     } else { _pulseTicking=NO; return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(NSEC_PER_SEC/120)),dispatch_get_main_queue(),^{ [self pulseTick]; });
 }
-- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { (void)e; [self finishTouches:ts phase:"ended"]; }
-- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { (void)e; [self finishTouches:ts phase:"cancelled"]; }
+- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { (void)e; [self finishTouches:ts phase:"ended"]; [self recoverEndedTouches]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { (void)e; [self finishTouches:ts phase:"cancelled"]; [self recoverEndedTouches]; }
 - (CGPoint)scriptPoint:(NSString *)spec move:(BOOL)move {
     // 数字对 "x,y"（点）或 "@目标[+dx,dy]"：目标 = joy/swap/main/skill1-4/portal/belt1-4/menu/map/mmname（小地图点击区中心）/mmbody（小地图矩形中心）
     // Number pair "x,y" (points) or "@target[+dx,dy]": target = joy/swap/main/skill1-4/portal/belt1-4/menu/map/mmname (center of the minimap tap area)/mmbody (center of the minimap rectangle)
@@ -1764,6 +1815,7 @@ static void dm_orientation_reconcile(const char *why) {
         case UIDeviceOrientationPortrait: if (front_ios_ingame_autorotate()) mask = UIInterfaceOrientationMaskPortrait; break;
         default: break; // Flat/unknown posture cannot choose a new interface orientation.
     }
+    LOG("方向核对：%s 设备 %ld 场景 %ld 窗口 %.0fx%.0f 游戏 %s 请求 %#lx",why,(long)UIDevice.currentDevice.orientation,(long)dm_scene_orientation(v),window.bounds.size.width,window.bounds.size.height,g_portrait?"竖":"横",(unsigned long)mask);
     if (mask) [ws requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask]
         errorHandler:^(NSError *e) { LOG("前端：%s 方向重同步失败：%s", why, e.localizedDescription.UTF8String); }];
     [v rotationChanged:why];

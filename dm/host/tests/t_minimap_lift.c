@@ -3,12 +3,12 @@
 // Replay layout replacement through the production move guard and lift pump; verify loading messages and move-table compaction.
 #include "../dm_cursor.c"
 module_t g_mod[MAX_MOD]; int g_nmod;
-static int busy, ingame=1, uy=314; static uint64_t frame=100;
+static int portrait, busy, ingame=1, uy=314; static uint64_t frame=100;
 uint64_t dm_guest_frame(void) { return frame; }
 uint64_t now_ns(void) { return frame*16666667; }
 int dm_padmode_busy(void) { return busy; }
 int dm_uiscreen_ingame(void) { return ingame; }
-int dm_uiscreen_portrait(void) { return 0; }
+int dm_uiscreen_portrait(void) { return portrait; }
 void dm_ui_rect(int *x,int *y,int *w,int *h) { *x=0; *y=uy; *w=2360; *h=1326; }
 void dm_uiscreen_set_ingame(int on) { ingame=on; }
 void dm_custom_on_uimsg(const char *cat,const char *act,const char *arg) { (void)cat; (void)act; (void)arg; }
@@ -125,5 +125,13 @@ int main(void) {
  mv_offset(MV_LIFT,ptr(incoming),1,-511,0); CHECK(*y(incoming)==-499);
  mv_restore(ptr(root),MV_LIFT); CHECK(*y(incoming)==12 && g_nmv==0);
  for(int i=1;i<96;i++) CHECK(*y(old[i])==100+i);
+ mv_restore(ptr(root),MV_LIFT); *(uint64_t *)(root+0x60)=1;
+ widget(extra,"HUDWarnings",12); children[0]=ptr(extra); portrait=1;
+ int ax,ay,aw,ah; dm_ui_rect(&ax,&ay,&aw,&ah);
+ int expected=12-(int)((long)ay*2160/ah)-(int)lround(50.0*2160/ah);
+ tick(); tick(); CHECK(*y(extra)==expected); tick(); CHECK(*y(extra)==expected);
+ portrait=0; tick(); CHECK(*y(extra)==12-(int)((long)ay*2160/ah));
  free(base); printf("t_minimap_lift: %d checks, %d failures\n",checks,fails); return fails!=0;
 }
+
+void dm_custom_prepare_ui_message(unsigned long long root,const char *cat,const char *act) { (void)root;(void)cat;(void)act; }

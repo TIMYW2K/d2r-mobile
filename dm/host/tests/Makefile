@@ -7,6 +7,8 @@ B = build
 # 依赖一行一个、按字母序（同 ../Makefile 的 SRC：免得加一个测试就整行冲突）；下面各条命令的先后不变
 # Dependencies one per line in alphabetical order (same as SRC in ../Makefile: so that adding one test does not conflict on the whole line); the order of the commands below is unchanged
 run: \
+	$(B)/t_ui_message_queue \
+	$(B)/t_orb_anchor \
 	$(B)/t_metalfx_auto \
 	$(B)/t_metalfx_quality \
 	$(B)/t_map_intent \
@@ -91,6 +93,8 @@ run: \
 	$(B)/t_target_rank 2>/dev/null
 	$(B)/t_hud_dead
 	$(B)/t_namegen
+	$(B)/t_ui_message_queue
+	$(B)/t_orb_anchor
 	$(B)/t_metalfx_auto
 	$(B)/t_metalfx_quality
 	$(B)/t_map_intent
@@ -237,3 +241,17 @@ $(B)/t_pouch_notice: t_pouch_notice.c $(wildcard ../*.h ../*.c ../../gfx/nvn/*.h
 diagnostic-regression: | $(B)
 	clang -fobjc-arc -framework Foundation -o $(B)/t_diagnostic_scrub ../../ios/tests/t_diagnostic_scrub.m
 	$(B)/t_diagnostic_scrub
+
+MOVIE_PACKAGES = libavformat libavcodec libavutil libswscale
+MOVIE_TEST_FLAGS ?= -O1 -g
+$(B)/t_movie_real: t_movie_real.c ../hle_movie.c ../dm_movie_decode.c ../dm_movie_decode.h ../hle.h ../dm.h | $(B)
+	clang $(MOVIE_TEST_FLAGS) -Wall -Wno-unused-function -DDM_MOVIE_FFMPEG=1 -I.. -o $@ t_movie_real.c ../dm_movie_decode.c $(shell pkg-config --cflags --libs $(MOVIE_PACKAGES))
+.PHONY: movie-real
+movie-real: $(B)/t_movie_real
+	$(PY) movie_real.py $(B)/t_movie_real
+
+$(B)/t_ui_message_queue: t_ui_message_queue.c $(wildcard ../*.c ../*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_ui_message_queue.c -lm
+
+$(B)/t_orb_anchor: t_orb_anchor.c $(wildcard ../*.c ../*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_orb_anchor.c -lm

@@ -178,6 +178,16 @@ static void set_toggle(uint64_t w, int on) {
     static const int32_t fr[2][4] = { { 0, 1, 3, 2 }, { 4, 5, 6, -1 } };
     *(uint8_t *)(w + 0xa88) = on != 0; memcpy((void *)(w + 0x6e8), fr[on != 0], sizeof fr[0]); *(int32_t *)(w + 0x610) = fr[on != 0][0];
 }
+// Native option bindings read the hidden toggle when handling their action.
+// Prepare it at delivery time, after any native per-frame resynchronization.
+void dm_custom_prepare_ui_message(unsigned long long root,const char *cat,const char *act) {
+    if (!root || !cat || !act || strcmp(cat,"OptionsPanelMessage")) return;
+    const char *name=!strcmp(act,"SetShowLifeOrbText")?"ShowLifeOrbText":!strcmp(act,"SetShowManaOrbText")?"ShowManaOrbText":NULL;
+    if (!name || !main_base()) return;
+    uint64_t panel=find_w(root,"GameplayOptionsPanel",1);
+    uint64_t anchor=panel && *(uint8_t *)(panel+0x50)?find_w_off(panel,name,1):0;
+    if (anchor) set_toggle(anchor,1);
+}
 // 触屏模式隐藏原版手柄焦点金框（FocusManager 的 FocusIndicator）：它是画在焦点控件上的九宫格金框、在顶层渲染、不受设置页滚动区裁剪，
 // 焦点落在轮播 / 滑条（宽而扁）上时看起来就是一条横条 —— 用户说的「条状高亮」就是它（不是控件上的 focusIndicator 悬停图）。
 // +0x50 可见位的写是登记例外（tests/native_write_scan.py）：函数里先核控件名，不是 FocusIndicator 一律不写并报红。
@@ -349,8 +359,9 @@ void dm_show_fps_page_pump(unsigned long long root) {
         if (fx[i].on) continue;   // 本页此前读回过开：不再动（等游戏重排再看） | this page reported it on before: leave it alone (look again after the next rebuild)
         if (fx[i].tries < 2 && fr >= fx[i].wait) {
             fx[i].tries++; fx[i].wait = fr + 10;
+            set_toggle(a,1);
             dm_ui_send_queue(fx[i].msg);
-            LOG("%s：隐藏锚点读回=关 → 发 %s（第 %d/2 次，10 帧后读回）", fx[i].label, fx[i].msg, fx[i].tries);
+            LOG("%s：隐藏锚点置为开 → 排队发 %s（第 %d/2 次，10 帧后读回）", fx[i].label, fx[i].msg, fx[i].tries);
         } else if (fx[i].tries >= 2 && fr >= fx[i].wait && !fx[i].bad) {
             fx[i].bad = 1;
             LOG("【红】%s：发了 2 次仍读回=关（消息可能是 toggle 语义或面板读不回状态）；本版只能保证游戏默认开，请在设置页手动确认一次", fx[i].label);

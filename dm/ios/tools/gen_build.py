@@ -10,16 +10,31 @@
 #   stdout            xcconfig lines: HEADER_SEARCH_PATHS (-I directories + the directory of every source file, so relative includes resolve as usual),
 #                     OTHER_CFLAGS (-D), frameworks (Cocoa is replaced by what the UIKit side already has, skipped)
 # Usage: gen_build.py <dm/host dir> <Gen dir>
-import os, shlex, subprocess, sys
+import os, shlex, subprocess, sys, shutil
 host, gen = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
-cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost'], capture_output=True, text=True, check=True).stdout
+import movie_config
+build_env=dict(os.environ)
+if movie_config.enabled():
+    prefix=build_env.get('DM_MOVIE_FFMPEG_PREFIX') or os.path.join(build_env.get('DM_ROOT',os.path.expanduser('~/dm-work')),'build/cache/dm/ffmpeg-ios/out')
+    script=os.path.join(os.path.dirname(__file__),'build_ffmpeg_ios.sh')
+    if not build_env.get('DM_MOVIE_FFMPEG_PREFIX'):
+        subprocess.run(['bash',script],check=True,env=build_env,stdout=sys.stderr,stderr=sys.stderr)
+    for name in ('avformat','avcodec','swscale','avutil'):
+        if not os.path.isfile(os.path.join(prefix,'lib','lib'+name+'.a')): raise SystemExit('Missing FFmpeg static library: '+name)
+    legal=os.path.join(os.path.dirname(__file__),'../Sources/Legal')
+    os.makedirs(legal,exist_ok=True)
+    shutil.copyfile(os.path.join(prefix,'licenses/FFmpeg-LGPL-2.1.txt'),os.path.join(legal,'FFmpeg-LGPL-2.1.txt'))
+    build_env.update(MOVIE_FFMPEG='1',MOVIE_PREFIX=prefix)
+else: build_env['MOVIE_FFMPEG']='0'
+cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost'], capture_output=True, text=True, check=True,env=build_env).stdout
 toks = shlex.split(next(l for l in cmd.splitlines() if l.lstrip().startswith('clang')))
-srcs, incs, defs, fws, weak_fws = [], [], [], [], []
+srcs, incs, defs, fws, weak_fws, static_libs = [], [], [], [], [], []
 i = 0
 while i < len(toks):
     t = toks[i]
     if t == '-weak_framework': weak_fws.append(toks[i + 1]); i += 2; continue
     if t == '-framework': fws.append(toks[i + 1]); i += 2; continue
+    if t.endswith('.a'): static_libs.append(t)
     if t.startswith('-I'): incs.append(os.path.normpath(os.path.join(host, t[2:])))
     elif t.startswith('-D'): defs.append(t)
     elif t.endswith(('.c', '.m', '.S')): srcs.append(os.path.normpath(os.path.join(host, t)))
@@ -40,4 +55,4 @@ for s in srcs:
     os.symlink(s, f'{gen}/src/{flat}')
 print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
 print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
-print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa') + ' ' + ' '.join(f'-weak_framework {f}' for f in weak_fws))
+print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa') + ' ' + ' '.join(f'-weak_framework {f}' for f in weak_fws) + ' ' + ' '.join(shlex.quote(a) for a in static_libs))

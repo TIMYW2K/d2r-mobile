@@ -203,3 +203,5 @@ int dm_runeword_long_press(const void *ci) { (void)ci; return 0; }   // 符文�
 int dm_runeword_list_open(void) { return 0; }
 void dm_runeword_button(const char *name) { (void)name; }
 void dm_runeword_list_close(void) {}
+
+void dm_custom_prepare_ui_message(unsigned long long root,const char *cat,const char *act) { (void)root;(void)cat;(void)act; }

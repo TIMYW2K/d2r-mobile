@@ -19,7 +19,7 @@ void dm_ui_rect(int *x,int *y,int *w,int *h) { *x=0; *y=1288; *w=1206; *h=1334; 
 static int checks,fails,relayouts;
 #define CHECK(c) do { checks++; if(!(c)) { fails++; printf("FAIL line %d: %s\n",__LINE__,#c); } } while(0)
 static _Alignas(8) unsigned char root[160], hud[160], nodes[7][160];
-static uint64_t root_children[1], hud_children[7], vtable[4];
+static uint64_t root_children[3], hud_children[7], vtable[4];
 static const char *names[7]={"HealthBall","ManaBall","Belt","TouchPortraitBeltBacking0","TouchPortraitBeltBacking1","TouchPortraitBeltBacking2","TouchPortraitBeltBacking3"};
 static const int base_x[7]={-900,600,-500,29543,29740,29936,30133};
 static uint64_t ptr(void *p) { return (uint64_t)(uintptr_t)p; }
@@ -31,7 +31,7 @@ static void widget(void *v,const char *name,uint64_t parent) {
 }
 static void tick(void) { frame+=6; ui_safe_pump(&g_mod[0],ptr(root),frame); }
 static void shifted(void) {
- for(int i=0;i<7;i++) CHECK(*x(nodes[i])==base_x[i]+24-(i>=3?30000:0));
+ for(int i=0;i<7;i++) CHECK(*x(nodes[i])==base_x[i]+73-(i>=3?30000:0));
  CHECK(mv_count(MV_SAFE)==7);
 }
 static void restored(void) {
@@ -49,7 +49,7 @@ int main(void) {
  for(int i=0;i<7;i++) { widget(nodes[i],names[i],ptr(hud)); *x(nodes[i])=base_x[i]; hud_children[i]=ptr(nodes[i]); }
  dm_ui_set_band_height_pt(444.6667f); CHECK(ui_pt_units(5)==24);
  tick(); shifted(); CHECK(relayouts==7);
- // Repeated pumping must not accumulate another 5pt shift.
+ // Repeated pumping must not accumulate another portrait shift.
  for(int i=0;i<10;i++) { tick(); shifted(); } CHECK(relayouts==7);
  portrait=0; tick(); restored(); CHECK(relayouts==14);
  portrait=1; tick(); shifted(); CHECK(relayouts==21);
@@ -60,5 +60,13 @@ int main(void) {
  ingame=0; tick(); restored();
  // Another orientation/return cycle exercises repopulating the guard after restoration.
  ingame=1; portrait=0; tick(); restored(); portrait=1; tick(); shifted();
+ static _Alignas(8) unsigned char warnings[160],hire[160],merc[160]; static uint64_t pets[1];
+ widget(warnings,"HUDWarnings",ptr(root)); *x(warnings)=100;
+ widget(hire,"HireablesPanel",ptr(root)); widget(merc,"Pet",ptr(hire)); *x(merc)=40; *(int32_t *)(merc+0x74)=60;
+ pets[0]=ptr(merc); *(uint64_t *)(hire+0x58)=ptr(pets); *(uint64_t *)(hire+0x60)=1;
+ root_children[1]=ptr(warnings); root_children[2]=ptr(hire); *(uint64_t *)(root+0x60)=3;
+ tick(); CHECK(*x(warnings)==39); CHECK(*x(merc)==61); CHECK(*(int32_t *)(merc+0x74)==-87);
+ tick(); CHECK(*x(warnings)==39); CHECK(*x(merc)==61); CHECK(*(int32_t *)(merc+0x74)==-87);
+ portrait=0; tick(); CHECK(*x(warnings)==100); CHECK(*x(merc)==40); CHECK(*(int32_t *)(merc+0x74)==60);
  free(base); printf("t_portrait_hud: %d checks, %d failures\n",checks,fails); return fails!=0;
 }

@@ -63,3 +63,15 @@ test: $(TARGET) $(BINDING_TARGETS) t_native_art t_skill_aim t_joy_travel $(METAL
 	python3 test_touch_receipt.py --source ../Sources/front_ios.m
 clean:
 	rm -f $(TARGET) $(BINDING_TARGETS) t_native_art t_skill_aim t_joy_travel $(METAL_CACHE_TARGET)
+
+.PHONY: orientation-regression
+orientation-regression:
+	$(CC) $(CFLAGS) t_orientation_policy.c -o t_orientation_policy
+	./t_orientation_policy
+	rm -f t_orientation_policy
+
+.PHONY: touch-end-regression
+touch-end-regression:
+	$(CC) $(CFLAGS) -I../Sources t_touch_end_recovery.c ../Sources/dm_touch_controls.c -lm -o t_touch_end_recovery
+	./t_touch_end_recovery
+	rm -f t_touch_end_recovery

@@ -1,5 +1,7 @@
 #include "dm_elysium.h"
 #include "dm_cursor.h"
+#include <pthread.h>
+#include "../ios/Sources/dm_touch_controls.h"
 #include "dm_widget.h"
 #include "dm_notice_geometry.h"
 #include "dm_map_intent.h"
@@ -2243,7 +2245,8 @@ static void ui_lift_pump(uint64_t root, uint64_t fr) {
         // between "lifted" and "restored", which showed up as the minimap flickering on a real device.
         if (nm && !strcmp(nm, "AutoMap")) continue;
         float ay = *(float *)(p + 0x4c); int layer = *(int32_t *)(p + 0x84); if (!(ay == 0 && layer <= -100)) continue;
-        int32_t y0 = *(int32_t *)(p + 0x74); mv_offset(MV_LIFT, p, 1, -lift, 0);
+        int extra = nm && !strcmp(nm,"HUDWarnings") && dm_uiscreen_portrait() && h>0 ? (int)lround(50.0*2160/h) : 0;
+        int32_t y0 = *(int32_t *)(p + 0x74); mv_offset(MV_LIFT, p, 1, -lift-extra, 0);
         if (*(int32_t *)(p + 0x74) != y0) { static int lg; if (lg++ < 16) LOG("贴顶上提：%s（层 %d）y %d → %d", nm ? nm : "?", layer, y0, *(int32_t *)(p + 0x74)); } }
 }
 // 珍宝匣：宝石 / 材料 / 符文三页的格位合到了宝石页那一页（布局 wide_stash.py trove_slots，底图 gen_trove_art.py），页签条上只留「个人 / 共享 / 珍宝匣 / 编年史」。
@@ -2336,8 +2339,8 @@ static void ui_wtap_pump(module_t *m, uint64_t root, int width, int height) {   
 // 开佣兵页：按 + 开功能页，再按 R 翻到佣兵页签（开关位 main+0x2d5ff66 = 1 为到位）。每一下按完看反馈再按下一下，同技能绑定「开技能树」那段
 // Open the mercenary page: press + to open the function page, then press R to flip to the mercenary tab (toggle flag main+0x2d5ff66 = 1 means arrived). After each press, check the feedback before pressing the next, same as the "open skill tree" part of skill binding
 static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
-    static int on, tries, page; static uint64_t pressed;
-    if (atomic_exchange(&g_mercpg, 0) && !on) { on = 1; tries = 0; page = -1; pressed = 0; }
+    static int on, tries, page; static uint64_t pressed, missing_until;
+    if (atomic_exchange(&g_mercpg, 0) && !on) { on = 1; tries = 0; page = -1; pressed = 0; missing_until=0; }
     if (!on) return;
     if (*(uint8_t *)(m->base + 0x2d5ff66)) { LOG("佣兵页：已开（按键 %d 次）", tries); on = 0; return; }
     // 本地改动：原来 9 次就放弃 —— 连按 R 时按键可能被游戏丢掉，9 次只走了三页，人停在上一页（技能树），
@@ -2366,14 +2369,16 @@ static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
     // Local change (bug fix): the direct switch was followed by an unconditional R press, which flipped the page
     // straight back off the mercenary page and then kept pressing up to 24 times. Now a successful direct switch
     // finishes the job; the key walk is only used when the tab bar cannot be found at all.
-    if (!tries) {
+    {
         uint64_t us = ui_find(root, "UISwitcher", 0), tb = ui_find(root, "UISwitcherTabs", 0);
         if (us && *(uint8_t *)(us + 0x50)) { int n = *(int32_t *)(us + 0x188), to = n >= 3 ? n - 1 : 5, cur0 = *(int32_t *)(us + 0x1b8);
             if (tb && *(uint64_t *)tb == (uint64_t)m->base + 0x20ba3a8) ((void (*)(uint64_t, int, int))(m->base + 0xad9b80))(tb, to, 0);
             if (*(int32_t *)(us + 0x1b8) != to) ((void (*)(uint64_t, int, int))(m->base + 0x405898))(us, to, 1);
             LOG("佣兵页：直接切到第 %d 页（共 %d 页，原在 %d）—— 不再按键", to, n, cur0);
             on = 0; return; }                                            // 切页已交给游戏，收工
-        LOG("【红】佣兵页：找不到页签条，退回按 R 翻页");
+        if (tries && !dm) { if (!missing_until) missing_until=fr+90; if(fr<missing_until) return; }
+        else missing_until=0;
+        if (!tries) LOG("佣兵页：等待功能页创建，先发送打开按键");
     }
     page = cur; pressed = fr; dm_ui_key_pulse(dm ? DM_BTN_R : DM_BTN_PLUS, 4); tries++;
 }
@@ -2583,8 +2588,8 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
       if (p && *(float *)(p + 0x80) != 1.0f) *(float *)(p + 0x80) = 1.0f;
       int sx=0, sy=0, sw=0, sh=0; dm_ui_rect(&sx,&sy,&sw,&sh);
       int port = dm_uiscreen_portrait();
-      int dx = port && sh > 0 ? (int)lround(10.0 * 2160 / sh) : 0;
-      int dy = port && sh > 0 ? (int)lround((-40.0 * 2160 / sh - ui_pt_units(20)) / DM_MERC_SCALE) : 0;
+      int dx = port && sh > 0 ? (int)lround(18.0 * 2160 / sh) : 0;
+      int dy = port && sh > 0 ? (int)lround((-60.0 * 2160 / sh - ui_pt_units(20)) / DM_MERC_SCALE) : 0;
       int ul = atomic_load(&g_safe_l) + dx, ulc = (int)((float)ul / DM_MERC_SCALE);
       uint64_t ch = p ? *(uint64_t *)(p + 0x58) : 0, n = p ? *(uint64_t *)(p + 0x60) : 0;
       static float lg;
@@ -2595,15 +2600,15 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
           mv_offset(MV_SAFE, c, 0, ulc, 1); mv_offset(MV_SAFE, c, 1, dy, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); int ux=0, uy=0, uw=0, uh=0; dm_ui_rect(&ux,&uy,&uw,&uh);
-        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(5.0 * 2160 / uh) + ui_pt_units(5) : 0;
+        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(5.0 * 2160 / uh) + ui_pt_units(11) : 0;
         mv_offset(MV_SAFE, h, 0, -u-dx, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
 
-    // Match UIKit's 5pt portrait shift for live potion/orb contents and their opaque backings.
+    // Match UIKit's shared portrait shift for live potion/orb contents and their opaque backings.
     // Duplicate native decorations remain off-screen; all original coordinates restore outside portrait touch.
     { uint64_t hud = ui_panel(root, "HUDPanel");
       uint64_t ch = hud ? *(uint64_t *)(hud + 0x58) : 0, n = hud ? *(uint64_t *)(hud + 0x60) : 0;
       int portrait_touch = dm_uiscreen_portrait() && ui_touch_mode();
-      int bar_dx = portrait_touch ? ui_pt_units(5) : 0;
+      int bar_dx = portrait_touch ? ui_pt_units(DM_TC_PORTRAIT_HUD_DX_PT) : 0;
       for (uint64_t i = 0; ch && i < n && i < 256; i++) {
           uint64_t w = *(uint64_t *)(ch + 8*i); if (!w) continue;
           const char *name = (const char *)*(uint64_t *)(w + 8); if (!name) continue;
@@ -4663,6 +4668,7 @@ static void fe_key(uint64_t mask) { atomic_store(&g_fe_key_mask, mask); atomic_s
 static void ui_auto_key(uint64_t mask) { fe_key(mask); }
 static void fe_send(const char *cat, const char *act, const char *arg) {
     module_t *m = main_module(); uint64_t root = 0; if (!m) return; memcpy(&root, m->base + 0x2f05458, 8); if (!root) return;
+    dm_custom_prepare_ui_message(root,cat,act);
     static char payload[64]; static uint64_t msg[8]; memset(payload, 0, sizeof payload); strlcpy(payload, arg, sizeof payload);
     memset(msg, 0, sizeof msg); msg[0] = ui_hash(cat); msg[1] = ui_hash(act); msg[2] = (uint64_t)payload; msg[3] = 1; msg[4] = 1;
     uint64_t vt = 0, fn = 0; memcpy(&vt, (void *)root, 8); memcpy(&fn, (void *)(vt + 0x28), 8);
@@ -4746,12 +4752,26 @@ static void rs_pump(void) {   // 取手柄处（游戏主线程）每次调 | ca
         rs_load(fr, "已回到前端"); return; }
     if (st == RS_LOAD && !g_rs_resent && fr - g_rs_sf > 90) { g_rs_resent = 1; rs_load(fr, "载入发出 90 帧没出读取画面，补发"); }
 }
-// 按键脚本的「发界面消息」步（hle_hid.c MSG:…）：任意线程登记，取手柄处（游戏主线程）发出。单槽，脚本一步一条
-// The key script's "send UI message" step (hle_hid.c MSG:...): registered from any thread, sent where the controller is fetched (game main thread). Single slot, one message per script step
-static char g_sendq[96]; static _Atomic int g_sendq_on;
-void dm_ui_send_queue(const char *spec) { strlcpy(g_sendq, spec, sizeof g_sendq); atomic_store(&g_sendq_on, 1); }
+// 按键脚本的「发界面消息」步（hle_hid.c MSG:…）：任意线程登记，取手柄处（游戏主线程）发出。有界 FIFO，每帧消费一条
+// The key script's "send UI message" step (hle_hid.c MSG:...): registered from any thread, sent where the controller is fetched (game main thread). Bounded FIFO, one message per controller poll
+enum { UI_SENDQ_CAP=32, UI_SENDQ_BYTES=96 };
+static char g_sendq[UI_SENDQ_CAP][UI_SENDQ_BYTES]; static unsigned g_sendq_read,g_sendq_count;
+static pthread_mutex_t g_sendq_lock=PTHREAD_MUTEX_INITIALIZER;
+void dm_ui_send_queue(const char *spec) {
+    if (!spec || !*spec || strnlen(spec,UI_SENDQ_BYTES)>=UI_SENDQ_BYTES) return;
+    pthread_mutex_lock(&g_sendq_lock);
+    if (g_sendq_count<UI_SENDQ_CAP) {
+        strlcpy(g_sendq[(g_sendq_read+g_sendq_count)%UI_SENDQ_CAP],spec,UI_SENDQ_BYTES);g_sendq_count++;
+    } else LOG("【红】界面消息队列已满，本条未发送");
+    pthread_mutex_unlock(&g_sendq_lock);
+}
+static int ui_sendq_pop(char out[UI_SENDQ_BYTES]) {
+    pthread_mutex_lock(&g_sendq_lock);int have=g_sendq_count!=0;
+    if(have) { memcpy(out,g_sendq[g_sendq_read],UI_SENDQ_BYTES);g_sendq_read=(g_sendq_read+1)%UI_SENDQ_CAP;g_sendq_count--; }
+    pthread_mutex_unlock(&g_sendq_lock);return have;
+}
 void dm_ui_frontend_pump(void) {   // 取手柄处调；各动作之间隔开几帧 | called where the controller is fetched; actions are spaced a few frames apart
-    if (atomic_exchange(&g_sendq_on, 0)) { char b[96], *c1, *c2; strlcpy(b, g_sendq, sizeof b); c1 = strchr(b, ':'); if (c1) { *c1++ = 0; c2 = strchr(c1, ':'); if (c2) *c2++ = 0; fe_send(b, c1, c2 ? c2 : ""); } }
+    { char b[UI_SENDQ_BYTES], *c1,*c2; if(ui_sendq_pop(b)) { c1=strchr(b,':'); if(c1) { *c1++=0;c2=strchr(c1,':');if(c2)*c2++=0;fe_send(b,c1,c2?c2:""); } } }
     // 诊断：DM_DBG_FE_SEND="帧:类别:动作:参数;…"（帧号从 DM_UI_TAPS_AT 命中起算）到帧直接往界面根控件发一条界面消息，探「某条消息此刻收不收」用
     // Diagnostics: DM_DBG_FE_SEND="frame:category:action:argument;..." (frame numbers count from the DM_UI_TAPS_AT hit) sends a UI message directly to the UI root widget at the frame, to probe "whether a given message is accepted right now"
     { static struct { uint64_t fr; char c[48], a[48], g[48]; int done; } ds[8]; static int nd = -1; if (nd < 0) { nd = 0; const char *e = getenv("DM_DBG_FE_SEND"); char buf[512]; if (e) { strlcpy(buf, e, sizeof buf);

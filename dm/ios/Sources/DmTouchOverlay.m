@@ -288,7 +288,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             if (CGRectGetMidX(ir) > self.bounds.size.width * 0.5) dx = -dx;   // 岛在右：镜像向内 | right-side island: mirror inward
             if (self.bounds.size.height > self.bounds.size.width) {
                 CGFloat pixel = 1.0 / MAX(1.0, self.window.screen.scale);
-                dx -= 2 * pixel + 2.0; dy += 2 * pixel + 2.0;
+                dx -= 2 * pixel + 2.0; dy += 3 * pixel + 2.0;
             }
             CGRect inner = CGRectOffset(ir, dx, dy);                    // 内胶囊（125×36 竖/横，视方向） | inner capsule (125x36, orientation-dependent)
             CGRect outer = CGRectInset(inner, -ring, -ring);            // 外沿 135×46 | outer 135x46

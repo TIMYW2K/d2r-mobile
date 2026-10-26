@@ -259,6 +259,8 @@ _UPDATE_PAD = (_upd_text('TouchBuild', 3341, 60, 420, 30, (150, 140, 115), 'righ
                + _upd_text('TouchUpdDesc', 1220, 1610, 1400, 36, (232, 228, 214), 'center')
                + _upd_btn('TouchUpdBig', None, ''))
 def pad_ribbon(s):   # 手柄版主菜单左侧按钮栏 = 原版布局，只拿掉「电影动画」：包里不播过场（列表里只有一行有字、选了什么都不播），是个没用的入口，同触屏版没有它。 | Controller layout main menu left button ribbon = the original layout, only removing 「电影动画」(Cinematics): the package does not play cutscenes (only one row in the list has text, and nothing plays whichever is chosen), so it is a useless entry; same as the touch version, which does not have it.
+    import movie_config
+    if movie_config.enabled(): return s
     # 「制作人员」上移到它的位置，上下焦点改成「选项 ↔ 制作人员」直连
     # 「制作人员」(Credits) moves up into its place, and up / down focus becomes a direct link 「选项 ↔ 制作人员」(Options ↔ Credits)
     s = _sub1(s, '"rect": { "x": 164, "y": 1175 },', '"rect": { "x": 99999, "y": 99999 },')
@@ -305,6 +307,8 @@ def _pc_charselect(s):
         s = s[:m.start()] + '"pointSize": %d' % size + s[m.end():]; n += 1
     return s, n + 1
 def _pc_ribbon(s):
+    import movie_config
+    if movie_config.enabled(): return s, 0
     # 左侧栏整块不要（「选项」「退出」两个按钮、按钮区和背景图全删，标志也一起删，首页不留设置入口）；公告栏本来就是空的，一并挪走
     # The whole left sidebar block is dropped (the two buttons 「选项」(Options) and 「退出」(Quit), the button area and the background image are all deleted, the logo is deleted too, and the home page keeps no settings entry); the announcement bar was empty anyway and is moved away as well
     s, n = offscreen(s, types=(), names=('Ribbon', 'MotDSection'))

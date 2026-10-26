@@ -21,7 +21,30 @@ permissions:
   contents: write
   actions: write
 jobs:
+  movie-regression:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref }}
+      - name: Prepare FFmpeg test dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          command -v pkg-config >/dev/null || brew install pkg-config
+      - name: Verify real VP8 pixels and movie ownership
+        run: |
+          export PKG_CONFIG_PATH="$(brew --prefix ffmpeg)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          make -C dm/host/tests movie-real PY=python3
+      - name: Verify memory and undefined behavior
+        run: |
+          export PKG_CONFIG_PATH="$(brew --prefix ffmpeg)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          make -C dm/host/tests movie-real PY=python3 B=/tmp/dm-movie-sanitized MOVIE_TEST_FLAGS='-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer'
   build:
+    needs: movie-regression
     uses: jiayx/d2r-mobile-build/.github/workflows/pack.yml@main
     with:
       prepared_input: ${{ inputs.prepared_input }}
