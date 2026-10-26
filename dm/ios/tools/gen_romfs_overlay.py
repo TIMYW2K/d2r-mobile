@@ -34,11 +34,10 @@ with tempfile.TemporaryDirectory() as t:
     # pressing a function key / tapping where it covers only dismisses the notice (panels cannot be opened, the cells below cannot be tapped). On touch the notice disappears by itself on time, and this button is not wanted
     # Docking height y -790 (original -500; it was raised to -600 earlier to clear the experience bar, but still covered the "life / mana" numbers above the bottom bar - with many digits the text ran into the box, and the touch layout's row is higher and sat right in the middle of the box):
     # the lower edge of the box has to be above the upper edge of the number row; the touch layout needs about 173 more units, the gamepad layout about 77, so one value that clears both is taken. Only the docking position in the layout changes; slide-in and slide-out are still the game's own animation
-    note={'type':'NotificationPanel','name':'NotificationPanel',
-          'fields':{'priority':9002,'notificationSeconds':5.0,'transitionSeconds':0.8,'rect':{'x':nx,'y':-790,'width':nw,'height':244},'anchor':{'x':0.5,'y':1.0}},
-          'children':[{'type':'NineTileImageWidget','name':'NotificationBorder',
-                       'fields':{'rect':{'x':0,'y':0,'width':nw,'height':244},'anchor':{'x':-0.5,'y':0.0},'filename':'PANEL/TooltipBorder/TooltipBorder','backgroundColor':[0.0,0.0,0.0,0.70],'tileScale':1},
-                       'children':[{'type':'TextBoxWidget','name':'Prompt','fields':{'fitToParent':True,'style':'$StyleNotification'}}]}]}
+    import notification_layout, gen_notification_frame
+    nw=max(nw,gen_notification_frame.MIN_LAYOUT_WIDTH)
+    note=notification_layout.notification(nw,nx)
+    REPL.update(notification_layout.build_notice_slices(romfs,t,nw))
     json.dump(note,open(os.path.join(t,'notification.json'),'w'),indent=1)
     REPL['data/global/ui/layouts/controller/notificationpanelhd.json']=os.path.join(t,'notification.json')
     # 全触摸方案：前端与通用弹窗上的手柄键位提示挪出屏幕（按钮本身可点之后，字形就是错误信息）；清单与做法见 touch_layout.py

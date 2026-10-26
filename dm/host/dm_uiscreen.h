@@ -20,8 +20,10 @@ int dm_uiscreen_panel(void);                 // 上面那个状态：局内开�
 void dm_uiscreen_set_portrait(int on);
 int dm_uiscreen_portrait(void);
 void *dm_cam_zoom_factor_slot(void);          // KZOOM TSD entry points at the live host scale used by the static main-text patch
-void dm_cam_zoom_set(float extent_scale);
-void dm_cam_zoom_reset(void);                                     // 复位到最远视野（1.25） | Reset to the widest view      // 1.00–1.25: pinched camera extent; 1.0 is the original view
+float dm_cam_zoom_near_extent(void);          // Current orientation's near stop (1.00)
+float dm_cam_zoom_far_extent(void);           // Landscape 1.25; portrait 1.50, relative to the original range
+void dm_cam_zoom_set(float extent_scale);     // Updates only the current orientation's saved choice
+void dm_cam_zoom_reset(void);                // Reset only the current orientation to its far stop
 float dm_cam_zoom_factor(void);                // Current camera extent multiplier
 float dm_cam_zoom_ratio(void);                 // Current magnification, used to keep world-touch hit regions aligned
 void dm_3d_scale_reset_level(void);            // 镜头缩放等状态变化时重置动态降档 | Reset dynamic throttle level on zoom change

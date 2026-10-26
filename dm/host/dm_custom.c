@@ -20,9 +20,9 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom", "show_fps" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS；show_fps 不在自定义页，排末尾、只走游戏设置页）。T18：省电模式（eco_fps）已删除，帧率只由温控决定 | order = the custom page's top-to-bottom rows (touch_layout.py _CUSTOM_ROWS; show_fps is not on the custom page, it is last and only lives on the game's settings page). T18: the power-saving mode (eco_fps) is gone; the frame rate is only capped by the thermal state
+static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom", "metalfx", "show_fps" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS；show_fps 不在自定义页，排末尾、只走游戏设置页）。T18：省电模式（eco_fps）已删除，帧率只由温控决定 | order = the custom page's top-to-bottom rows (touch_layout.py _CUSTOM_ROWS; show_fps is not on the custom page, it is last and only lives on the game's settings page). T18: the power-saving mode (eco_fps) is gone; the frame rate is only capped by the thermal state
 #define NK (int)(sizeof k_keys / sizeof *k_keys)   // 行数（解冲突时漏掉过，这里补回）
-static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0 };   // 缺省值：性能模式流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0、show_fps=0，其余开；zoom=1（允许双指缩放） | defaults: performance mode smoothness first (q3d=0), touch_swap_above=0 (left of portal), hdr=0, show_fps=0, the rest on; zoom=1 (pinch-to-zoom allowed)
+static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0 };   // 缺省值：性能模式流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0、show_fps=0，其余开；zoom=1（允许双指缩放） | defaults: performance mode smoothness first (q3d=0), touch_swap_above=0 (left of portal), hdr=0, show_fps=0, the rest on; zoom=1 (pinch-to-zoom allowed)
 // q3d（性能模式，自定义页）：0 = 流畅优先（60 帧，掉帧就自动降 3D 比例）、1 = 画质优先（60 帧，不自动降，过热仍会自动降档）、
 // 2 = 画质优先（强制）（60 帧固定、固定 3D 画质，忽略过热自动降档——永不 30 帧、永不降 3D 比例）。生效 = 调 hle_oe.c 的
 // dm_3d_quality_mode_set，读盘与点「应用」时当场调，下一帧控制器就按新档走；q3d==2 时 dm_fps_setting 恒 60、并立刻清掉已有温控降档。
@@ -112,6 +112,7 @@ void dm_perf_thermal_set(int level) {
         old, level, level >= 2 ? "危急" : level == 1 ? "严重" : "正常", level ? 30 : 60, level >= 2 ? 4 : 3);
 }
 int dm_perf_thermal_level(void) { return atomic_load(&g_thermal_level); }
+int dm_3d_profile_get(void) { return dm_custom_get("metalfx") && dm_custom_get("q3d") != 2 ? 0 : 4; }
 int dm_fps_setting(void) {   // 帧率上限：温控决定，但性能模式「画质优先（强制）」q3d=2 时恒 60（忽略温控） | frame-rate cap: thermal, except performance mode q3d=2 (forced quality) which is always 60
     if (atomic_load(&g_val[K_Q3D]) == 2) return 60;
     return dm_perf_thermal_level() ? 30 : 60;
@@ -209,7 +210,7 @@ void dm_custom_ui_pump(unsigned long long root) {
     // (the original controller selection frame TouchCustomSel frames that row), A toggles the checkbox (handled below as "the player tapped it"), and all other
     // buttons go to the original as before
     { int dm_padmode_current(void); uint64_t dm_padmode_page_keys(uint64_t); static int sel; static dm_wref sel_sp; int pad = dm_padmode_current();
-      { uint64_t cm = find_w(root, "ConfirmationModal", 1); if (cm && *(uint8_t *)(cm + 0x50)) pad = 0; }   // 原版「设定已更改，应用 / 放弃」确认框开着：键全还给它（实测：不让的话 A 落在我们这一行上、点不到「应用」） | The original "Settings changed, Apply / Discard" confirmation box is open: hand all keys back to it (measured: otherwise A lands on our row and "Apply" cannot be reached)
+      { if (dm_ui_modal_active(root)) pad = 0; }   // 原版「设定已更改，应用 / 放弃」确认框开着：键全还给它（实测：不让的话 A 落在我们这一行上、点不到「应用」） | The original "Settings changed, Apply / Discard" confirmation box is open: hand all keys back to it (measured: otherwise A lands on our row and "Apply" cannot be reached)
       if (dm_wref_get(&sel_sp) != sp) { dm_wref_set(&sel_sp, sp); sel = 0; }
       uint64_t dm = find_w(sp, "TouchCustomSel", 0), tw = 0, cw = 0; char nm[64];
       if (pad) { uint64_t ev = dm_padmode_page_keys(DM_BTN_UP | DM_BTN_DOWN | DM_BTN_A);

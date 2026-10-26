@@ -7,6 +7,7 @@
 #include "dm_cursor.h"
 #include "hle.h"
 #include "dm_uiscreen.h"
+#include "dm_3d_scale_policy.h"
 
 // 运行模式是运行时状态（前端可改：iOS 过热降级切掌机）：唯一来源在此，启动时从 DM_OPMODE 取一次，之后不再读环境变量
 // The operation mode is runtime state (the front end can change it: iOS overheat downgrade switches to handheld): the single source is here, taken once from DM_OPMODE at startup, the environment variable is not read again afterwards
@@ -274,6 +275,7 @@ static _Atomic float g_scale3d_cur = 0.90f;   // 首次 tick 落地前就报 iOS
 static _Atomic float g_scale3d_cur = 1.0f;
 #endif
 float dm_3d_scale_cur(void) { return atomic_load(&g_scale3d_cur); }
+__attribute__((weak)) float mtl_metalfx_scale_hint(void) { return 0; }
 static void scale3d_tick(void) {
     static float cur = 1.0f; static module_t *main;
     if (!main) {
@@ -308,21 +310,28 @@ static void scale3d_tick(void) {
         want_cfg = 1.0f;
 #endif
     }
-    int lv = force_q ? 0 : atomic_load(&g_scale3d_level);   // 动态档：0 = 配置值，k = g_s3_levels[k − 1]（都不高于配置值）；强制档忽略动态档 | Dynamic level: 0 = configured value, k = g_s3_levels[k - 1] (never above the configured value); forced mode ignores it
+    float fx_hint = !e && !force_q ? mtl_metalfx_scale_hint() : 0;
+    int fx = fx_hint >= .5f && fx_hint <= 1.0f;
+    float original_cfg = want_cfg;
+    if (fx) want_cfg = fx_hint;
+    int dynamic_lv = force_q ? 0 : atomic_load(&g_scale3d_level);
+    int thermal_lv = 0, lv = dynamic_lv;   // 动态档：0 = 配置值，k = g_s3_levels[k − 1]（都不高于配置值）；强制档忽略动态档 | Dynamic level: 0 = configured value, k = g_s3_levels[k - 1] (never above the configured value); forced mode ignores it
     // 本地改动：温控下限档（T8，无 UI）——严重（1）不低于第 3 档（0.7200）、危急（2）不低于第 4 档（0.6600）；只更深不更浅，
     // 温控解除后交回掉帧控制器的档位。帧率上限由 dm_custom.c 的 dm_fps_setting 同步生效（30）。
     // Local change: thermal floor (T8, no UI) -- serious (1) is at least level 3 (0.7200), critical (2) at least level 4
     // (0.6600); only deeper, never shallower, and after recovery the dropped-frame controller's level takes over again. The
     // frame-rate cap (30) takes effect in dm_fps_setting in dm_custom.c at the same time.
     { int tl = dm_perf_thermal_level(), tf = force_q ? 0 : tl >= 2 ? 4 : tl == 1 ? 3 : 0;   // force_q 在外层（F1a） | force_q comes from the outer scope (F1a)
+      thermal_lv = tf;
       if (tf > lv) lv = tf;   // 强制画质（q3d=2）：不做温控下限 | forced quality (q3d=2): no thermal floor
       static int last_key = -99; int key = force_q ? 100 + tl : tl;
       if (key != last_key) { last_key = key;
           if (force_q && tl) LOG("温控优化：强制画质模式（q3d=2）忽略过热降档（热档位 %d）：3D 比例保持配置值 %.2f", tl, want_cfg);
           else if (tl) LOG("温控优化：3D 比例受温控（热档位 %d）：生效第 %d 档 %.2f（原配置 %.2f，帧率上限 30）", tl, lv, lv > 0 ? g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1] : want_cfg, want_cfg);
           else LOG("温控优化：3D 比例恢复（温控解除，回到掉帧控制器 / 配置值）"); } }
-    float dyn = lv <= 0 ? want_cfg : g_s3_levels[(lv > S3_NLV ? S3_NLV : lv) - 1]; if (dyn > want_cfg) dyn = want_cfg;
-    float want = dm_nvn_ruler_truth() ? 1.0f : dyn;
+    float dynamic_tier = dynamic_lv<=0 ? 0 : g_s3_levels[(dynamic_lv>S3_NLV?S3_NLV:dynamic_lv)-1];
+    float thermal_cap = thermal_lv<=0 ? 0 : g_s3_levels[thermal_lv-1];
+    float want = dm_scale3d_target(original_cfg,fx_hint,dynamic_tier,thermal_cap,e!=NULL,force_q,dm_nvn_ruler_truth());
     if (!(want >= 0.5f)) want = 0.5f;   // 兜底：非法值钳回下限 | safety: clamp an invalid value to the lower bound
     { static int lg; if (want > 1.0f) { if (!lg++) LOG("3D 比例控制：比例 %.3f 超过 1.00 → 钳到原生 1.00", want); want = 1.0f; } }
     static int applied_once;   // 基准是否真的落地过一次：cur 初值按平台（iOS 0.90 / Mac 1.00），首拍 want==cur 时靠它保证至少应用/记一次 | whether the baseline has actually been applied once: cur starts at the platform baseline (iOS 0.90 / Mac 1.00), so this guarantees one apply/log even when the first tick's want==cur

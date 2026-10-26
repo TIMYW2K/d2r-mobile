@@ -1,6 +1,8 @@
 // NVN 空设备的 Metal 执行层，见 nvn_mtl.h。
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
 #import <Metal/Metal.h>
+#import <MetalFX/MetalFX.h>
+#import "nvn_metalfx.h"
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
 #import <ImageIO/ImageIO.h>
@@ -15,6 +17,7 @@
 #include <fcntl.h>
 #include "nvn_mtl.h"
 #include "nvn_copy_pitch.h"
+#include "nvn_minimap_shift.h"
 // 编译期开关 DM_NVN_M3=1：图形后端走老接口（普通命令队列 / 命令缓冲 / 渲染与计算与拷贝编码器，逐槽绑定缓冲，对参数块引用的资源逐个声明），
 // 目标 macOS 15 / iOS 18。缺省 0 = Metal 4（macOS 26 / iOS 26）。两支共用同一份回放逻辑，分叉处都在 #if DM_NVN_M3 里
 // Compile-time switch DM_NVN_M3=1: the graphics backend uses the older API (ordinary command queue / command buffers / render, compute and copy encoders, buffers bound per slot, each resource referenced by an argument block declared individually),
@@ -2206,7 +2209,12 @@ static void shmap_load(void) {
     const char *m = getenv("DM_MSL_DIR");
     // 库目录 = <DM_MSL_DIR 或缺省缓存>/b-<翻译链版本>：版本取自本源码树的 dmsh_chain.h（tools/dmsh_chain.py），旧源码树编的宿主只认旧版本的库
     // Library directory = <DM_MSL_DIR or default cache>/b-<translation chain version>: the version comes from this source tree's dmsh_chain.h (tools/dmsh_chain.py); a host built from an old source tree only accepts libraries of the old version
-    g_msl_dir = [NSString stringWithFormat:@"%@/b-%s", m ? @(m) : [NSString stringWithFormat:@"%s%s/build/cache/metal_shader_cache", getenv("DM_ROOT") ?: getenv("HOME"), getenv("DM_ROOT") ? "" : "/dm-work"], DMSH_CHAIN];
+    // Preserve UTF-8 workspace paths; NSString's %s formatting can discard
+    // a non-ASCII root and silently search /build instead of the cache.
+    const char *root_env = getenv("DM_ROOT");
+    NSString *root = root_env ? @(root_env) : [NSHomeDirectory() stringByAppendingPathComponent:@"dm-work"];
+    NSString *cache = m ? @(m) : [root stringByAppendingPathComponent:@"build/cache/metal_shader_cache"];
+    g_msl_dir = [cache stringByAppendingPathComponent:[NSString stringWithFormat:@"b-%s",DMSH_CHAIN]];
     if (![NSFileManager.defaultManager fileExistsAtPath:g_msl_dir]) MLOG("【红】着色器库目录 %s 不存在：本源码树的翻译链版本 %s 还没出包（dm/gfx/tools/dmsh_build.py）", g_msl_dir.UTF8String, DMSH_CHAIN);
     NSString *cp = [[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"c1_full.tsv"];   // 与映射表同目录（Mac：dm/gfx/nvn；iOS：App 内 dm/，run.sh 一起拷） | Same directory as the mapping table (Mac: dm/gfx/nvn; iOS: dm/ inside the App, copied along by run.sh)
     NSString *ct = cp ? [NSString stringWithContentsOfFile:cp encoding:NSUTF8StringEncoding error:nil] : nil;
@@ -4577,6 +4585,8 @@ static int bloomq_capture(void) {
 // the cell background uses a common texture (many rectangles in this pass use it), while each item has its own icon texture -- take the draw with the texture "used the fewest times in this pass". The recognized rectangle is reported back to the front end (used to cover the original shelf position with a dark color).
 // Vertical position and height of the UI rectangle in the real picture (both as a fraction of the picture height: y = 0 touches the top, h = 1 is the whole picture); registered by the front end and read fresh on every draw (changes when switching between docked / handheld mode).
 // The game draws the UI into the upper h portion of the UI texture (the viewport is the whole texture, and the projection matrix carries the scaling).
+extern int dm_ui_minimap_render_rect(int rect[4], int *dy) __attribute__((weak));
+extern int dm_screen_real(int *w, int *h) __attribute__((weak));
 static void (*g_ui_rect_fn)(double *y, double *h);
 void mtl_set_ui_rect_fn(void (*fn)(double *y, double *h)) { g_ui_rect_fn = fn; }
 static double ui_hfrac(void) { double y = 0, h = 1; if (g_ui_rect_fn) g_ui_rect_fn(&y, &h); return h > 0 && h < 1 ? h : 1; }
@@ -4645,6 +4655,7 @@ static void ghost_flush(void) {   // 渲染通道结束前：把认到的图标�
     memcpy(&S, &save, sizeof S); args_dirty_all(); R.sc = sc; R.has_sc = has_sc; g_pso_dirty = g_dss_dirty = 1; g_gh.busy = 0;
     for (int i = 0; i < g_gh.n; i++) free(g_gh.c[i].S_); g_gh.n = 0;
 }
+#include "nvn_metalfx.inc"
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
@@ -4652,6 +4663,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
         if (ng && pr) for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (sh && sh->stage == 1 && !strncmp(sh->key, neg, strlen(neg))) { static int once; if (!once++) MLOG("DM_NVN_RULER_NEG：被测模式丢弃着色器 %s 的绘制", sh->key); return; } }
     }
+    if (metalfx_draw(pr, dw, di)) return;
     if (zskip_can_draw(pr)) {   // 零源跳过：输出恒为 0、写 0 盖 0，这次绘制不改变任何结果（见 zskip_can_draw） | Zero-source skip: the output is always 0, writing 0 over 0, so this draw changes no result (see zskip_can_draw)
         g_zskip_count++; { static int once; if (!once++) MLOG("零源跳过：首例 通道 %llu", g_stat_pass + 1); }
         PD("N %llu 零源跳过", g_stat_pass + 1); return; }
@@ -4792,12 +4804,34 @@ frz_plain:;
     long vo = 0, so = 0; double vs = 1, moff = 0;
     if (g_ui_rect_fn && dw && dw->count == 4 && S.nattr == 2 && S.stream[0].stride == 20) { double uy = 0, uh = 1; g_ui_rect_fn(&uy, &uh);
         if (uh > 0 && uh < 1) { if (ui_cover_all(uh)) vs = 1 / uh; else if (uy > 0) { so = lround(uy * th); if (ui_mat_ok()) moff = 2 * uy; else { vo = so; static int n; if (n++ < 4) MLOG("界面下移：投影矩阵这次读不到，退回挪视口（通道 %llu）", g_stat_pass); } } } }
+    // Keep AutoMap's CPU rect positive (its native renderer clips negative Y to zero).
+    // Relocate only draws with the exact native minimap scissor; map batches may be indexed
+    // or contain more than four vertices, so do not apply the ordinary UI quad-count filter.
+    int map_move = 0;
+    if (g_ui_rect_fn && R.has_sc && dm_ui_minimap_render_rect && dm_screen_real) {
+        int mr[4], dy=0, rw=0, rh=0;
+        if (dm_ui_minimap_render_rect(mr, &dy) && dm_screen_real(&rw, &rh)) {
+            double vp[4] = {S.has_vp ? S.vp[0][0] : 0, S.has_vp ? S.vp[0][1] : 0,
+                            S.has_vp ? S.vp[0][2] : (double)tw, S.has_vp ? S.vp[0][3] : (double)th};
+            int clip[4] = {R.sc.x, R.sc.y, R.sc.w, R.sc.h}; long delta;
+            if (nvn_minimap_scissor_shift(mr, rw, rh, vp, clip, dy, &delta)) {
+                double uy=0, uh=1; g_ui_rect_fn(&uy, &uh);
+                if (uh > 0 && uh < 1) {
+                    so = lround(uy * th) + delta; vs = 1; map_move = 1;
+                    if (ui_mat_ok()) { moff = 2.0 * so / vp[3]; vo = 0; }
+                    else { vo = so; moff = 0; }
+                    static int lg; if (lg++ < 6) MLOG("小地图绘制上移：原剪裁 %d,%d %dx%d，额外 %ld px，总移位 %ld px，矩阵 %d", clip[0],clip[1],clip[2],clip[3],delta,so,moff != 0);
+                }
+            }
+        }
+    }
     if (moff != g_ui_moff) { g_ui_moff = moff; g_args_dirty[0] = 1; }
     { MTLViewport v = S.has_vp ? (MTLViewport){S.vp[0][0], S.vp[0][1] + vo, S.vp[0][2], S.vp[0][3] * vs, S.dr[0], S.dr[1]} : (MTLViewport){0, vo, tw, th * vs, 0, 1};
       FX_SET(0, !memcmp(&g_enc_fx.vp, &v, sizeof v), g_enc_fx.vp = v, enc_r_viewport(en, v)); }
     MTLScissorRect sc = {0, 0, tw, th};
     if (R.has_sc) {
-        long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y <= 0 ? 0 : R.sc.y + so, x1 = (long)R.sc.x + R.sc.w, y1 = vs != 1 ? (long)th : (long)R.sc.y + R.sc.h + so;
+        long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = !map_move && R.sc.y <= 0 ? 0 : R.sc.y + so, x1 = (long)R.sc.x + R.sc.w, y1 = vs != 1 ? (long)th : (long)R.sc.y + R.sc.h + so;
+        if (y0 < 0) y0 = 0;
         if (x1 > (long)tw) x1 = tw; if (y1 > (long)th) y1 = th;
         if (x1 <= x0 || y1 <= y0) return;
         sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
@@ -6091,10 +6125,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src0, id<MTLTe
     // when the ratio difference is < 1% (the remainder from the game width being a multiple of 8 in the full-screen setup, e.g. 1952x900 versus 2868x1320 differs by 0.17%) fill directly, leaving no few-pixel border
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    // Portrait phone output tolerates a small native-size mismatch without side bars.
-    double aspect_error = fabs((dw / dh) / ((double)cw / ch) - 1);
-    double fill_tolerance = cw < ch && dw < dh ? 0.03 : 0.01;
-    if (aspect_error < fill_tolerance) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     static double last_vp[4];   // 视口变化时记一行（真机屏幕级验收 screen_check.py 核宽高比用） | Log one line when the viewport changes (used by the real-device screen-level acceptance screen_check.py to check the aspect ratio)
     if (memcmp(last_vp, &vp, sizeof last_vp)) { memcpy(last_vp, &vp, sizeof last_vp);
@@ -6125,10 +6156,7 @@ static int present_encode_m4(CBUF cb, id<MTLTexture> src0, id<MTLTexture> dst, c
     present_pipeline(dst.pixelFormat);
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    // Portrait phone output tolerates a small native-size mismatch without side bars.
-    double aspect_error = fabs((dw / dh) / ((double)cw / ch) - 1);
-    double fill_tolerance = cw < ch && dw < dh ? 0.03 : 0.01;
-    if (aspect_error < fill_tolerance) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     RPD *rp = [RPD new];
     rp.colorAttachments[0].texture = dst;

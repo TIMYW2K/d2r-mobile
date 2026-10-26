@@ -32,7 +32,6 @@ void dm_uiscreen_enable(int m) { atomic_store(&g_mode, m < DM_UISCREEN_OFF || m 
 // 与横屏的 16:9 改写互斥：打开竖屏就跳过 16:9 压缩，出图分辨率也用屏幕原生值（前端 front_game_res 给）。
 // Portrait: the game UI keeps the 1950x2160 design ratio (width = screen width, height = even(width*2160/1950), 1206 wide -> 1336 high), and the UI rectangle is still bottom-aligned / centered.
 // Exclusive with the landscape 16:9 rewrite: portrait skips the 16:9 squeeze, and the render resolution uses the screen's native value (given by the front end's front_game_res).
-void dm_uiscreen_set_portrait(int on) { atomic_store(&g_portrait, on != 0); }
 int dm_uiscreen_portrait(void) { return atomic_load(&g_portrait); }
 // 局内 / 局外（前端各页是按 16:9 整页设计的——点击区、标题、3D 人物是一体——整页居中留边；真全屏只在局内开）。
 // 唯一信号：dm_uiscreen_ingame()。定义 = HUDPanel 在且读取画面（LoadScreenPanel）不在，即读取画面两头都归局外：进局时读取画面撤掉后的第一帧起才算局内，
@@ -76,41 +75,60 @@ static void ui_project_obs(const uint64_t *regs) {
     ((uint64_t *)(uintptr_t)regs)[0] = (uint64_t)(uintptr_t)cam;
 }
 int dm_ui_proj_dy(void) { return atomic_load(&g_proj_on) && atomic_load(&g_ingame) ? yoff() : 0; }
-// The signed static patch in patch_nso.py multiplies the game's per-frame orthographic extents by this live value.
-// 本地改动（用户要求镜头范围整体拉大 25%）：远景 = 原视野 ×1.25（1.25），近景 = 原视野（1.00），两档一起 ×1.25。
-// Local change (user asked for 25% more camera range): far = original extent x1.25 (1.25), close = original extent (1.00),
-// i.e. both stops are scaled by 1.25 from the previous 1.00 / 0.80.
+// The signed static patch multiplies orthographic extents by this stable KZOOM slot.
+// Landscape and portrait remember their own selection. Both near views use the original
+// extent; far views use 125% and 150% of the original range respectively.
 #define DM_ZOOM_MIN_EXTENT 1.00f
-#define DM_ZOOM_DEFAULT_EXTENT 1.25f
-static _Atomic uint32_t g_zoom_factor_bits = 0x3fa00000u; // float 1.25: 25% wider than the original camera view
+#define DM_ZOOM_LANDSCAPE_EXTENT 1.25f
+#define DM_ZOOM_PORTRAIT_EXTENT 1.50f
+static _Atomic uint32_t g_zoom_factor_bits = 0x3fa00000u; // stable live slot: float 1.25
+static uint32_t g_zoom_saved_bits[2] = {0x3fa00000u, 0x3fc00000u}; // landscape / portrait
+static atomic_flag g_zoom_lock = ATOMIC_FLAG_INIT;
 void dm_3d_scale_reset_level(void);
-int dm_custom_get(const char *key);
 
+static void zoom_lock(void) { while (atomic_flag_test_and_set_explicit(&g_zoom_lock, memory_order_acquire)) {} }
+static void zoom_unlock(void) { atomic_flag_clear_explicit(&g_zoom_lock, memory_order_release); }
+static float zoom_far(int portrait) { return portrait ? DM_ZOOM_PORTRAIT_EXTENT : DM_ZOOM_LANDSCAPE_EXTENT; }
+float dm_cam_zoom_near_extent(void) { return DM_ZOOM_MIN_EXTENT; }
+float dm_cam_zoom_far_extent(void) { return zoom_far(atomic_load(&g_portrait)); }
+
+void dm_uiscreen_set_portrait(int on) {
+    int portrait = on != 0;
+    zoom_lock();
+    int old_portrait = atomic_exchange(&g_portrait, portrait);
+    uint32_t bits = g_zoom_saved_bits[portrait];
+    uint32_t old = atomic_exchange(&g_zoom_factor_bits, bits);
+    zoom_unlock();
+    if (old != bits) dm_3d_scale_reset_level();
+    if (old_portrait != portrait) {
+        union { uint32_t u; float f; } value = { .u = bits };
+        LOG("镜头方向：%s，恢复独立视野 %.2f", portrait ? "竖屏" : "横屏", (double)value.f);
+    }
+}
 void dm_cam_zoom_set(float extent_scale) {
+    zoom_lock();
+    int portrait = atomic_load(&g_portrait);
+    float far = zoom_far(portrait);
     if (!(extent_scale >= DM_ZOOM_MIN_EXTENT)) extent_scale = DM_ZOOM_MIN_EXTENT;
-    if (extent_scale > DM_ZOOM_DEFAULT_EXTENT) extent_scale = DM_ZOOM_DEFAULT_EXTENT;
+    if (extent_scale > far) extent_scale = far;
     union { float f; uint32_t u; } bits = { .f = extent_scale };
+    g_zoom_saved_bits[portrait] = bits.u;
     uint32_t old = atomic_exchange(&g_zoom_factor_bits, bits.u);
+    zoom_unlock();
     if (old != bits.u) {
         union { uint32_t u; float f; } ob = { .u = old };
         dm_3d_scale_reset_level();
-        if (fabsf(ob.f - extent_scale) >= 0.05f || extent_scale == DM_ZOOM_MIN_EXTENT || extent_scale == DM_ZOOM_DEFAULT_EXTENT) {
-            LOG("镜头缩放：视野比例 %.2f → %.2f（画面放大 %.2fx）", (double)ob.f, (double)extent_scale, (double)(1.0f / extent_scale));
-        }
+        LOG("镜头缩放：%s 视野比例 %.2f → %.2f（画面放大 %.2fx）", portrait ? "竖屏" : "横屏",
+            (double)ob.f, (double)extent_scale, (double)(1.0f / extent_scale));
     }
 }
 float dm_cam_zoom_factor(void) {
-    // 本地改动：视野比例是一个独立的连续量（1.25 = 最远/初始，1.00 = 最近），只由双指缩放改变。
-    // 选项 zoom 只是「是否允许双指缩放」的开关，不再强行改这个值。
-    // Local change: the view extent is an independent continuous value (1.25 = widest/initial, 1.00 = closest),
-    // changed only by the pinch gesture. The zoom option merely allows or blocks the gesture and no longer forces
-    // the value.
+    // Read exactly the value used by KZOOM, rather than independently choosing a profile;
+    // world-touch conversion must see the same extent during orientation transitions.
     union { float f; uint32_t u; } bits = { .u = atomic_load(&g_zoom_factor_bits) };
-    float f = bits.f;
-    if (!(f >= DM_ZOOM_MIN_EXTENT && f <= DM_ZOOM_DEFAULT_EXTENT)) f = DM_ZOOM_DEFAULT_EXTENT;
-    return f;
+    return bits.f;
 }
-void dm_cam_zoom_reset(void) { dm_cam_zoom_set(DM_ZOOM_DEFAULT_EXTENT); }
+void dm_cam_zoom_reset(void) { dm_cam_zoom_set(dm_cam_zoom_far_extent()); }
 void *dm_cam_zoom_factor_slot(void) { return (void *)&g_zoom_factor_bits; }
 float dm_cam_zoom_ratio(void) { return 1.0f / dm_cam_zoom_factor(); }
 // 游戏的出图分辨率（主机 / 掌机档各一个参数位，见 thread.c 与 hle_oe.c）：真全屏打开时按「玩家单位在不在」给值——不在（前端各页）= 屏宽的 16:9，

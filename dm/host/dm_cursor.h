@@ -69,6 +69,7 @@ int dm_ui_targeting(void);                       // 此刻是否处在那个状�
 int dm_ui_panel_resident(const char *name);   // 局内常驻层（HUD 各层、佣兵头像栏、存盘指示、提示条…）：开着不算「有面板开着」 | In-run always-on layers (the HUD layers, mercenary portrait bar, save indicator, button legend...): being open does not count as 'a panel is open'
 enum { DM_PS_BANK = 1, DM_PS_VENDOR = 2, DM_PS_DEAD = 4, DM_PS_TEXT = 8, DM_PS_IMBUE = 16, DM_PS_CUBE = 32, DM_PS_VAULT = 64 };   // VAULT = 储藏箱开在第六页「编年史」（dm_vault_ui.c）   // CUBE = 赫拉迪克方块页开着（HoradricCubeLayout）   // IMBUE = 单件任务槽面板开着（灌魔 / 打孔 / 个性化 / 古墓底座共用的 ImbueItemsPanel） | VAULT = the stash is open on the sixth page 「编年史」(Chronicle) (dm_vault_ui.c)   // CUBE = the Horadric Cube page is open (HoradricCubeLayout)   // IMBUE = the single-item task slot panel is open (ImbueItemsPanel, shared by imbue / socketing / personalize / tomb pedestal)
 int dm_ui_panel_state(void);
+int dm_ui_modal_active(uint64_t root);
 void dm_ui_lifecycle(int background);   /* 前端进 / 出后台时调：位置守卫自检（dm_cursor.c mv_audit） | Called when the front end enters / leaves the background: position guard self-check (dm_cursor.c mv_audit) */   // 面板状态位（每帧读游戏面板树发布；变化时发合成界面消息 DM:PanelState） | Panel state bits (published by reading the game's panel tree every frame; on change the synthetic UI message DM:PanelState is sent)
 int dm_ui_panel_shown(const char *name);   // 这个面板此刻在游戏面板树里可见（游戏主线程调） | This panel is visible in the game's panel tree right now (called from the game main thread)
 int dm_ui_tap_box(void);   // 最近一次单击的物品是不是魔盒 | Whether the most recently single-tapped item is the Horadric Cube
@@ -108,11 +109,14 @@ void dm_ui_bind_begin(uint64_t key_mask);
 int dm_ui_bind_slot(void);   /* 绑定目标位 1..8（F1–F8），不在绑定态 0 | Binding target slot 1..8 (F1–F8), 0 when not in the binding state */
 void dm_ui_safe_left(int units);    /* 左安全区，布局单位（2160 高）；左上角佣兵 / 队友头像栏按它内移 | Left safe area, in layout units (2160 high); the mercenary / party member portrait bar in the top-left corner is moved inward by it */
 void dm_ui_safe_right(int units);   /* 右安全区，布局单位（2160 高）；右上角小地图与信息栏按它内移 | Right safe area, in layout units (2160 high); the minimap and info bar in the top-right corner are moved inward by it */
+void dm_ui_set_band_height_pt(float height); // UIKit UI-band points for host point-based placement
+int dm_ui_minimap_render_rect(int rect[4], int *dy); // native UI-pixel scissor plus presentation-only Y delta
 void dm_ui_safe_top(int units);     /* 顶部安全区，布局单位（2160 高）：竖屏贴顶上提只提到灵动岛之下 | Top safe area, in layout units (2160 high): in portrait the top lift stops below the Dynamic Island */
 uint32_t dm_ui_hit_id(void);   /* 最近一次命中的加点类按钮：属性「+」1..4（力量 / 敏捷 / 体力 / 精力），技能图标 = 最高位置 1 的标识；没命中 0 | The most recently hit point-spending button: attribute '+' 1..4 (strength / dexterity / vitality / energy), skill icon = an identifier with the top bit set to 1; 0 if nothing was hit */
 int dm_ui_bind_active(void); uint64_t dm_ui_auto_release(void);   /* 取手柄处用：此刻要从玩家输入里松开的键 | Used where the controller is read: the keys to release from the player's input right now */ int dm_ui_bind_skill_hit(float *nx, float *ny);   /* 最近一次命中（吸附后）落在加点类按钮上：1 = 技能树的技能图标，2 = 属性页的「+」；带归一化坐标 | The most recent hit (after snapping) landed on a point-spending button: 1 = a skill icon in the skill tree, 2 = a '+' on the attributes page; comes with normalized coordinates */
 void dm_ui_bind_cancel(void);
 void dm_ui_map_full(int on);
+void dm_ui_map_hold(int on);
 int dm_ui_map_is_full(void);
 void dm_ui_text_entered(const char *text);   // 系统键盘返回时调：text = 写回给游戏的最终文本（UTF-8）；取消 / 空串传 NULL | Called when the system keyboard returns: text = final text written back to the game (UTF-8); pass NULL for cancel / empty string
 // 延迟读数（诊断，DM_LAT_LOG=1）：关键时刻打一行「LAT <毫秒时刻> <事件>」，量手指落下 / 松手到游戏生效的延迟

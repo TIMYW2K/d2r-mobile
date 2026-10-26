@@ -14,10 +14,11 @@ import os, shlex, subprocess, sys
 host, gen = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
 cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost'], capture_output=True, text=True, check=True).stdout
 toks = shlex.split(next(l for l in cmd.splitlines() if l.lstrip().startswith('clang')))
-srcs, incs, defs, fws = [], [], [], []
+srcs, incs, defs, fws, weak_fws = [], [], [], [], []
 i = 0
 while i < len(toks):
     t = toks[i]
+    if t == '-weak_framework': weak_fws.append(toks[i + 1]); i += 2; continue
     if t == '-framework': fws.append(toks[i + 1]); i += 2; continue
     if t.startswith('-I'): incs.append(os.path.normpath(os.path.join(host, t[2:])))
     elif t.startswith('-D'): defs.append(t)
@@ -39,4 +40,4 @@ for s in srcs:
     os.symlink(s, f'{gen}/src/{flat}')
 print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
 print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
-print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa'))
+print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa') + ' ' + ' '.join(f'-weak_framework {f}' for f in weak_fws))

@@ -7,11 +7,19 @@ B = build
 # 依赖一行一个、按字母序（同 ../Makefile 的 SRC：免得加一个测试就整行冲突）；下面各条命令的先后不变
 # Dependencies one per line in alphabetical order (same as SRC in ../Makefile: so that adding one test does not conflict on the whole line); the order of the commands below is unchanged
 run: \
+	$(B)/t_metalfx_auto \
+	$(B)/t_metalfx_quality \
+	$(B)/t_map_intent \
+	$(B)/t_notice_geometry \
+	$(B)/t_notice_widgets \
+	$(B)/t_notice_dispatch \
+	$(B)/t_pouch_notice \
 	$(B)/main.orig.bin \
 	$(B)/subsdk0.orig.bin \
 	$(B)/t_altstack \
 	$(B)/t_audio \
 	$(B)/t_audio_spsc \
+	$(B)/t_cam_zoom \
 	$(B)/t_cloudsync \
 	$(B)/t_condvar \
 	$(B)/t_condvar_old \
@@ -23,12 +31,15 @@ run: \
 	$(B)/t_hud_dead \
 	$(B)/t_i18n \
 	$(B)/t_minimap_lift \
+	$(B)/t_minimap_policy \
+	$(B)/t_minimap_shift \
 	$(B)/t_loader_weak \
 	$(B)/t_modetx \
 	$(B)/t_movie \
 	$(B)/t_namegen \
 	$(B)/t_oe \
 	$(B)/t_padmap \
+	$(B)/t_portrait_hud \
 	$(B)/t_rift_clock \
 	$(B)/t_rift_next \
 	$(B)/t_rift_oldrun \
@@ -80,7 +91,18 @@ run: \
 	$(B)/t_target_rank 2>/dev/null
 	$(B)/t_hud_dead
 	$(B)/t_namegen
+	$(B)/t_metalfx_auto
+	$(B)/t_metalfx_quality
+	$(B)/t_map_intent
+	$(B)/t_notice_geometry
+	$(B)/t_notice_widgets
+	$(B)/t_notice_dispatch
+	$(B)/t_pouch_notice
+	$(B)/t_cam_zoom
 	$(B)/t_minimap_lift
+	$(B)/t_portrait_hud
+	$(B)/t_minimap_policy
+	$(B)/t_minimap_shift
 	$(B)/t_modetx
 	$(B)/t_padmap
 	$(B)/t_unit_level
@@ -106,8 +128,16 @@ $(B)/t_unit_level: t_unit_level.c ../dm_unit.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_unit_level.c
 $(B)/t_padmap: t_padmap.c ../dm_padmap.h ../dm_input.h | $(B)
 	clang -O1 -Wall -Werror -o $@ t_padmap.c
+$(B)/t_cam_zoom: t_cam_zoom.c ../dm_uiscreen.c ../dm_uiscreen.h ../dm.h ../hle.h | $(B)
+	clang -std=c11 -O1 -Wall -Werror -I.. -o $@ t_cam_zoom.c ../dm_uiscreen.c -lm
+$(B)/t_minimap_policy: t_minimap_policy.c ../dm_minimap_policy.h | $(B)
+	clang -std=c11 -O1 -Wall -Werror -o $@ t_minimap_policy.c
+$(B)/t_minimap_shift: ../../gfx/tests/test_minimap_shift.c ../../gfx/nvn/nvn_minimap_shift.h | $(B)
+	clang -std=c11 -O1 -Wall -Werror -o $@ ../../gfx/tests/test_minimap_shift.c -lm
 $(B)/t_minimap_lift: t_minimap_lift.c ../dm_cursor.c ../dm_cursor.h | $(B)
 	clang -O1 -Wall -Werror -Wno-unused-function -I.. -Wl,-dead_strip -o $@ t_minimap_lift.c
+$(B)/t_portrait_hud: t_portrait_hud.c ../dm_cursor.c ../dm_cursor.h | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function -I.. -Wl,-dead_strip -o $@ t_portrait_hud.c
 $(B)/t_modetx: t_modetx.c ../dm_modetx.h | $(B)
 	clang -O1 -Wall -Werror -o $@ t_modetx.c
 $(B)/t_namegen: t_namegen.c ../dm_namegen.c | $(B)
@@ -181,3 +211,29 @@ $(B)/t_warp_diag: t_warp_diag.c ../dm_rift.c ../dm_unit.h | $(B)
 
 $(B)/t_loader_weak: t_loader_weak.c ../loader.c ../hle.c ../dm.h ../hle.h | $(B)
 	clang -O1 -Wno-deprecated-declarations -I.. -Wl,-dead_strip -o $@ t_loader_weak.c ../hle.c
+
+$(B)/t_metalfx_auto: t_metalfx_auto.c $(wildcard ../*.h ../*.c ../../gfx/nvn/*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_metalfx_auto.c -lm
+
+$(B)/t_metalfx_quality: t_metalfx_quality.c $(wildcard ../*.h ../*.c ../../gfx/nvn/*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_metalfx_quality.c -lm
+
+$(B)/t_map_intent: t_map_intent.c $(wildcard ../*.h ../*.c ../../gfx/nvn/*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_map_intent.c -lm
+
+$(B)/t_notice_geometry: t_notice_geometry.c $(wildcard ../*.h ../*.c ../../gfx/nvn/*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_notice_geometry.c -lm
+
+$(B)/t_notice_widgets: t_notice_widgets.c $(wildcard ../*.h ../*.c ../../gfx/nvn/*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_notice_widgets.c -lm
+
+$(B)/t_notice_dispatch: t_notice_dispatch.c $(wildcard ../*.h ../*.c ../../gfx/nvn/*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_notice_dispatch.c -lm
+
+$(B)/t_pouch_notice: t_pouch_notice.c $(wildcard ../*.h ../*.c ../../gfx/nvn/*.h) | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_pouch_notice.c -lm
+
+.PHONY: diagnostic-regression
+diagnostic-regression: | $(B)
+	clang -fobjc-arc -framework Foundation -o $(B)/t_diagnostic_scrub ../../ios/tests/t_diagnostic_scrub.m
+	$(B)/t_diagnostic_scrub

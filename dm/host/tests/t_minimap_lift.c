@@ -8,6 +8,7 @@ uint64_t dm_guest_frame(void) { return frame; }
 uint64_t now_ns(void) { return frame*16666667; }
 int dm_padmode_busy(void) { return busy; }
 int dm_uiscreen_ingame(void) { return ingame; }
+int dm_uiscreen_portrait(void) { return 0; }
 void dm_ui_rect(int *x,int *y,int *w,int *h) { *x=0; *y=uy; *w=2360; *h=1326; }
 void dm_uiscreen_set_ingame(int on) { ingame=on; }
 void dm_custom_on_uimsg(const char *cat,const char *act,const char *arg) { (void)cat; (void)act; (void)arg; }
@@ -28,7 +29,9 @@ int main(void) {
  unsigned char *base=calloc(1,0x2f05460); if(!base)return 2;
  g_nmod=1; strcpy(g_mod[0].name,"main"); g_mod[0].base=base;
  *(uint64_t *)(base+0x2f05458)=ptr(root); *(uint64_t *)(root+0x58)=ptr(children); *(uint64_t *)(root+0x60)=1;
- widget(maps[0],"AutoMap",78); children[0]=ptr(maps[0]); tick(); CHECK(*y(maps[0])==-433);
+ // AutoMap's CPU clip must remain positive; its presentation shift has one separate owner.
+ widget(maps[0],"AutoMap",78); children[0]=ptr(maps[0]); tick(); CHECK(*y(maps[0])==78 && g_nmv==0);
+ widget(maps[0],"HUDMonsterHealth",78); children[0]=ptr(maps[0]); tick(); CHECK(*y(maps[0])==-433);
  // 模式退出先写回原位；原版随后重建两遍，第二遍可能继承第一遍的坐标。
  // Mode leave restores the old layout. The native transaction then rebuilds it twice.
  // Its second pass may carry the first pass's geometry into the replacement widget.
@@ -53,7 +56,7 @@ int main(void) {
  // 清理销毁控件后，新条目的下标必须指向压缩后的实际槽位。
  // Pruning a destroyed widget must not leave the insertion index pointing past the new entry.
  // Pruning a destroyed widget must not leave the insertion index pointing past the new entry.
- g_nmv=0; widget(maps[0],"AutoMap",78); children[0]=ptr(maps[0]); tick();
+ g_nmv=0; widget(maps[0],"HUDMonsterHealth",78); children[0]=ptr(maps[0]); tick();
  widget(extra,"HUDWarnings",12); children[0]=ptr(extra); tick(); CHECK(*y(extra)==12); tick(); CHECK(*y(extra)==-499);
  tick(); CHECK(*y(extra)==-499); CHECK(g_nmv==1 && g_mv[0].val==-499);
  mv_restore(ptr(root),MV_LIFT); CHECK(*y(extra)==12);
@@ -69,7 +72,7 @@ int main(void) {
  // Use the real loading-message entry: lift/restore immediately after a rebuild; ordinary polling still settles and mode transactions still forbid writes.
  // Use the real loading-message entry: lift/restore immediately after a rebuild; ordinary polling still settles and mode transactions still forbid writes.
  g_nmv=0; ingame=0; uy=314; busy=0;
- widget(maps[0],"AutoMap",78); widget(hud,"HUDPanel",0); *(int32_t *)(hud+0x84)=0;
+ widget(maps[0],"HUDMonsterHealth",78); widget(hud,"HUDPanel",0); *(int32_t *)(hud+0x84)=0;
  children[0]=ptr(maps[0]); children[1]=ptr(hud); *(uint64_t *)(root+0x60)=2;
  frame+=6; (void)dm_ui_gen(); dm_ui_gen_bump(DM_UIGEN_PERFMODE);
  ui_lift_pump(ptr(root),frame); CHECK(*y(maps[0])==78);
@@ -88,14 +91,14 @@ int main(void) {
  // Call the production move guard directly, independently of lift settling, to cover full/partial pruning and capacity boundaries.
  // Call the production move guard directly, independently of lift settling, to cover full/partial pruning and capacity boundaries.
  ingame=1; g_nmv=0; *(uint64_t *)(root+0x60)=1;
- widget(old[0],"AutoMap",78); children[0]=ptr(old[0]); mv_offset(MV_LIFT,ptr(old[0]),1,-511,0);
- widget(incoming,"AutoMap",12); children[0]=ptr(incoming); mv_offset(MV_LIFT,ptr(incoming),1,-511,0);
+ widget(old[0],"HUDMonsterHealth",78); children[0]=ptr(old[0]); mv_offset(MV_LIFT,ptr(old[0]),1,-511,0);
+ widget(incoming,"HUDMonsterHealth",12); children[0]=ptr(incoming); mv_offset(MV_LIFT,ptr(incoming),1,-511,0);
  CHECK(g_nmv==1 && g_mv[0].orig==12 && g_mv[0].val==-499);
  mv_offset(MV_LIFT,ptr(incoming),1,-511,0); CHECK(*y(incoming)==-499);
  mv_restore(ptr(root),MV_LIFT); CHECK(*y(incoming)==12 && g_nmv==0);
 
  *(uint64_t *)(root+0x60)=3;
- for(int i=0;i<3;i++) { widget(old[i],"AutoMap",100+i); children[i]=ptr(old[i]); }
+ for(int i=0;i<3;i++) { widget(old[i],"HUDMonsterHealth",100+i); children[i]=ptr(old[i]); }
  for(int i=0;i<3;i++) mv_offset(MV_LIFT,ptr(old[i]),1,-511,0);
  widget(incoming,"HUDWarnings",12); children[1]=ptr(incoming); mv_offset(MV_LIFT,ptr(incoming),1,-511,0);
  CHECK(g_nmv==3 && g_mv[2].r.w==ptr(incoming) && g_mv[2].val==-499);
@@ -104,7 +107,7 @@ int main(void) {
  mv_restore(ptr(root),MV_LIFT); CHECK(*y(old[0])==100 && *y(old[2])==102 && *y(incoming)==12 && g_nmv==0);
 
  *(uint64_t *)(root+0x60)=96;
- for(int i=0;i<96;i++) { widget(old[i],"AutoMap",100+i); children[i]=ptr(old[i]); }
+ for(int i=0;i<96;i++) { widget(old[i],"HUDMonsterHealth",100+i); children[i]=ptr(old[i]); }
  for(int i=0;i<96;i++) mv_offset(MV_LIFT,ptr(old[i]),1,-511,0);
  CHECK(g_nmv==96);
  // 96 条都活着：新控件不应写入，也不能越过容量上限。

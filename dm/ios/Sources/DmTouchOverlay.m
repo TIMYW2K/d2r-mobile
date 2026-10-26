@@ -200,6 +200,9 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     // Portrait: the bar sits on the bottom edge of the UI rectangle (the band the game lays the UI out in); u / oy follow the band. In landscape the band is the whole view, so u / oy are unchanged
     CGRect band=front_ios_ui_band(self);
     CGFloat W=self.bounds.size.width, u=band.size.height/1320.0, oy=band.origin.y;
+    BOOL portraitBar = band.size.height < self.bounds.size.height - 0.5;
+    CGContextSaveGState(c);
+    if (portraitBar) CGContextTranslateCTM(c, DM_TC_PORTRAIT_HUD_DX_PT, 0);
     CGFloat (^X)(CGFloat)=^(CGFloat px){ return (px-1434)*u+W/2; };
     // 底栏静态美术：效果图原生分辨率直接贴（不经游戏 1568×720 渲染再放大）；腰带格内挖空透出游戏画的药水、球心挖空透出球液
     // Bottom bar static art: blit the mockup directly at native resolution (not rendered by the game at 1568×720 and then upscaled); the belt cells are cut out to show the potions drawn by the game, and the orb centers are cut out to show the orb liquid
@@ -210,9 +213,15 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     { NSArray *s6=ui[@"slots"][5]; BOOL held=s && (s->buttons & DM_BTN_PLUS), alert=h.points>0 || h.quest_unread;
       UIImage *btn=v4img(alert?(held?@"lvl_1.png":@"lvl_0.png"):(held?@"lvl_d1.png":@"lvl_d0.png")); CGRect r=CGRectMake(X([s6[0] doubleValue]),[s6[1] doubleValue]*u+oy,([s6[2] doubleValue]-[s6[0] doubleValue])*u,([s6[3] doubleValue]-[s6[1] doubleValue])*u);
       if (s && dm_tc_pal_button(&s->layout, NULL, NULL, NULL)) {
-          // Replace only the portrait menu cell; its metal frame remains part of the bar.
+          // Reuse the potion-slot art so the Pal cell keeps the same full outline and dark backing.
+          UIImage *slot = v4img(@"slot.png");
+          if (slot) [slot drawInRect:r];
           UIImage *palIcon = [UIImage imageNamed:@"d2_pal"];
-          if (palIcon) [palIcon drawInRect:CGRectInset(r, 9*u, 9*u)];
+          NSArray *inner = ui[@"inner"];
+          CGFloat ix0=[inner[0] doubleValue], iy0=[inner[1] doubleValue];
+          CGFloat ix1=[inner[2] doubleValue]+1, iy1=[inner[3] doubleValue]+1;
+          CGRect iconRect=CGRectMake(r.origin.x+ix0*u,r.origin.y+iy0*u,(ix1-ix0)*u,(iy1-iy0)*u);
+          if (palIcon) [palIcon drawInRect:CGRectInset(iconRect, 2*u, 2*u)];
       } else {
           if(h.points>0) { CGContextSaveGState(c); CGContextSetShadowWithColor(c,CGSizeZero,10*u,[UIColor colorWithRed:1 green:.82 blue:.35 alpha:.95].CGColor); [btn drawInRect:r]; CGContextRestoreGState(c); }
           if(btn) [btn drawInRect:r];
@@ -253,18 +262,12 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             digit(i+1,cx,cy,a);
         }
     }
+    CGContextRestoreGState(c);
 }
 - (void)drawRect:(CGRect)rect {
     (void)rect;
     CGContextRef c = UIGraphicsGetCurrentContext();
-    // 本地改动：洋红细线遮边 —— 屏幕最外侧画 2pt 黑边，盖住 drawable 与绘制区域差的 1~2pt（清屏色露出）。
-    // Local change: paint a 2pt black edge over the outermost pixels to hide the 1-2 pt clear-colour sliver.
-    { CGContextSetFillColorWithColor(c, [UIColor blackColor].CGColor);
-      CGRect bb = self.bounds;
-      CGContextFillRect(c, CGRectMake(bb.size.width - 2, 0, 2, bb.size.height));
-      CGContextFillRect(c, CGRectMake(0, 0, 2, bb.size.height));
-      CGContextFillRect(c, CGRectMake(0, 0, bb.size.width, 1));
-      CGContextFillRect(c, CGRectMake(0, bb.size.height - 1, bb.size.width, 1)); }
+    // Draw to the actual window edge. The former 2pt black overlay was itself the long-edge border.
     // 本地改动（T38）：左侧回城键改成「灵动岛壳体的完整胶囊按钮」——之前只画 5 点金属环再把内胶囊挖空（内路径反向），
     // 看上去就是被切掉一大块的椭圆空轮廓；用户要的是完整胶囊按钮。按用户给的 SwiftUI 参数：内胶囊 125×36、圆角 18，
     // 金属环 5 点、外沿 135×46、圆角 23；内胶囊用与圆钮同款的深色面板（dm_button_draw 的 well 渐变）填满，外圈才是
@@ -285,7 +288,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
             if (CGRectGetMidX(ir) > self.bounds.size.width * 0.5) dx = -dx;   // 岛在右：镜像向内 | right-side island: mirror inward
             if (self.bounds.size.height > self.bounds.size.width) {
                 CGFloat pixel = 1.0 / MAX(1.0, self.window.screen.scale);
-                dx -= 2 * pixel; dy += 2 * pixel;
+                dx -= 2 * pixel + 2.0; dy += 2 * pixel + 2.0;
             }
             CGRect inner = CGRectOffset(ir, dx, dy);                    // 内胶囊（125×36 竖/横，视方向） | inner capsule (125x36, orientation-dependent)
             CGRect outer = CGRectInset(inner, -ring, -ring);            // 外沿 135×46 | outer 135x46

@@ -142,6 +142,8 @@ int front_ios_portrait(void) { return g_portrait; }
 // briefly 0) must keep portrait allowed, or the system would rotate it back to landscape.
 int front_ios_ingame_autorotate(void) { return g_portrait || dm_uiscreen_ingame(); }
 static void dm_orient_apply(int p);
+static void dm_orientation_reconcile(const char *why);
+static unsigned g_orientation_resume_epoch;
 void front_ios_set_launch_bounds(CGRect b, UIInterfaceOrientation o) {
     // 整体先横屏启动：前端页面 / 读取画面完全沿用横屏布局，竖屏只在局内由用户转屏进入。
     // Launch landscape as a whole: front-end pages / loading screens keep the landscape layout; portrait is only entered in a run when the user rotates.
@@ -290,14 +292,20 @@ static UIInterfaceOrientation dm_scene_orientation(UIView *v) {
     // (the old value is gone and the new one is not in effect yet). While the view is landscape-sized, reuse the last
     // landscape orientation, so the capsule never jumps to the portrait position (which looks like it vanished).
     static UIInterfaceOrientation lastLandscape = UIInterfaceOrientationUnknown;
-    if (UIInterfaceOrientationIsLandscape(o)) { lastLandscape = o; return o; }
+    if (UIInterfaceOrientationIsLandscape(o)) lastLandscape = o;
     // 本地改动（构建 8.1）：判断「窗口还是横的」必须看窗口尺寸，不能看游戏视图。留边时游戏视图是 402×184 的横条，
     // 窗口已经转成竖屏 402×874 之后它仍然宽>高，方向会被一直误读成横屏（7.1 真机 g_portrait 始终为 0 的根因）。
     // Local change (build 7.2): "the window is still landscape" must look at the window size, not the game view. When
     // letterboxed, the game view is a 402x184 strip and stays wider than tall after the window has rotated to portrait
     // 402x874, so the orientation was read as landscape forever (the root cause of g_portrait staying 0 in build 7.1).
     CGSize wz = v.window ? v.window.bounds.size : v.bounds.size;
-    if (wz.width > wz.height && lastLandscape != UIInterfaceOrientationUnknown) return lastLandscape;
+    if (wz.width > wz.height) {
+        if (UIInterfaceOrientationIsLandscape(o)) return o;
+        if (lastLandscape != UIInterfaceOrientationUnknown) return lastLandscape;
+    } else if (wz.height > wz.width && UIInterfaceOrientationIsLandscape(o)) {
+        // After suspension effectiveGeometry can retain the old landscape value for a few ticks.
+        return UIInterfaceOrientationPortrait;
+    }
     return o;
 }
 static BOOL dm_island_on_right(UIView *v) {
@@ -430,6 +438,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     // 界面带（竖屏贴底 / 面板居中那一块）：变了就按新带重排技能扇区与底栏；横屏就是整视图，行为不变
     // UI band (the bottom-anchored block in portrait / centered with a panel): when it changes, re-lay out the skill fan and bottom bar for the new band; in landscape it is the whole view, behaviour unchanged
     CGRect band=ui_rect_view(self);
+    if (band.size.height > 0) dm_ui_set_band_height_pt((float)band.size.height);
     static CGRect lastBand; static BOOL bandSet;
     BOOL bandChanged=!bandSet || !CGRectEqualToRect(band,lastBand);
     dm_tc_set_safe_top((float)si.top);
@@ -469,7 +478,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     dm_tc_enable_targets(&_controls,mask); _overlay.navigationMode=n!=0; [self pushFrom:"navigation" phase:"none"];
     if(!n && !getenv("DM_TOUCH_SCRIPT_START")) touch_script_start();
     if(!n) [self itemLabelsOn];
-    if(n && dm_ui_map_is_full()) { dm_ui_map_full(0); LOG("前端：开了面板，全屏地图先收回小地图"); }   // 全屏地图的面板盖满整屏，会挡在别的面板前面；全屏地图只属于游戏态 | The fullscreen map's panel covers the whole screen and would block other panels; the fullscreen map belongs to game mode only
+    dm_ui_map_hold(n);   // Temporarily yield to panels while preserving the player's full-map choice.
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer == _pinch) {
@@ -519,14 +528,9 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 }
 - (void)handlePinch:(UIPinchGestureRecognizer *)pinch {
     if (_feMode || _navigation) { _pinching = NO; return; }
-    // 本地改动：双指缩放只有两个镜头大小，没有中间过渡 ——
-    //   两指分开（scale > 1）= 放大到近景（视野 1.00）；两指捏合（scale < 1）= 回到远景（视野 1.25）。
-    //   两档都在原视野上 ×1.25（用户要求镜头范围拉大 25%）。
-    //   拖动过程中不改视野，松手才切换一次，所以不会有"半拉近"的过渡比例。
-    // Local change: exactly two camera levels, no intermediate ratios. Spreading the fingers switches to the close
-    // view (extent 1.00); pinching them together switches back to the far view (extent 1.25). Both stops are 1.25x
-    // the original view range (the user asked for 25% more). Nothing changes while the fingers move -- the switch
-    // happens once, on release.
+    // The two stops belong to the current orientation. Landscape and portrait keep independent selections;
+    // spreading selects near, pinching selects far, and the switch still happens only on release.
+    float nearExtent = dm_cam_zoom_near_extent(), farExtent = dm_cam_zoom_far_extent();
     if (!dm_custom_get("zoom")) {
         if (_pinching) { _pinching = NO; LOG("前端：双指缩放被选项关闭，本次手势忽略"); }
         return;
@@ -535,8 +539,8 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
         _pinchStartExtent = (CGFloat)dm_cam_zoom_factor();
         _pinching = YES;
         [self cancelControlsFrom:"pinch_began"];
-        LOG("前端：双指缩放开始（当前视野 %.2f，松手后切到%s）", (double)_pinchStartExtent,
-            _pinchStartExtent > 1.12 ? "近景 1.00" : "远景 1.25");
+        LOG("前端：双指缩放开始（当前视野 %.2f，当前方向近景 %.2f / 远景 %.2f）", (double)_pinchStartExtent,
+            (double)nearExtent, (double)farExtent);
     } else if (pinch.state == UIGestureRecognizerStateEnded ||
                pinch.state == UIGestureRecognizerStateCancelled ||
                pinch.state == UIGestureRecognizerStateFailed) {
@@ -544,8 +548,8 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
         if (pinch.state != UIGestureRecognizerStateEnded) return;      // 被打断就不切
         float cur = dm_cam_zoom_factor();
         float target = cur;
-        if (pinch.scale > 1.02) target = 1.00f;                        // 分开 ⇒ 近景
-        else if (pinch.scale < 0.98) target = 1.25f;                   // 捏合 ⇒ 远景
+        if (pinch.scale > 1.02) target = nearExtent;                        // 分开 ⇒ 近景
+        else if (pinch.scale < 0.98) target = farExtent;                   // 捏合 ⇒ 远景
         if (target != cur) {
             dm_cam_zoom_set(target);
             LOG("前端：双指缩放 → 视野 %.2f（画面放大 %.2fx，两档之一）", (double)target, (double)(1.0f / target));
@@ -802,7 +806,9 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     // portrait is allowed only in a run; the exit signal is FrontEndNavigation:ToFrontEnd, the in-run loading screen must
     // not count as an exit (dm_uiscreen_ingame is briefly 0, judging by it would snap back to landscape on every map change).
     { static UIInterfaceOrientation lastO = UIInterfaceOrientationUnknown; UIInterfaceOrientation o = dm_scene_orientation(self);
-      static int lastIngame = -1; int ingame = dm_uiscreen_ingame(); BOOL maskDirty = NO;
+      static int lastIngame = -1; int ingame = dm_uiscreen_ingame();
+      static unsigned seenResume; BOOL maskDirty = seenResume != g_orientation_resume_epoch;
+      seenResume = g_orientation_resume_epoch;
       // 本地改动（构建 8.1）：方向判定每拍都做，不只看「变化那一拍」——读取画面期间转成竖屏（那时
       // dm_uiscreen_ingame 还是 0）不会错过，进局第一拍补切；转屏途中读到 Unknown 不更新 lastO，
       // 免得下一次真方向被当成没变化。
@@ -1438,6 +1444,7 @@ UIView *front_ios_view(CGRect frame) {
     [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceOrientationDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
         (void)n; DmMetalView *tv = g_touch_view; if (tv) [tv rotationChanged:"device"];
+        dm_orientation_reconcile("device");
     }];
     g_rate_link = [CADisplayLink displayLinkWithTarget:[DmRateHint new] selector:@selector(tick:)];
     g_rate_link.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
@@ -1742,6 +1749,26 @@ static void resign_save(void) {
     if (dm_request_save()) { last = now; LOG("前端：失活，请游戏下一拍存一次盘（不等）"); }
 }
 // 场景生命周期（main.m 的 SceneDelegate 调）：0 失活 1 进后台 2 回前台 3 激活
+// UIKit may cache the pre-background supported mask/scene orientation even though the game stayed in a run.
+// Refresh that policy and request the current physical posture only after the scene is active.
+static void dm_orientation_reconcile(const char *why) {
+    DmMetalView *v = g_touch_view; UIWindow *window = v.window; UIWindowScene *ws = window.windowScene;
+    if (!v || !ws || ws.activationState != UISceneActivationStateForegroundActive) return;
+    ++g_orientation_resume_epoch;
+    UIViewController *root = window.rootViewController;
+    for (UIViewController *vc = root; vc; vc = vc.presentedViewController) [vc setNeedsUpdateOfSupportedInterfaceOrientations];
+    UIInterfaceOrientationMask mask = 0;
+    switch (UIDevice.currentDevice.orientation) {
+        case UIDeviceOrientationLandscapeLeft: mask = UIInterfaceOrientationMaskLandscapeRight; break;
+        case UIDeviceOrientationLandscapeRight: mask = UIInterfaceOrientationMaskLandscapeLeft; break;
+        case UIDeviceOrientationPortrait: if (front_ios_ingame_autorotate()) mask = UIInterfaceOrientationMaskPortrait; break;
+        default: break; // Flat/unknown posture cannot choose a new interface orientation.
+    }
+    if (mask) [ws requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask]
+        errorHandler:^(NSError *e) { LOG("前端：%s 方向重同步失败：%s", why, e.localizedDescription.UTF8String); }];
+    [v rotationChanged:why];
+    UIView *host = v.superview ?: v; [host setNeedsLayout]; [host layoutIfNeeded]; [v setNeedsLayout]; [v layoutIfNeeded];
+}
 // Scene lifecycle (called by SceneDelegate in main.m): 0 resign active, 1 enter background, 2 return to foreground, 3 become active
 void front_ios_focus_event(int ev) {
     static BOOL suspended;
@@ -1764,7 +1791,13 @@ void front_ios_focus_event(int ev) {
             { void dm_3d_scale_resumed(void); dm_3d_scale_resumed(); } guest_clock_freeze_for(1, 0); dm_gfx_suspend(0);
             { void mtl_present_discard(int); mtl_present_discard(0); }
             suspended = NO; g_audio_bg = g_audio_intr = 0; audio_apply(); dm_focus_set(2); break;   // 回前台一律当打断已过：进后台时系统自己会发一次「被打断」（真机实测），却不保证回来时补发「结束」；会话若真还被占，启动声卡失败不致命、激活时重试 | Returning to foreground always treats the interruption as over: when entering background the system itself sends one "interrupted" (measured on a real device) but does not guarantee an "ended" on return; if the session is really still occupied, failing to start the audio device is not fatal and is retried on activation
-        case 3: dm_focus_set(1); audio_apply(); break;   // 激活时再对一次音频：上次恢复没成（会话还被占）的在这里重试 | Reconcile audio once more on activation: a previous resume that failed (session still occupied) is retried here
+        case 3: dm_focus_set(1); audio_apply();
+            dm_orientation_reconcile("resume");
+            { unsigned epoch = g_orientation_resume_epoch;
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4), dispatch_get_main_queue(), ^{
+                  if (epoch == g_orientation_resume_epoch) dm_orientation_reconcile("resume-settled");
+              }); }
+            break;   // 激活时再对一次音频：上次恢复没成（会话还被占）的在这里重试 | Reconcile audio once more on activation: a previous resume that failed (session still occupied) is retried here
     }
 }
 

@@ -1,10 +1,14 @@
 #include "dm_elysium.h"
 #include "dm_cursor.h"
+#include "dm_widget.h"
+#include "dm_notice_geometry.h"
+#include "dm_map_intent.h"
 #include "dm_custom.h"
 #include "dm.h"
 #include "dm_uiscreen.h"
 #include "dm_input.h"
 #include "dm_hud.h"
+#include "dm_minimap_policy.h"
 #include "dm_actions.h"
 #include "dm_cursor_item.h"
 #include "dm_widget.h"
@@ -151,6 +155,9 @@ static uint64_t modal_any(uint64_t root, int with_bind, const char **name) {
         if (name) *name = nm; return p; }
     return 0;
 }
+// Shared settings input gate: native modal ownership applies to every modal,
+// including dismissable/error and quantity dialogs, not only ConfirmationModal.
+int dm_ui_modal_active(uint64_t root) { return root && modal_any(root,1,NULL)!=0; }
 static uint64_t ui_find(uint64_t w, const char *name, int dep);
 static uint64_t ui_panel(uint64_t root, const char *name);   // 只扫界面根的直接子控件（定义在后面） | Scans only the direct children of the UI root (defined later)
 static int free_cursor_page(module_t *m) {
@@ -1071,7 +1078,28 @@ static int pg_near(uint64_t root, int x, int y, int vh) {   // 这一点在哪�
             if (((int (*)(uint64_t, uint64_t))fn)(t, (uint64_t)(uint32_t)xx | ((uint64_t)(uint32_t)yy << 32)) & 1) return k ? 1 : -1; } }
     return 0;
 }
-static int ui_classify(module_t *m, uint64_t root, int x, int y, char *hit, size_t hn) {   // 1 物品区 / 2 页签 / 0 面板内其它控件 / 3 面板外 / 9 模态框外 | 1 item area / 2 tab / 0 other widget inside the panel / 3 outside the panel / 9 outside a modal
+// 任务图标、重播和关闭按钮：只有真正属于任务页的控件才放宽点按时限。
+// Relax the tap deadline only for quest icons, replay and close buttons owned by a quest page.
+static int ui_quest_button(uint64_t w) {
+    const char *nm=w?(const char *)*(uint64_t *)(w+8):NULL;
+    if (!nm) return 0;
+    int icon=!strncmp(nm,"Quest",5) && nm[5]>='0' && nm[5]<='9';
+    if (icon) for (const char *s=nm+5;*s;s++) if (*s<'0' || *s>'9') { icon=0; break; }
+    if (!icon && strcmp(nm,"Speech") && strcmp(nm,"TouchClose")) return 0;
+    for (int depth=0;w && depth<24;depth++,w=*(uint64_t *)(w+0x30)) {
+        nm=(const char *)*(uint64_t *)(w+8);
+        if (nm && (!strcmp(nm,"QuestLogPanelExpansion") || !strcmp(nm,"QuestLogPanelOriginal"))) return 1;
+    }
+    return 0;
+}
+static int ui_button_kind(uint64_t w) {
+#if defined(__APPLE__) && DM_PHONE
+    return ui_quest_button(w)?12:0;
+#else
+    (void)w; return 0;
+#endif
+}
+static int ui_classify(module_t *m, uint64_t root, int x, int y, char *hit, size_t hn) {   // 12 任务页慢点按按钮；其余分类保持原样 | 12 quest-page button with relaxed tap timing; other classifications are unchanged
     if (g_cls_out) { g_cls_out = 0; const char *on = "";
         if (modal_top(m, root, &on)) { snprintf(hit, hn, "模态框外 %s", on); g_modal_name = on; return 9; }
         g_inside_owner = ""; atomic_store(&g_bd_hit, 0); atomic_store(&g_close_down, 0); snprintf(hit, hn, "（界面矩形外）"); return 3; }
@@ -1154,7 +1182,7 @@ static int ui_classify0(module_t *m, uint64_t root, int x, int y, char *hit, siz
           if (tgt >= 0) { dm_wref_set(&g_tab_ref, 0); atomic_store(&g_tab_have, 0); atomic_store(&g_tab_delta, tgt - cur); atomic_store(&g_tab_top, 0); snprintf(hit, hn, "技能树分页 %+d", tgt - cur); return 2; } } }
     { int sx = x, sy = y, sn = ui_snap(m, root, &sx, &sy); if (sn == 6) { snprintf(hit, hn, "盖:%s 不点", g_inside_name); return 6; }
       if (sn == 1) { if (snap_guarded(root, g_click_name)) snap_guard_near(dm_wref_get(&g_click), g_click_name, x, y, sx, sy, *(int32_t *)(m->base + 0x211da38), *(int32_t *)(m->base + 0x211da3c));   // 只为留一行本体点数读数 | only to leave one line of readout of the widget body's size in points
-          snprintf(hit, hn, " 可点控件 %s", g_click_name); bd_note_skill(m, root, sx, sy); return 0; }
+          snprintf(hit, hn, " 可点控件 %s", g_click_name); bd_note_skill(m, root, sx, sy); return ui_button_kind(dm_wref_get(&g_click)); }
       // 个人仓库的翻页箭头（命中框只有 64 单位见方，手机上约 13 点）：点偏了被吸附到箭头上时，同样发翻页请求——翻个人仓库页是宿主做的（dm_pages.c），
       // 原先只有正点在命中框里才发；吸附过去的那一下只发了原版点击，原版在个人页不认，表现为「点了没反应」（的翻页偶发点不动）
       // The page-flip arrows of the personal stash (the hit box is only 64 units square, about 13 points on a phone): when an off-target tap is snapped onto an arrow, the page-flip request is sent as well -- flipping personal stash pages is done by the host (dm_pages.c),
@@ -1162,7 +1190,7 @@ static int ui_classify0(module_t *m, uint64_t root, int x, int y, char *hit, siz
       if (sn && (!strcmp(g_click_name, "TouchStashLeft") || !strcmp(g_click_name, "TouchStashRight")) && pg_personal(root)) {
           void dm_pages_request_flip(int); int dir = g_click_name[10] == 'R' ? 1 : -1; dm_pages_request_flip(dir); snprintf(hit, hn, "个人仓库%s一页（点偏，吸附）", dir > 0 ? "下" : "上"); return 6; }
       if (sn && snap_guarded(root, g_click_name) && !snap_guard_near(dm_wref_get(&g_click), g_click_name, x, y, sx, sy, *(int32_t *)(m->base + 0x211da38), *(int32_t *)(m->base + 0x211da3c))) { snprintf(hit, hn, "吸附到 %s：后果重的按钮只认本体（不足 44 点的外扩到 44 点见方），不点", g_click_name); return 6; }
-      if (sn) { snprintf(hit, hn, " 吸附 %s (%d,%d)", g_click_name, sx, sy); bd_note_skill(m, root, sx, sy); return 0; }   // 在可点控件上或它 3.5 毫米内（含面板边上的按钮外沿） | On a clickable widget or within 3.5 mm of it (including the outer rim of buttons at the panel edge)
+      if (sn) { snprintf(hit, hn, " 吸附 %s (%d,%d)", g_click_name, sx, sy); bd_note_skill(m, root, sx, sy); return ui_button_kind(dm_wref_get(&g_click)); }   // 在可点控件上或它 3.5 毫米内（含面板边上的按钮外沿） | On a clickable widget or within 3.5 mm of it (including the outer rim of buttons at the panel edge)
       // 再外一圈（到 PG_REACH 单位）：周围没有别的可点控件抢这一下（上面的吸附没找到）、又不在物品格上（更前面已判）时也算点箭头——
       // 箭头连同这一圈的有效范围 = 64 + 2 × 112 = 288 单位见方，375 点高的屏上正好 50 点，更高的屏更大
       // One more ring out (up to PG_REACH units): when no other clickable widget around competes for this tap (the snap above found nothing) and it is not on an item cell (already checked further up), it also counts as tapping the arrow --
@@ -1828,7 +1856,9 @@ static int mv_allowed(int own, uint64_t w) {
     case MV_TROVE: return pn && !strcmp(pn, "BankTabs");   // 储藏箱页签条的子控件（各页签的图） | child widgets of the stash tab bar (the image of each tab)
     case MV_SAFE: return (pn && !strcmp(pn, "HUDPanel") &&
         (!strcmp(nm, "Overlay") || !strcmp(nm, "ExpBar") || !strcmp(nm, "SkillButton6") ||
-         !strcmp(nm, "LevelUpButton") || !strcmp(nm, "LevelUpFlourish"))) || !strcmp(nm, "AutoMap") || !strcmp(nm, "HUDWarnings") || (pn && !strcmp(pn, "HireablesPanel"));
+         !strcmp(nm, "LevelUpButton") || !strcmp(nm, "LevelUpFlourish") ||
+         !strcmp(nm, "HealthBall") || !strcmp(nm, "ManaBall") || !strcmp(nm, "Belt") ||
+         !strncmp(nm, "TouchPortraitBeltBacking", 24))) || !strcmp(nm, "AutoMap") || !strcmp(nm, "HUDWarnings") || (pn && !strcmp(pn, "HireablesPanel"));
     }
     return 0;
 }
@@ -1937,7 +1967,9 @@ static void ui_bind_pump(uint64_t root, uint64_t fr) {
 //   [main+0x2d5e8f0] = mode == 1 (on the left); [main+0x2d5c748] = mode != 0 (mini or not); on a change it calls main+0x411540 to re-layout the map and zeroes the scroll values [0x2d5e910 / 914].
 // Changing only the config value without calling the callback leaves the picture unchanged. Here the callback is called directly: pass 0 to switch to fullscreen, pass the config value to switch back (left / right as the player chose on the options page); the config object itself is untouched, so nothing is persisted and the next run follows the player's setting.
 // The controller has no key for switching this mode (the map key − only opens / closes).
-static _Atomic int g_map_req = -1, g_map_full_now;
+static _Atomic int g_map_req = -1, g_map_full_now, g_map_hold;
+static dm_map_intent g_map_intent = {-1,-1};
+void dm_ui_map_hold(int on) { atomic_store(&g_map_hold, !!on); }
 void dm_ui_map_full(int on) { atomic_store(&g_map_req, on != 0); }
 int dm_ui_map_is_full(void) { return atomic_load(&g_map_full_now); }
 // 真全屏局内，全屏地图的线条要盖在世界上：游戏把地图中心放在「屏幕高的一半」（它读到的是我们写的 16:9 界面高），画出来在 界面矩形 y + 界面高 ÷ 2；
@@ -1958,33 +1990,38 @@ static void ui_map_center(module_t *m, uint64_t root, int mini) {
     if (*sc == want || (*sc != ours && *sc != 0)) { if (*sc == want) ours = want; return; }   // 已是目标值；或是别人写的非零值（不是我们上次写的）：不动 | Already the target value; or a non-zero value written by someone else (not what we last wrote): leave it alone
     { static int lg; if (lg++ < 8) LOG("全屏地图中心：纵向卷动量 %d → %d 格", *sc, want); } *sc = want; ours = want;
 }
-static void ui_map_pump(module_t *m) {
-    int cfg = *(volatile int32_t *)(m->base + 0x2d479f4), mini = *(volatile int32_t *)(m->base + 0x2d5c748);
-    // 触屏界面的小地图（右上角地名、点它切全屏、任务终点标记）都建立在微缩档上；原版选项页「透视地图尺寸」是三档循环（全屏 → 微缩地图放左 → 微缩地图放右），
-    // 玩家把它转到「全屏」（0）之后小地图整块没了，点那一块也切不回来（线上：进选项页按了一下右箭头，「小地图消失了」）。
-    // 触屏模式在局里读到 0 就改回缺省「微缩地图放右」（2）并调原版的变更回调重排——想看全屏地图点一下小地图即可。手柄模式是原版界面，三档照原版不动。
-    // 测试开关 DM_TEST_AUTOMAP=<帧>:<档>：到帧把配置改成这一档并调回调（当作玩家在选项页选了它）
-    // The touch UI's minimap (area name at the top right, tap it to switch to full screen, quest goal markers) is all built on the minimap
-    // setting; the original game's "automap size" option on the options page cycles through three settings (full screen -> minimap on the
-    // left -> minimap on the right).
-    // Once the player turns it to "full screen" (0), the whole minimap is gone and tapping that area cannot switch it back (in released builds:
-    // entered the options page and pressed the right arrow once, "the minimap disappeared").
-    // In touch mode, reading 0 while in game changes it back to the default "minimap on the right" (2) and calls the original game's change
-    // callback to lay things out again; to see the full-screen map, just tap the minimap. Controller mode uses the original UI, so the
-    // three settings are left as in the original game.
-    // Test switch DM_TEST_AUTOMAP=<frame>:<setting>: at that frame, change the config to this setting and call the callback (as if the
-    // player had picked it on the options page).
-    { static long at = -1; static int tv; uint64_t fr = dm_guest_frame(); if (at < 0) { const char *e = getenv("DM_TEST_AUTOMAP"); at = e ? atol(e) : 0; const char *c = e ? strchr(e, ':') : NULL; tv = c ? atoi(c + 1) : 0; }
-      if (at > 0 && fr >= (uint64_t)at) { at = 0; *(volatile int32_t *)(m->base + 0x2d479f4) = tv; ((void (*)(int))(m->base + 0x40f780))(tv); cfg = tv; LOG("测试 DM_TEST_AUTOMAP：帧 %llu 把「透视地图尺寸」改成 %d", (unsigned long long)fr, tv); }
-      int dm_padmode_current(void); dm_hud_info hi; dm_hud_get(&hi);
-      if (cfg == 0 && hi.valid && !dm_padmode_current()) { *(volatile int32_t *)(m->base + 0x2d479f4) = 2; ((void (*)(int))(m->base + 0x40f780))(2); cfg = 2; mini = *(volatile int32_t *)(m->base + 0x2d5c748);
-          LOG("地图：触屏模式读到「透视地图尺寸」是全屏（0）→ 改回微缩地图放右（2），小地图恢复"); } }
-    int r = atomic_exchange(&g_map_req, -1);
-    if (r >= 0) {
-        if (cfg != 1 && cfg != 2) { static int n; if (n++ < 4) LOG("地图切换：玩家的「透视地图尺寸」是 %d（不是微缩档），不切", cfg); }
-        else if ((mini == 0) != r) { ((void (*)(int))(m->base + 0x40f780))(r ? 0 : cfg); mini = *(volatile int32_t *)(m->base + 0x2d5c748); LOG("地图切换：→ %s（配置值 %d 不动，不落盘）", r ? "全屏" : cfg == 1 ? "微缩放左" : "微缩放右", cfg); }
+static _Atomic int g_load_up = -1;
+static void ui_map_pump(module_t *m, uint64_t root) {
+    static dm_minimap_entry entry;
+    dm_hud_info hi; dm_hud_get(&hi);
+    uint64_t am = root ? ui_panel(root,"AutoMap") : 0;
+    if (!hi.valid || !dm_uiscreen_ingame() || !am || *(uint64_t *)am!=(uint64_t)m->base+0x20c58a0) {
+        atomic_store(&g_map_full_now,0); atomic_exchange(&g_map_req,-1);
+        dm_minimap_entry_step(&entry,dm_guest_frame(),0,hi.area,0);
+        if (root && !ui_panel(root,"HUDPanel") && !ui_find(root,"LoadScreenPanel",0)) g_map_intent=(dm_map_intent){-1,-1};
+        return;
     }
-    atomic_store(&g_map_full_now, mini == 0 && (cfg == 1 || cfg == 2));   // 只把「我们切出来的全屏」算全屏；玩家自己选全屏档的不算 | Only "the fullscreen we switched to" counts as fullscreen; the fullscreen mode chosen by the player does not
+    int cfg=*(volatile int32_t *)(m->base+0x2d479f4), mini=*(volatile int32_t *)(m->base+0x2d5c748);
+    if (cfg<0 || cfg>2) return;
+    int r=atomic_exchange(&g_map_req,-1), dm_padmode_current(void);
+    if (dm_padmode_current()) {
+        if (r>=0 && cfg && ((mini==0)!=r)) ((void (*)(int))(m->base+0x40f780))(r?0:cfg);
+    } else {
+        int target=dm_map_intent_select(&g_map_intent,cfg,r,atomic_load(&g_map_hold));
+        if (mini!=target) ((void (*)(int))(m->base+0x40f780))(target);
+    }
+    mini=*(volatile int32_t *)(m->base+0x2d5c748);
+    { dm_hud_info hi; dm_hud_get(&hi);
+      uint64_t am = root ? ui_panel(root,"AutoMap") : 0;
+      int ready = dm_uiscreen_ingame() && hi.valid && atomic_load(&g_load_up)<=0 && am && *(uint64_t *)am==(uint64_t)m->base+0x20c58a0;
+      int shown = am && *(uint64_t *)am==(uint64_t)m->base+0x20c58a0 && *(uint8_t *)(am+0x50);
+      if (!ready) dm_minimap_entry_step(&entry,dm_guest_frame(),0,hi.area,shown);
+      else if (!dm_uiscreen_panel() && dm_minimap_entry_step(&entry,dm_guest_frame(),1,hi.area,shown)) {
+          dm_ui_key_pulse(DM_BTN_MINUS,3);
+          LOG("小地图首入场景：区域 %d 未显示，重发原生地图键（第 %d 次）",hi.area,entry.attempts);
+      }
+    }
+    atomic_store(&g_map_full_now,mini==0);
 }
 // ---------- 右上角小地图的位置：触摸层把它当点击区（点一下 = 地图开关键），矩形取游戏自己的 AutoMap 面板，不写死 ----------
 // AutoMap 控件（虚表 main+0x20c58a0）：+0x70 / +0x74 = x / y、+0x78 / +0x7c = 宽 / 高（布局单位，2160 = 画面高；微缩地图放右时 x = −宽，即贴着画面右边），+0x80 缩放。
@@ -2022,7 +2059,7 @@ int dm_ui_minimap_rect(float r[4]) { if (!atomic_load(&g_mm_have)) return 0; uin
 // The original value is recorded; if the game has re-laid it out itself (the value is not what we last wrote) the current value is taken as the original; when y0 returns to 0 / on leaving the run the original value is written back. Reconciled once every 6 frames.
 // In the in-run / out-of-run signal, "whether the loading screen is present" goes by the panel message, flips at the very moment the message arrives, and reconciles the top lift on the spot: within one frame the game processes messages before laying out the UI,
 // and if the flip waited for the per-frame check of the panel tree in the next frame, the UI would still be laid out centered in the frame the loading screen is removed (in that frame the health globe is at the centered position and the area name is not lifted). -1 = no message received yet, go by the panel tree.
-static _Atomic int g_load_up = -1;
+
 static uint64_t g_lift_next;
 // 系统提示框（NotificationPanel）的停靠高度分两态。布局里写的是没开面板时的高度（gen_romfs_overlay.py：上提到让开底栏上方的生命 / 法力数值）；
 // 开着大面板时那行数值被面板盖住，上提后的框反而压在背包格子上，所以面板态改停到 NOTE_PANEL_Y（布局单位，同 json 的 y）：大面板底边框那一带，在金币 / 存放那排下面。
@@ -2068,6 +2105,80 @@ static void note_dock_restore(uint64_t root, const char *why) {   // 只许游�
         static int lg; if (lg++ < 60) LOG("提示框停靠：%s → 写回原值 y %d%s", why, g_nd_orig, still ? "（框已停稳，矩形 y 一并写回）" : ""); }
     g_nd_mine = *t; g_nd_on = 0;
 }
+static void ui_notice_tile_rect(uint64_t w, const int wanted[4]) {
+    const char *name = w ? *(const char **)(w + 8) : NULL;
+    const char *prefix="TouchNoticeTile"; size_t n=strlen(prefix);
+    if (!name || strncmp(name,prefix,n) || name[n]<'0' || name[n]>'4' || name[n+1]<'0' || name[n+1]>'2' || name[n+2]) return;
+    if (wanted[0]<-4000 || wanted[0]>4000 || wanted[1]<-400 || wanted[1]>1000 || wanted[2]<1 || wanted[2]>4000 || wanted[3]<1 || wanted[3]>800) return;
+    module_t *m=main_module();
+    // Only our single-frame HD assets may change draw dimensions. Checking the
+    // widget name alone is insufficient: an inherited/foreign sprite must stay
+    // untouched. The filename must match the exact owned row/column asset.
+    if (!m || !dm_widget_is(m->base,w,DM_VT_IMAGE)) return;
+    char expected[48]; snprintf(expected,sizeof expected,"Ztouch_notification/tile%c%c",name[n],name[n+1]);
+    const char *file=*(const char **)(w+0x108); uint64_t length=*(uint64_t *)(w+0x110);
+    if (!file || length!=strlen(expected) || memcmp(file,expected,length) || *(int32_t *)(w+0x90)!=0) return;
+    uint64_t ref=*(uint64_t *)(w+0x88), sprite=ref?*(uint64_t *)ref:0;
+    if (!sprite) return;
+    uint32_t *atlas=(uint32_t *)(sprite+0xbc), *height=(uint32_t *)(sprite+0xc0), *frames=(uint32_t *)(sprite+0xcc), *width=(uint32_t *)(sprite+0xd0);
+    // Native HD drawing (main+895d40) takes geometry from width/height
+    // and U span from width/atlas. Updating both widths together keeps
+    // the complete texture (U span 1). These are CPU draw metadata;
+    // texture handles, storage, frame count and UV origins stay intact.
+    // Reject both sprite and widget writes until every ownership check passes.
+    if (*frames!=1 || *atlas!=*width || !*width || *width>4000 || !*height || *height>800) return;
+    *atlas=*width=(uint32_t)wanted[2]; *height=(uint32_t)wanted[3];
+    int32_t *rect=(int32_t *)(w+0x70);
+    // ImageWidget's layout callback reloads sprite dimensions (+0x78/+0x7c).
+    // Do not invoke it here: geometry and the owned sprite are already fitted.
+    if (memcmp(rect,wanted,4*sizeof *rect)) { rect[0]=wanted[0]; rect[1]=wanted[1]; rect[2]=wanted[2]; rect[3]=wanted[3]; }
+}
+
+static int ui_notice_text_width(module_t *m,uint64_t prompt,int limit) {
+    int fallback=*(int32_t *)(prompt+0x78);
+    if (!dm_widget_is(m->base,prompt,DM_VT_TEXT) || limit<600 || limit>4000) return fallback;
+    uint64_t length=*(uint64_t *)(prompt+0x90); const char *text=*(const char **)(prompt+0x88);
+    if (!text || !length || length>4096 || *(int32_t *)(prompt+0xb0)!=14) return fallback;
+    float scale=((float (*)(uint64_t))(m->base+0x390b38))(prompt);
+    if (!(scale>0 && scale<=16)) return fallback;
+    _Alignas(8) unsigned char style[0xa4]; memcpy(style,(void *)(prompt+0xb4),0xa0);
+    memcpy(style+0xa0,(void *)(prompt+0xb0),4);
+    uint64_t hash=14695981039346656037ull;
+    for (uint64_t i=0;i<length;i++) { hash^=(unsigned char)text[i];hash*=1099511628211ull; }
+    for (unsigned i=0;i<sizeof style;i++) { hash^=style[i];hash*=1099511628211ull; }
+    static uint64_t last_hash,last_prompt; static float last_scale; static int last_limit,last_width;
+    if (last_prompt==prompt && last_hash==hash && last_scale==scale && last_limit==limit) return last_width;
+    uint64_t max=(uint32_t)((limit-128)*scale) | ((uint64_t)(uint32_t)(776*scale)<<32);
+    uint64_t size=((uint64_t (*)(const char *,const void *,const uint64_t *,float))(m->base+0xc6d8f0))(text,style,&max,scale);
+    float units=(uint32_t)size/scale;
+    int width=units>0 && units<9998 ? (int)ceilf(units)+2 : fallback;
+    if (getenv("DM_TEST_NOTICE_GEOM")) LOG("通知文字度量：%llu 字节，原生像素 %u x %u，比例 %.4f → 布局宽 %d（上限 %d）",(unsigned long long)length,(unsigned)size,(unsigned)(size>>32),scale,width,limit);
+    last_hash=hash;last_prompt=prompt;last_scale=scale;last_limit=limit;last_width=width;
+    return width;
+}
+
+static void ui_notice_prompt_center(uint64_t note,uint64_t prompt) {
+    module_t *m=main_module(); uint64_t border=prompt?*(uint64_t *)(prompt+0x30):0;
+    if (!m || !border || *(uint64_t *)(border+0x30)!=note || !ui_find(border,"TouchNoticeTile00",0) || !dm_widget_is(m->base,prompt,DM_VT_TEXT)) return;
+    const char *name=*(const char **)(border+8);
+    int height=*(int32_t *)(prompt+0x7c);
+    if (!name || strcmp(name,"NotificationBorder") || height<1 || height>776) return;
+    int32_t *rect=(int32_t *)(prompt+0x70); rect[1]=(244-height)/2;
+}
+
+static int ui_notice_frame_fit(uint64_t note) {
+    uint64_t prompt=ui_find(note,"Prompt",0); module_t *m=main_module();
+    if (!prompt || !m || !ui_find(note,"TouchNoticeTile00",0)) return 244;
+    int limit=*(int32_t *)(note+0x78);
+    ui_notice_prompt_center(note,prompt);
+    int rects[15][4],height=dm_notice_geometry(ui_notice_text_width(m,prompt,limit),*(int32_t *)(prompt+0x7c),limit,rects);
+    if (!height) return 244;
+    for (int row=0;row<5;row++) for (int col=0;col<3;col++) {
+        char name[32]; snprintf(name,sizeof name,"TouchNoticeTile%d%d",row,col);
+        uint64_t tile=ui_find(note,name,0); if (tile) ui_notice_tile_rect(tile,rects[row*3+col]);
+    }
+    return height;
+}
 static void ui_note_dock_pump(uint64_t root) {
     static const char *const big[] = { "PlayerInventoryExpansionLayout", "SkillsTreePanel", "CharacterStatsPanel", "QuestLogPanelExpansion", "BankExpansionLayout", "HoradricCubeLayout",
         "WaypointsPanelExpansion", "VendorPanelLayout", "HirelingInventoryPanel", "ImbueItemsPanel", "ChroniclePanel", "MessageLogPanel", "PauseLayout", "PauseLayoutGarden",
@@ -2081,6 +2192,7 @@ static void ui_note_dock_pump(uint64_t root) {
     int ing = dm_uiscreen_ingame(); if (g_nd_hold == 1 && !ing) g_nd_hold = 2; else if (g_nd_hold == 2 && ing) g_nd_hold = 0;
     uint64_t w = ui_panel(root, "NotificationPanel");   // 顶层面板：只扫界面根的直接子（原先全树深搜，每帧约 73k 条指令） | Top-level panels: only the direct children of the UI root are scanned (previously a full-tree depth-first search, about 73k instructions per frame)
     if (!w) { dm_wref_set(&g_nd, 0); return; }
+    int frame_height=ui_notice_frame_fit(w);
     int32_t *t = (int32_t *)(w + 0x19c), h = *(int32_t *)(w + 0x7c);
     if (g_nd_ychk) { g_nd_ychk = 0; int32_t y = *(int32_t *)(w + 0x74); static int lg;
         if (w != dm_wref_get(&g_nd)) { if (lg++ < 60) LOG("提示框停靠：写回矩形 y 后提示框对象已换（出局 / 重建），不核"); }
@@ -2092,14 +2204,15 @@ static void ui_note_dock_pump(uint64_t root) {
         if (!nm || !*(uint8_t *)(c + 0x50)) continue;
         for (unsigned i = 0; i < sizeof big / sizeof *big && !panel; i++) panel = !strcmp(nm, big[i]) && has_visible_leaf(c, 1); }
     int32_t pv = h > 0 ? (int32_t)lroundf(py * h / 244.0f) : g_nd_orig;
+    if (frame_height>244) pv -= (frame_height-244)/2;
     // 说明框开着时提示框不压它（iOS / Mac 同一条）：面板态下这一帧或上一帧提交过说明、估算矩形与提示框相交，就把提示框挪到说明框正上 / 正下
     // （离原位近、又不出屏的那侧），说明框没了回原位。提示框中心 y = 界面高 + 目标 × 界面高 / 2160、半高 = 矩形高 × 界面高 / 4320、半宽 = 矩形宽 × 界面高 / 4320（布局单位，界面高对应 2160）
     // While the description box is open the notice box does not cover it (same for iOS / Mac): in panel state, if a description was submitted this frame or the previous one and the estimated rectangle intersects the notice box, move the notice box directly above / below the description box
     // (the side closer to the original position that stays on screen); return to the original position when the description box is gone. Notice box center y = UI height + target × UI height / 2160, half height = rect height × UI height / 4320, half width = rect width × UI height / 4320 (layout units, UI height corresponds to 2160)
     { module_t *mm = main_module(); int UW = mm ? *(int32_t *)(mm->base + 0x211da38) : 0, UH = mm ? *(int32_t *)(mm->base + 0x211da3c) : 0; uint64_t fr = dm_guest_frame(), tf = atomic_load(&g_tip_fr);
       static int moved; int32_t rw = *(int32_t *)(w + 0x78);
-      if (panel && UH > 0 && h > 0 && rw > 0 && tf && fr - tf <= 2) {
-          int cy = UH + (int)lroundf((float)pv * UH / 2160.0f), hh = (int)lroundf((float)h * UH / 4320.0f), hw = (int)lroundf((float)rw * UH / 4320.0f), gap = UH / 90;
+      if (panel && UH > 0 && frame_height > 0 && rw > 0 && tf && fr - tf <= 2) {
+          int cy = UH + (int)lroundf((float)pv * UH / 2160.0f), hh = (int)lroundf((float)frame_height * UH / 4320.0f), hw = (int)lroundf((float)rw * UH / 4320.0f), gap = UH / 90;
           const int32_t *b = g_tip_box; int hit = UW / 2 - hw < b[2] && UW / 2 + hw > b[0] && cy - hh < b[3] + gap && cy + hh > b[1] - gap;
           if (hit) { int up = b[1] - gap - hh, dn = b[3] + gap + hh, ok_up = up - hh >= 0, ok_dn = dn + hh <= UH;
               int to = ok_up && ok_dn ? (abs(up - cy) <= abs(dn - cy) ? up : dn) : ok_up ? up : ok_dn ? dn : cy;
@@ -2337,6 +2450,39 @@ static void ui_widestash_pump(uint64_t root) {
 // Minimap: change the AutoMap panel rect x (+0x70) directly. miniOffsetRight in the panel object (+0x15cc, registered at main+0xc0ce18) has no effect when changed at runtime:
 // it is used only once when the panel loads, and is not read again when re-laid out on a mode switch (after writing the field and switching to fullscreen and back, the rect is still -1278);
 // Info bar (area name): HUDWarnings panel rect x (+0x70, original value recorded) = original value - units. Checked every 6 frames (rewritten after a panel rebuild / mode switch).
+// UIKit publishes point geometry; host layout coordinates stay in 2160-high units.
+static _Atomic int g_band_height_mpt;
+void dm_ui_set_band_height_pt(float height) {
+    if (isfinite(height) && height >= 8 && height <= 4096)
+        atomic_store(&g_band_height_mpt, (int)lroundf(height * 1000));
+}
+static int ui_pt_units(float points) {
+    int h = atomic_load(&g_band_height_mpt);
+    return h > 0 ? (int)lroundf(points * 2160000.0f / h) : 0;
+}
+// Source map scissor and presentation-only offset are published together across render threads.
+static _Atomic uint32_t g_mm_render_seq;
+static _Atomic uint64_t g_mm_render_source;
+static _Atomic int g_mm_render_delta;
+static void ui_minimap_render_publish(uint64_t source, int delta) {
+    atomic_fetch_add(&g_mm_render_seq, 1);
+    atomic_store(&g_mm_render_source, source); atomic_store(&g_mm_render_delta, delta);
+    atomic_fetch_add(&g_mm_render_seq, 1);
+}
+int dm_ui_minimap_render_rect(int rect[4], int *dy) {
+    if (!dm_uiscreen_portrait() || !dm_uiscreen_ingame() || dm_uiscreen_panel()) return 0;
+    for (int tries = 0; tries < 3; tries++) {
+        uint32_t a = atomic_load(&g_mm_render_seq); if (a & 1) continue;
+        uint64_t source = atomic_load(&g_mm_render_source); int delta = atomic_load(&g_mm_render_delta);
+        if (a != atomic_load(&g_mm_render_seq)) continue;
+        if (!source) return 0;
+        if (rect) for (int i = 0; i < 4; i++) rect[i] = (int)((source >> (48 - i*16)) & 0xffff);
+        if (dy) *dy = delta;
+        return 1;
+    }
+    return 0;
+}
+
 static _Atomic int g_safe_r;
 static _Atomic int g_safe_l;   // 左安全区：左上角的佣兵 / 队友头像栏往右让 | Left safe area: the mercenary / party member portrait bar at the top left gives way to the right
 void dm_ui_safe_left(int units) { atomic_store(&g_safe_l, units < 0 ? 0 : units > 800 ? 800 : units); }
@@ -2346,7 +2492,8 @@ static int ui_touch_mode(void);
 static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     static uint64_t next; if (fr < next) return; next = fr + 6; int u = atomic_load(&g_safe_r);   // 切全屏再切回时游戏把矩形写回贴边，6 帧内补回 | After switching to fullscreen and back the game writes the rect back to the edge; restored within 6 frames
     g_mv_want[MV_SAFE] = dm_uiscreen_ingame();   // 条件：在局内。小地图的「上移 25px / 右移 120px」是绝对值，没有安全区也要生效；其余项 delta 为 0 = 写回，无副作用 | Condition: in-game. The minimap's fixed +25 px up / +120 px right offsets must apply even without a safe area; the other entries get delta 0 (= restore) and are unaffected
-    if (!g_mv_want[MV_SAFE]) { mv_restore(root, MV_SAFE); return; }
+    if (!g_mv_want[MV_SAFE]) { ui_minimap_render_publish(0,0); mv_restore(root, MV_SAFE); return; }
+    uint64_t map_render_source=0; int map_render_delta=0;
     // 本地改动（用户要求，分两次追加）：右上角小地图整体上移 25 画面像素、右移 120 画面像素。按「画面像素 → 布局单位（2160 = 画面高）」
     // 的同一比例换算（与安全区同一套单位）；移动量叠加在原来的「贴边 + 右安全区内移」之后，所以只在微缩地图档（on）生效。
     // Local change (user request, extended once): move the top-right minimap up by 25 screen pixels and right by 120 screen pixels. Converted with
@@ -2364,8 +2511,8 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
         int duy = uh > 0 ? (int)lround(MM_SHIFT_UP_PX * 2160.0 / (double)uh) : 8;       // 25 px → 布局单位 | 25 px in layout units
         int port = dm_uiscreen_portrait();
         if (port) {
-            // The negative top-lift made the minimap invisible on device. Keep its native positive Y
-            // until that render/clipping path is verified, and centre the scaled width within the UI band.
+            // Keep CPU clipping positive: map art is moved to the red-box area only at draw time.
+            // The graphics layer matches this map's own scissor, leaving all other UI unchanged.
             if (mini_on) {
                 int uwu = uh > 0 ? (int)lround(2160.0 * (double)uw / (double)uh) : 1950;
                 float sc = *(float *)(w + 0x80);
@@ -2376,6 +2523,20 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
                 mv_offset(MV_SAFE, w, 0, want_x - base_x, 0); g_mv_base_on = 0;
                 // Leave the native Y offset alone; restore any adjustment owned by this guard.
                 mv_offset(MV_SAFE, w, 1, 0, 0);
+                int rw=0, rh=0;
+                if (!dm_uiscreen_panel() && *(uint8_t *)(w+0x50) && dm_screen_real(&rw,&rh) && uh>0 && rh>rw) {
+                    double unit=uh/2160.0;
+                    int sx=(int)lround(*rx<0 ? uw+*rx*unit : *rx*unit);
+                    int sy=(int)lround(*ry*unit);
+                    int sw=(int)lround(ww*sc*unit), sh=(int)lround(*(int32_t *)(w+0x7c)*sc*unit);
+                    int top=(int)lround(rh*0.08); // reference red box starts ~8% below the screen top
+                    int safe=(int)lround((atomic_load(&g_safe_t)+ui_pt_units(8))*unit);
+                    if (top<safe) top=safe;
+                    if (sx>=0 && sy>=0 && sw>0 && sh>0 && sx+sw<=uw && sy+sh<=uh && uw<65536 && uh<65536) {
+                        uint64_t source=(uint64_t)sx<<48 | (uint64_t)sy<<32 | (uint64_t)sw<<16 | (uint64_t)sh;
+                        map_render_source=source; map_render_delta=top-uy-sy;
+                    }
+                }
             } else {
                 mv_offset(MV_SAFE, w, 0, 0, 0);
                 mv_offset(MV_SAFE, w, 1, 0, 0);
@@ -2396,6 +2557,7 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
         if (*rx != x0 || *ry != y0) LOG("小地图位置：x %d → %d，y %d → %d（右移 %d px / 上移 %d px → %d/%d 布局单位）", x0, *rx, y0, *ry, MM_SHIFT_RIGHT_PX, MM_SHIFT_UP_PX, dux, duy);
         }
     }
+    ui_minimap_render_publish(map_render_source,map_render_delta);
     // 头像栏 HireablesPanel：每个头像是建面板时从 Template 克隆出来的子控件（main+0x3a2c50 起的循环），位置在建的那一刻写进子控件矩形（0x3a2d98）、
     // 紧接着调一次子控件虚表 +0x10（0x3a2d94–0x3a2da4）让它按新矩形重算；之后不再排版。所以运行时光改面板矩形 / 子控件矩形画面不动，
     // 改完子控件矩形要照原版补那一次虚表 +0x10。原值记下，x = 原值 + 左安全区单位数
@@ -2422,7 +2584,7 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
       int sx=0, sy=0, sw=0, sh=0; dm_ui_rect(&sx,&sy,&sw,&sh);
       int port = dm_uiscreen_portrait();
       int dx = port && sh > 0 ? (int)lround(10.0 * 2160 / sh) : 0;
-      int dy = port && sh > 0 ? (int)lround(-40.0 * 2160 / sh / DM_MERC_SCALE) : 0;
+      int dy = port && sh > 0 ? (int)lround((-40.0 * 2160 / sh - ui_pt_units(20)) / DM_MERC_SCALE) : 0;
       int ul = atomic_load(&g_safe_l) + dx, ulc = (int)((float)ul / DM_MERC_SCALE);
       uint64_t ch = p ? *(uint64_t *)(p + 0x58) : 0, n = p ? *(uint64_t *)(p + 0x60) : 0;
       static float lg;
@@ -2433,21 +2595,25 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
           mv_offset(MV_SAFE, c, 0, ulc, 1); mv_offset(MV_SAFE, c, 1, dy, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); int ux=0, uy=0, uw=0, uh=0; dm_ui_rect(&ux,&uy,&uw,&uh);
-        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(5.0 * 2160 / uh) : 0;
+        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(5.0 * 2160 / uh) + ui_pt_units(5) : 0;
         mv_offset(MV_SAFE, h, 0, -u-dx, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
 
-    // UIKit paints these decorations at the portrait band's exact scale. The native copy can
-    // show underneath at a smaller scale; move only duplicate art away, retaining Belt/orb contents.
-    // The position guard restores original positions when returning to landscape/controller mode.
+    // Match UIKit's 5pt portrait shift for live potion/orb contents and their opaque backings.
+    // Duplicate native decorations remain off-screen; all original coordinates restore outside portrait touch.
     { uint64_t hud = ui_panel(root, "HUDPanel");
       uint64_t ch = hud ? *(uint64_t *)(hud + 0x58) : 0, n = hud ? *(uint64_t *)(hud + 0x60) : 0;
       int portrait_touch = dm_uiscreen_portrait() && ui_touch_mode();
+      int bar_dx = portrait_touch ? ui_pt_units(5) : 0;
       for (uint64_t i = 0; ch && i < n && i < 256; i++) {
           uint64_t w = *(uint64_t *)(ch + 8*i); if (!w) continue;
-          const char *name = (const char *)*(uint64_t *)(w + 8);
-          if (!name || (strcmp(name, "Overlay") && strcmp(name, "ExpBar") && strcmp(name, "SkillButton6") &&
-                        strcmp(name, "LevelUpButton") && strcmp(name, "LevelUpFlourish"))) continue;
-          mv_offset(MV_SAFE, w, 0, portrait_touch ? 30000 : 0, 1);
+          const char *name = (const char *)*(uint64_t *)(w + 8); if (!name) continue;
+          if (!strcmp(name,"HealthBall") || !strcmp(name,"ManaBall") || !strcmp(name,"Belt"))
+              mv_offset(MV_SAFE,w,0,bar_dx,1);
+          else if (!strncmp(name,"TouchPortraitBeltBacking",24))
+              mv_offset(MV_SAFE,w,0,portrait_touch ? -30000+bar_dx : 0,1);
+          else if (!strcmp(name,"Overlay") || !strcmp(name,"ExpBar") || !strcmp(name,"SkillButton6") ||
+                   !strcmp(name,"LevelUpButton") || !strcmp(name,"LevelUpFlourish"))
+              mv_offset(MV_SAFE,w,0,portrait_touch ? 30000 : 0,1);
       }
     }
 
@@ -2548,12 +2714,13 @@ static int ui_map_diag(module_t *m, uint64_t root) {
     return 1;
 }
 static void ui_minimap_pump(module_t *m, uint64_t root, int W, int H, uint64_t fr) {
-    static uint64_t next; if (fr < next) return; next = fr + 30;
+    static uint64_t next; if (fr < next) return; next = fr + 6;
     ui_map_diag(m, root);
     uint64_t w = ui_panel(root, "AutoMap"); if (!w || *(uint64_t *)w != (uint64_t)m->base + 0x20c58a0) return;
     int32_t x = *(int32_t *)(w + 0x70), y = *(int32_t *)(w + 0x74), ww = *(int32_t *)(w + 0x78), hh = *(int32_t *)(w + 0x7c); float sc = *(float *)(w + 0x80);
     if (ww <= 0 || hh <= 0 || ww > 4000 || hh > 2160 || !(sc > 0.1f && sc < 10)) return;
     double u = H / 2160.0, x0 = (x < 0 ? W + x * u : x * u), y0 = y * u, x1 = x0 + ww * sc * u, y1 = y0 + hh * sc * u;   // x 为负 = 从画面右边往左量 | Negative x = measured leftward from the right edge of the screen
+    { int rect[4], dy=0; if (dm_ui_minimap_render_rect(rect,&dy)) { y0+=dy; y1+=dy; } }
     if (x0 < 0) x0 = 0; if (x1 > W) x1 = W; if (y1 > H) y1 = H; if (x1 - x0 < 8 || y1 - y0 < 8) return;
     // 四个量各 16 位有符号、单位 1/8192 个界面矩形（范围 ±4）：贴顶上提后小地图在界面矩形上方，y 是负的；原先按无符号 ×65535 打包，负值存不进，热区只剩界面矩形里露出的那一条（iOS 包）
     // Four values, each 16-bit signed, in units of 1/8192 of the UI rect (range ±4): after the top-lift the minimap is above the UI rect, so y is negative; it used to be packed as unsigned ×65535, negative values could not be stored, and the hot zone was only the strip showing inside the UI rect (iOS app)
@@ -4262,7 +4429,7 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
                 else fix = 0; }
             if (th) { ui_auto_key(th); tnext = fr + 8; } } } }
     { module_t *pm = main_module(); uint64_t proot = 0; if (pm) { memcpy(&proot, pm->base + 0x2f05458, 8); int32_t pw = *(int32_t *)(pm->base + 0x211da38), phh = *(int32_t *)(pm->base + 0x211da3c);
-        static uint64_t pf = UINT64_MAX; if (proot && pw > 0 && phh > 0 && pf != fr) { pf = fr; { static int dd; const char *dn; if (!dd && (dn = getenv("DM_UI_DUMP")) && atomic_load(&g_taps_base) && fr >= atomic_load(&g_taps_base) + (getenv("DM_UI_DUMP_AT") ? atoi(getenv("DM_UI_DUMP_AT")) : 45)) { dd = 1; ui_dump(proot, 0, dn, 0, pm); } } int tm = ui_touch_mode(); if (tm) ui_wtap_pump(pm, proot, pw, phh); if (tm) ui_long_pump(); ui_target_pump(pm, fr); if (tm) ui_use_pump(); if (tm) ui_buy_pump(pw, phh); ui_item_pump(proot, pw, phh); ui_ptr_pump(pm, proot, pw, phh); if (tm) ui_drag_pump(pm, proot, pw, phh); UI_MOUSE_ITEM_PUMPS(pm, proot, pw, phh); { int lu = atomic_load(&g_load_up); dm_uiscreen_set_ingame(ui_panel(proot, "HUDPanel") && !(lu < 0 ? ui_find(proot, "LoadScreenPanel", 0) != 0 : lu)); } ui_safe_pump(pm, proot, fr); ui_lift_pump(proot, fr); ui_note_dock_pump(proot); ui_trove_tabs_pump(pm, proot, fr); ui_minimap_pump(pm, proot, pw, phh, fr); ui_map_pump(pm); ui_map_geom_pump(pm, proot); ui_boss_pct_pump(pm, proot); ui_npcdlg_pump(proot); ui_map_center(pm, proot, *(volatile int32_t *)(pm->base + 0x2d5c748)); if (tm) ui_bind_pump(proot, fr); if (tm) swaptab_pump(proot); if (tm) ui_mercpg_pump(pm, proot, fr); ui_widestash_pump(proot); mv_audit_pump(proot, fr); ui_pages_pump(pm, proot); } } }
+        static uint64_t pf = UINT64_MAX; if (proot && pw > 0 && phh > 0 && pf != fr) { pf = fr; { static int dd; const char *dn; if (!dd && (dn = getenv("DM_UI_DUMP")) && atomic_load(&g_taps_base) && fr >= atomic_load(&g_taps_base) + (getenv("DM_UI_DUMP_AT") ? atoi(getenv("DM_UI_DUMP_AT")) : 45)) { dd = 1; ui_dump(proot, 0, dn, 0, pm); } } int tm = ui_touch_mode(); if (tm) ui_wtap_pump(pm, proot, pw, phh); if (tm) ui_long_pump(); ui_target_pump(pm, fr); if (tm) ui_use_pump(); if (tm) ui_buy_pump(pw, phh); ui_item_pump(proot, pw, phh); ui_ptr_pump(pm, proot, pw, phh); if (tm) ui_drag_pump(pm, proot, pw, phh); UI_MOUSE_ITEM_PUMPS(pm, proot, pw, phh); { int lu = atomic_load(&g_load_up); dm_uiscreen_set_ingame(ui_panel(proot, "HUDPanel") && !(lu < 0 ? ui_find(proot, "LoadScreenPanel", 0) != 0 : lu)); } ui_safe_pump(pm, proot, fr); ui_lift_pump(proot, fr); ui_note_dock_pump(proot); ui_trove_tabs_pump(pm, proot, fr); ui_minimap_pump(pm, proot, pw, phh, fr); ui_map_pump(pm, proot); ui_map_geom_pump(pm, proot); ui_boss_pct_pump(pm, proot); ui_npcdlg_pump(proot); ui_map_center(pm, proot, *(volatile int32_t *)(pm->base + 0x2d5c748)); if (tm) ui_bind_pump(proot, fr); if (tm) swaptab_pump(proot); if (tm) ui_mercpg_pump(pm, proot, fr); ui_widestash_pump(proot); mv_audit_pump(proot, fr); ui_pages_pump(pm, proot); } } }
     if (atomic_load(&g_fe_name_open) && atomic_load(&g_ut_phase) == 2) {   // 起名页：点输入框（底板 / 文本框）= 重新弹系统键盘，不发鼠标点击 | naming page: tapping the input box (backplate / text box) = pop up the system keyboard again, no mouse click is sent
         module_t *nm = main_module(); uint64_t nroot = 0; if (nm) memcpy(&nroot, nm->base + 0x2f05458, 8); uint64_t pn = nroot ? ui_find(nroot, "CharacterCreateNamePanel", 0) : 0;
         if (pn && nm) { int32_t w = *(int32_t *)(nm->base + 0x211da38), h = *(int32_t *)(nm->base + 0x211da3c); uint64_t v = atomic_load(&g_ut_xy);
