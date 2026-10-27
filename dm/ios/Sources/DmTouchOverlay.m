@@ -270,9 +270,9 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     // Outline the current portrait minimap hit region; do not show a stale or fullscreen map.
     extern int dm_ui_minimap_rect(float r[4]);
     extern int dm_ui_minimap_render_rect(int rect[4], int *dy);
-    float map[4]; int source[4], dy;
+    float map[4]; int source[4], map_delta;
     if (self.bounds.size.height > self.bounds.size.width && !self.navigationMode &&
-        dm_ui_minimap_render_rect(source, &dy) && dm_ui_minimap_rect(map)) {
+        dm_ui_minimap_render_rect(source, &map_delta) && dm_ui_minimap_rect(map)) {
         CGRect band = front_ios_ui_band(self);
         CGRect outline = CGRectMake(band.origin.x + map[0]*band.size.width,
             band.origin.y + map[1]*band.size.height,
