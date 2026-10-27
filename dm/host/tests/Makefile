@@ -7,6 +7,9 @@ B = build
 # 依赖一行一个、按字母序（同 ../Makefile 的 SRC：免得加一个测试就整行冲突）；下面各条命令的先后不变
 # Dependencies one per line in alphabetical order (same as SRC in ../Makefile: so that adding one test does not conflict on the whole line); the order of the commands below is unchanged
 run: \
+	$(B)/t_camera_pan \
+	$(B)/t_movie_touch_state \
+	$(B)/t_frontend_modal \
 	$(B)/t_ui_message_queue \
 	$(B)/t_orb_anchor \
 	$(B)/t_metalfx_auto \
@@ -94,6 +97,9 @@ run: \
 	$(B)/t_hud_dead
 	$(B)/t_namegen
 	$(B)/t_ui_message_queue
+	$(B)/t_frontend_modal
+	$(B)/t_camera_pan
+	$(B)/t_movie_touch_state
 	$(B)/t_orb_anchor
 	$(B)/t_metalfx_auto
 	$(B)/t_metalfx_quality
@@ -132,7 +138,7 @@ $(B)/t_unit_level: t_unit_level.c ../dm_unit.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_unit_level.c
 $(B)/t_padmap: t_padmap.c ../dm_padmap.h ../dm_input.h | $(B)
 	clang -O1 -Wall -Werror -o $@ t_padmap.c
-$(B)/t_cam_zoom: t_cam_zoom.c ../dm_uiscreen.c ../dm_uiscreen.h ../dm.h ../hle.h | $(B)
+$(B)/t_cam_zoom: t_cam_zoom.c ../dm_uiscreen.c ../dm_uiscreen.h ../dm_camera_pan.h ../dm.h ../hle.h | $(B)
 	clang -std=c11 -O1 -Wall -Werror -I.. -o $@ t_cam_zoom.c ../dm_uiscreen.c -lm
 $(B)/t_minimap_policy: t_minimap_policy.c ../dm_minimap_policy.h | $(B)
 	clang -std=c11 -O1 -Wall -Werror -o $@ t_minimap_policy.c
@@ -255,3 +261,12 @@ $(B)/t_ui_message_queue: t_ui_message_queue.c $(wildcard ../*.c ../*.h) | $(B)
 
 $(B)/t_orb_anchor: t_orb_anchor.c $(wildcard ../*.c ../*.h) | $(B)
 	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_orb_anchor.c -lm
+
+$(B)/t_frontend_modal: t_frontend_modal.c ../dm_cursor.c ../dm_cursor.h | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_frontend_modal.c -lm
+
+$(B)/t_camera_pan: t_camera_pan.c ../dm_camera_pan.h | $(B)
+	clang -O2 -I.. -o $@ t_camera_pan.c -lm
+
+$(B)/t_movie_touch_state: t_movie_touch_state.c ../hle_movie.c ../dm_movie_decode.h | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_movie_touch_state.c -lm

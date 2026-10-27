@@ -1,4 +1,5 @@
 #ifndef DM_MOVIE_FFMPEG
+int dm_movie_cutscene_active(void) { return 0; }
 // 过场 / 背景视频剪口（movie:: = subsdk0 任天堂 movie 库；视频内容在复刻排除范围内，不解码、不出画面）。
 // 语义：每段视频按容器里的真实时长「空播」，时序与原版一致——一次性视频到时长走游戏自己的「播完」路径（按键跳过照常生效），
 // 循环视频（选角背景 logoloop）由游戏自己 SeekTo 回开头、按原时长空转。排除的是内容，状态机不剪。
@@ -342,6 +343,8 @@ HLE_FORCE("_ZN5movie6Buffer18SetDataAndCapacityEPvm", "过场空播：Buffer 设
    frame fetch 0x89a4b0. Audio, subtitles, clock, skip, and loops stay in the guest. */
 #include "hle.h"
 #include "dm_movie_decode.h"
+#include <stdatomic.h>
+#include <ctype.h>
 #include <errno.h>
 
 #define ST_OK 0
@@ -357,13 +360,30 @@ typedef struct {
     dm_movie_decode *decode;
     dm_movie_info info;
     void *in, *out;
-    int refs, started, eos;
+    int refs, started, eos, cutscene;
     int64_t pts;
     uint64_t sequence;
     mvframe frames[MV_SLOTS];
 } mvreal;
 static pthread_mutex_t movie_lock = PTHREAD_MUTEX_INITIALIZER;
 static mvreal *movie_pending;
+static _Atomic int movie_cutscenes;
+int dm_movie_cutscene_active(void) { return atomic_load(&movie_cutscenes)>0; }
+// The title-screen loop is decoded too, but must never capture menu touches.
+static int movie_is_cutscene(const char *path) {
+    if (!path) return 0;
+    const char *loop="logoloop";
+    for (const char *p=path;*p;p++) {
+        size_t n=0;while(loop[n] && p[n] && tolower((unsigned char)p[n])==loop[n]) n++;
+        if (!loop[n]) return 0;
+    }
+    return 1;
+}
+static void movie_started(mvreal *m,int on) {
+    on=on!=0;if(m->started==on) return;
+    m->started=on;
+    if(m->cutscene && m->decode) atomic_fetch_add(&movie_cutscenes,on?1:-1);
+}
 static void (*movie_signal)(void *);
 static void (*movie_free)(void *, void *);
 static void *movie_user;
@@ -398,6 +418,7 @@ static void movie_release(void *self) {
     pthread_mutex_lock(&movie_lock);
     if (movie_pending == m) movie_pending = NULL;
     if (--m->refs == 0) {
+        movie_started(m,0);
         dm_movie_decode_close(m->decode);
         if (m->handle) {
             void **vt = *(void ***)m->reader;
@@ -421,7 +442,7 @@ HLE_FORCE("_ZN5movie12SetAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", "Movie
 }
 static int movie_source(void *self, void **reader, const char *path) {
     mvreal *m=calloc(1,sizeof *m);if(!m) die("Movie: out of memory for source");
-    m->reader=reader;m->refs=1;
+    m->reader=reader;m->refs=1;m->cutscene=movie_is_cutscene(path);
     void **vt=reader?*(void ***)reader:NULL;char error[160]={0};
     if(vt && path && (((uint32_t (*)(void *,const char *,void **))vt[2])(reader,path,&m->handle)&1))
         m->decode=dm_movie_decode_open(movie_read,m,&m->info,error,sizeof error);
@@ -482,11 +503,11 @@ static int movie_start(void *self) {
     mvreal *m = movie(self);
     if (!movie_signal) movie_signal = guest_sym("_ZN2nn2os11SignalEventEPNS0_9EventTypeE");
     if (!movie_signal || !m->in || !m->out) die("Movie: missing guest events");
-    pthread_mutex_lock(&movie_lock); m->started = 1; movie_wake_input(m); pthread_mutex_unlock(&movie_lock);
+    pthread_mutex_lock(&movie_lock); movie_started(m,1); movie_wake_input(m); pthread_mutex_unlock(&movie_lock);
     return ST_OK;
 }
 static int movie_stop(void *self) {
-    pthread_mutex_lock(&movie_lock); movie(self)->started = 0; pthread_mutex_unlock(&movie_lock); return ST_OK;
+    pthread_mutex_lock(&movie_lock); movie_started(movie(self),0); pthread_mutex_unlock(&movie_lock); return ST_OK;
 }
 static int movie_input_index(void *self, int *index, int *remaining) {
     mvreal *m = movie(self);

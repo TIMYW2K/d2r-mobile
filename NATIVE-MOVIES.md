@@ -10,3 +10,5 @@ iOS 默认启用 FFmpeg 7.1.1 的 LGPL 最小静态构建，仅 Matroska/WebM、
 云构建先运行合成 VP8（含无音轨/Opus 音轨）与 FFmpeg NV12 逐字节对照，覆盖元数据、PTS、EOS、seek、循环、背压、停止/跳过、共享读取器释放；再运行 ASan/UBSan。iOS 静态库通过 gen_build.py 自动构建并收进 DM_FRAMEWORKS，兼容实际 reusable Actions，不依赖 run.sh。
 
 App 内 Legal 目录附 FFmpeg 许可与源码/重建说明。真机视频画面、声音、字幕及章节转换仍需安装验收。
+
+2026-10-26 后续（代码修改，尚未编译）：触屏提示改为“长按屏幕跳过”（含繁体/英文），播放有效过场时任意屏幕触点持续发布 A，由原游戏判定长按阈值；释放、取消、后台及影片结束清理。按路径排除 logoloop 菜单背景；无有效解码资源不会接管触摸。手柄模式保持原按键提示。

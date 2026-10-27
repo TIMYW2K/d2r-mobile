@@ -19,7 +19,7 @@ void dm_ui_rect(int *x,int *y,int *w,int *h) { *x=0; *y=1288; *w=1206; *h=1334; 
 static int checks,fails,relayouts;
 #define CHECK(c) do { checks++; if(!(c)) { fails++; printf("FAIL line %d: %s\n",__LINE__,#c); } } while(0)
 static _Alignas(8) unsigned char root[160], hud[160], nodes[7][160];
-static uint64_t root_children[3], hud_children[7], vtable[4];
+static uint64_t root_children[4], hud_children[7], vtable[4];
 static const char *names[7]={"HealthBall","ManaBall","Belt","TouchPortraitBeltBacking0","TouchPortraitBeltBacking1","TouchPortraitBeltBacking2","TouchPortraitBeltBacking3"};
 static const int base_x[7]={-900,600,-500,29543,29740,29936,30133};
 static uint64_t ptr(void *p) { return (uint64_t)(uintptr_t)p; }
@@ -65,8 +65,28 @@ int main(void) {
  widget(hire,"HireablesPanel",ptr(root)); widget(merc,"Pet",ptr(hire)); *x(merc)=40; *(int32_t *)(merc+0x74)=60;
  pets[0]=ptr(merc); *(uint64_t *)(hire+0x58)=ptr(pets); *(uint64_t *)(hire+0x60)=1;
  root_children[1]=ptr(warnings); root_children[2]=ptr(hire); *(uint64_t *)(root+0x60)=3;
- tick(); CHECK(*x(warnings)==39); CHECK(*x(merc)==61); CHECK(*(int32_t *)(merc+0x74)==-87);
- tick(); CHECK(*x(warnings)==39); CHECK(*x(merc)==61); CHECK(*(int32_t *)(merc+0x74)==-87);
+ tick(); CHECK(*x(warnings)==-10); CHECK(*x(merc)==99); CHECK(*(int32_t *)(merc+0x74)==-124);
+ tick(); CHECK(*x(warnings)==-10); CHECK(*x(merc)==99); CHECK(*(int32_t *)(merc+0x74)==-124);
  portrait=0; tick(); CHECK(*x(warnings)==100); CHECK(*x(merc)==40); CHECK(*(int32_t *)(merc+0x74)==60);
+ // Exercise the production map publisher using the portrait band geometry
+ // captured from the device, rather than a hand-written expected draw rect.
+ static _Alignas(8) unsigned char map[0x1600];
+ widget(map,"AutoMap",ptr(root)); *(uint64_t *)map=ptr(base)+0x20c58a0;
+ *x(map)=-650; *(int32_t *)(map+0x74)=78;
+ *(int32_t *)(map+0x78)=650; *(int32_t *)(map+0x7c)=718;
+ *(int32_t *)(base+0x2d479f4)=2; *(int32_t *)(base+0x2d5c748)=1;
+ root_children[3]=ptr(map); *(uint64_t *)(root+0x60)=4;
+ portrait=1; tick();
+ int mr[4],delta=0; CHECK(dm_ui_minimap_render_rect(mr,&delta));
+ CHECK(mr[0]==402 && mr[1]==48 && mr[2]==401 && mr[3]==443);
+ CHECK(1288+mr[1]+delta==210); // top 8% of 2622; safely in the red box
+ CHECK(1288+mr[1]+delta+mr[3]<=654);
+ for(int i=0;i<10;i++) { tick(); int next[4],nd; CHECK(dm_ui_minimap_render_rect(next,&nd)); CHECK(!memcmp(mr,next,sizeof mr)&&delta==nd); }
+ // Both native mini modes share the same portrait position, fullscreen does not.
+ *(int32_t *)(base+0x2d479f4)=1; tick(); CHECK(dm_ui_minimap_render_rect(mr,&delta)); CHECK(mr[0]==402);
+ *(int32_t *)(base+0x2d5c748)=0; tick(); CHECK(!dm_ui_minimap_render_rect(mr,&delta));
+ *(int32_t *)(base+0x2d479f4)=2; *(int32_t *)(base+0x2d5c748)=1;
+ tick(); CHECK(dm_ui_minimap_render_rect(mr,&delta));
+ portrait=0; tick(); CHECK(!dm_ui_minimap_render_rect(mr,&delta));
  free(base); printf("t_portrait_hud: %d checks, %d failures\n",checks,fails); return fails!=0;
 }

@@ -14,6 +14,7 @@ static int g_nofile_was, g_nofile_now;   // 启动时的文件描述符软上限
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <dirent.h>
 #include <libkern/OSCacheControl.h>
 #include <sys/sysctl.h>
@@ -528,6 +529,25 @@ static BOOL astc_dl_configured(void) {   // 自动下载地址配了没有：测
 static NSString *g_block_title, *g_block_msg, *g_block_why;   // 非空 = 这台设备 / 这个安装包起不了游戏：不起宿主，场景里弹框（BlockVC）说明；why 进日志 | Non-empty = this device / this install package cannot start the game: do not start the host, show a message in the scene (BlockVC); why goes to the log
 static NSString *g_romfs; static char g_romfs_why[2048];   // 起宿主前那次资源校验的结果（host_start 写，boot_prepare 用） | Result of the resource check before starting the host (written by host_start, used by boot_prepare)
 static UIWindow *g_window;
+static _Atomic int g_frontend_quit_dialog;
+int dm_frontend_quit_visible(void) { return atomic_load(&g_frontend_quit_dialog); }
+void dm_frontend_quit_request(void) {
+    if (atomic_exchange(&g_frontend_quit_dialog,1)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc=g_window.rootViewController;
+        while(vc.presentedViewController) vc=vc.presentedViewController;
+        if (!vc || !vc.view.window || UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) {
+            atomic_store(&g_frontend_quit_dialog,0);return;
+        }
+        UIAlertController *a=[UIAlertController alertControllerWithTitle:T("dmAppQuit") message:T("dmAppQuitConfirm") preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:T("dmCancel") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { (void)action;atomic_store(&g_frontend_quit_dialog,0); }]];
+        [a addAction:[UIAlertAction actionWithTitle:T("dmOldQuit") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+            (void)action;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{ dm_host_shutdown("主菜单确认退出"); });
+        }]];
+        [vc presentViewController:a animated:YES completion:nil];
+    });
+}
 static NSString *kv_file(NSString *path, NSString *key) {
     NSString *t = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     for (NSString *l in [t componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) if ([l hasPrefix:[key stringByAppendingString:@"="]]) return [l substringFromIndex:key.length + 1];

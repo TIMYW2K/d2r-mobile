@@ -283,8 +283,8 @@ def _pc_mainmenu(s):
     i = s.rstrip().rfind(']'); assert s.rstrip().endswith('}') and i > 0
     return s[:i].rstrip(' ') + _UPDATE + '    ' + s[i:], n + 2
 def _pc_charselect(s):
-    # 右侧存档列表：整块往里收 SAFE_X；「线上 / 离线」页签挪走（只有离线）；列表三行字用回原主机档字号（统一 40 的大字装不下三行）
-    # Save list on the right: the whole block is pulled inward by SAFE_X; the 「线上 / 离线」(Online / Offline) tabs are moved away (offline only); the three text lines of the list go back to the original console profile font sizes (the uniform large size of 40 does not fit three lines)
+    # 右侧存档列表：整块往里收 SAFE_X；「线上 / 离线」页签挪走（只有离线）；列表三行字放大为 40/44/40，保留三行布局与字体风格
+    # Save list on the right: the whole block is pulled inward by SAFE_X; the 「线上 / 离线」(Online / Offline) tabs are moved away (offline only); the three text lines use 40/44/40 while retaining the original typeface and three-line structure
     s = _sub1(s, '"rect": { "x": -801, "y": 0 },', '"rect": { "x": %d, "y": 0 },' % (-801 - SAFE_X))
     s, n = offscreen(s, types=(), names=('Tabs', 'ConvertCharacter'))
     if n != 2: raise SystemExit('touch_layout：键鼠版选角列表的页签 / 转换按钮没找到')
@@ -301,19 +301,25 @@ def _pc_charselect(s):
     # 「创建新角色」：键鼠版发的 ToCharacterCreate 不带参数，手柄模式下列表收起后不进职业选择页（Mac 宿主实测）；带上参数 1（同手柄版「新角色」键发的）
     # 「创建新角色」(Create New Character): the ToCharacterCreate sent by the keyboard-and-mouse layout carries no argument, and in controller mode after the list collapses it does not enter the class selection page (measured on the Mac host); argument 1 is added (same as what the controller layout's 「新角色」(New Character) key sends)
     s = _sub1(s, '"onClickMessage": "FrontEndNavigation:ToCharacterCreate",', '"onClickMessage": "FrontEndNavigation:ToCharacterCreate:1",')
-    for name, var, size in (('Title', '$XMediumFontSize', 30), ('Name', '$XMediumLargeFontSize', 34), ('Level&Class', '$XMediumFontSize', 30)):
+    for name, var, size in (('Title', '$XMediumFontSize', 40), ('Name', '$XMediumLargeFontSize', 44), ('Level&Class', '$XMediumFontSize', 40)):
         i = s.index('"type": "TextBoxWidget", "name": "%s"' % name); m = re.compile(r'"pointSize":\s*"(\$[A-Za-z]+)"').search(s, i)
         if not m or m.group(1) != var: raise SystemExit('touch_layout：选角列表 %s 的字号不是原样（原版布局变了？）' % name)
         s = s[:m.start()] + '"pointSize": %d' % size + s[m.end():]; n += 1
     return s, n + 1
 def _pc_ribbon(s):
+    # Keep the native Settings/Cinematics/Credits actions. Quit is confirmed by
+    # the iOS host instead of entering the desktop-only ToExit state machine.
+    # Move the entire ribbon, including its hit regions, past the island inset.
+    s = _sub1(s, '"rect": { "x": 0, "y": 0 }, "filename": "FrontEnd/HD/Final/FrontEnd_LeftPanel"',
+              '"rect": { "x": %d, "y": 0 }, "filename": "FrontEnd/HD/Final/FrontEnd_LeftPanel"' % SAFE_X)
+    s = _sub1(s, '"onClickMessage": "FrontEndNavigation:ToExit",',
+              '"onClickMessage": "PanelManager:ClosePanel:TouchQuitApp",')
     import movie_config
-    if movie_config.enabled(): return s, 0
-    # 左侧栏整块不要（「选项」「退出」两个按钮、按钮区和背景图全删，标志也一起删，首页不留设置入口）；公告栏本来就是空的，一并挪走
-    # The whole left sidebar block is dropped (the two buttons 「选项」(Options) and 「退出」(Quit), the button area and the background image are all deleted, the logo is deleted too, and the home page keeps no settings entry); the announcement bar was empty anyway and is moved away as well
-    s, n = offscreen(s, types=(), names=('Ribbon', 'MotDSection'))
-    if n != 2: raise SystemExit('touch_layout：键鼠版左侧栏应挪走 2 块，找到 %d 块' % n)
-    return s, n
+    names = ('MotDSection',) if movie_config.enabled() else ('MotDSection', 'Cinematics')
+    s, n = offscreen(s, types=(), names=names)
+    if n != len(names): raise SystemExit('touch_layout: missing front-end sidebar widgets')
+    return s, n + 2
+
 PCFRONT = {
     'controller/console/mainmenupanelhd.json': ('mainmenupanelhd.json', _pc_mainmenu),
     'controller/console/characterselectpanelhd.json': ('characterselectpanelhd.json', _pc_charselect),

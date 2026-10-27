@@ -35,7 +35,7 @@ TABLE = {
         # Switching between two comparable equipped items (e.g. two rings) = single-tap the same item again (the behavior belongs to the input layer)
         'ControllerCycleComparisonTooltips': ('d53c0a25', '再点一次与另一件比较'),
         'SelectButtonNoteText': ('aa4e91fa', ''),   # 触摸下交互 = 点目标、拾取 = 点物品名，与技能键无关 | Under touch, interact = tap the target and pick up = tap the item name, unrelated to the skill buttons
-        'MoviePlaybackHoldToSkip_switch': ('f3a05873', ''),                           # 过场不放（宿主 0.1 秒播完），这句不要 | Cutscenes are not played (the host finishes them in 0.1 s), so this sentence is dropped
+        'MoviePlaybackHoldToSkip_switch': ('f3a05873', ''),                           # 非原生播放时隐藏；原生模式由 movie_touch_text 提供屏幕长按提示
     },
     'ui.json': {
         # 通知里不写怎么操作（界面更简洁；十字按钮变红已表达）
@@ -100,20 +100,25 @@ EN = {
 # both modes) and still modify the files as before
 FILE_ONLY = {'strchratr', 'strchrrat'}
 
+def movie_touch_text(key, fallback, language):
+    import movie_config
+    if key.startswith('MoviePlaybackHoldToSkip') and movie_config.enabled():
+        return {'zhCN':'长按屏幕跳过','zhTW':'長按螢幕跳過'}.get(language,'Touch and hold the screen to skip')
+    return fallback
+
+
 def build_sidecar(romfs):
     """[(键, 原文校验, 触摸说法)]：FILE_ONLY 以外的全部条目；原文校验同 TABLE（宿主按它认串表里的原文，对不上不换）。 | [(key, source checksum, touch wording)]: all entries other than FILE_ONLY; the source checksum is the same as in TABLE (the host uses it to identify the original text in the string table and does not swap on a mismatch)."""
     out = []
     for name, items in TABLE.items():
         path, text = touch_layout.read_layout(romfs, None, suffix='/lng/strings/' + name)
         for key, (old, new) in items.items():
-            import movie_config
-            if key.startswith('MoviePlaybackHoldToSkip') and movie_config.enabled(): continue
             if key in FILE_ONLY: continue
             m = re.search(r'"Key":\s*"%s",.*?"zhCN":\s*("(?:[^"\\]|\\.)*")' % re.escape(key), text, re.S)
             if not m: raise SystemExit('touch_strings：%s 里没有键 %s' % (name, key))
             cur = json.loads(m.group(1))
             if hashlib.sha1(cur.encode('utf-8')).hexdigest()[:8] != old: raise SystemExit('touch_strings：%s 的原文变了（校验 %s，现行「%s」）——原包换了版本，核过再改表' % (key, old, cur))
-            out.append((key, old, new))
+            out.append((key, old, movie_touch_text(key,new,'zhCN')))
         # 英文列（英文版）：同一批键再各出一行，原文校验是 enUS 的原文。宿主按「串表里此刻的原文」认校验（dm_padmode.c str_apply），
         # 游戏语言是英文时中文那行对不上不换、英文这行对上才换，反之亦然；不用宿主另跟语言
         # English column (English version): the same set of keys gets one more row each, whose source-text check is against the enUS source text. The host
@@ -125,7 +130,14 @@ def build_sidecar(romfs):
             if not m: raise SystemExit('touch_strings：%s 里没有键 %s 的 enUS' % (name, key))
             cur = json.loads(m.group(1))
             if hashlib.sha1(cur.encode('utf-8')).hexdigest()[:8] != old: raise SystemExit('touch_strings：%s 的 enUS 原文变了（校验 %s，现行「%s」）——原包换了版本，核过再改表' % (key, old, cur))
-            out.append((key, old, new))
+            out.append((key, old, movie_touch_text(key,new,'enUS')))
+        # Traditional Chinese has its own source hash; preserve pad originals.
+        for key in items:
+            if not key.startswith('MoviePlaybackHoldToSkip'): continue
+            m=re.search(r'"Key":\s*"%s",.*?"zhTW":\s*("(?:[^"\\]|\\.)*")' % re.escape(key),text,re.S)
+            if m:
+                cur=json.loads(m.group(1))
+                out.append((key,hashlib.sha1(cur.encode('utf-8')).hexdigest()[:8],movie_touch_text(key,'','zhTW')))
     return out
 
 def build(romfs, outdir):
@@ -135,8 +147,6 @@ def build(romfs, outdir):
         path, text = touch_layout.read_layout(romfs, None, suffix='/lng/strings/' + name)
         if not any(k in FILE_ONLY for k in items): continue
         for key, (old, new) in items.items():
-            import movie_config
-            if key.startswith('MoviePlaybackHoldToSkip') and movie_config.enabled(): continue
             if key not in FILE_ONLY: continue
             m = re.search(r'"Key":\s*"%s",.*?"zhCN":\s*("(?:[^"\\]|\\.)*")' % re.escape(key), text, re.S)
             if not m: raise SystemExit('touch_strings：%s 里没有键 %s' % (name, key))

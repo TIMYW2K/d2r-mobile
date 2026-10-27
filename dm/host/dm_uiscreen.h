@@ -20,6 +20,7 @@ int dm_uiscreen_panel(void);                 // 上面那个状态：局内开�
 void dm_uiscreen_set_portrait(int on);
 int dm_uiscreen_portrait(void);
 void *dm_cam_zoom_factor_slot(void);          // KZOOM TSD entry points at the live host scale used by the static main-text patch
+void dm_cam_pan_pixels(float *dx,float *dy); // Physical frame pixels; portrait scene moves right5/down15.
 float dm_cam_zoom_near_extent(void);          // Current orientation's near stop (1.00)
 float dm_cam_zoom_far_extent(void);           // Landscape 1.25; portrait 1.50, relative to the original range
 void dm_cam_zoom_set(float extent_scale);     // Updates only the current orientation's saved choice

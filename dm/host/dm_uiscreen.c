@@ -13,6 +13,7 @@
 // Companion pieces: world taps are computed on the real frame (dm_world.c uses dm_screen_real); the dm_ui_* entry points take "normalized coordinates within the UI rectangle", converted by the caller (touch front end / test tap path).
 // Off by default. To turn on: the front end calls dm_uiscreen_enable; for Mac host testing use the environment variables DM_UI_169=1 (equivalent to top-aligned) and DM_UI_YPOS=top | center | bottom.
 #include "dm_uiscreen.h"
+#include "dm_camera_pan.h"
 #include "hle.h"
 #include "dm.h"
 #include <stdatomic.h>
@@ -67,12 +68,21 @@ static int yoff(void) { int rh = atomic_load(&g_rh), uh = atomic_load(&g_uh), m 
 // The camera object is also used for rendering, and the projection matrix (4 columns from +0x80) is unconditionally recomputed every frame by 0x162f9ac, so values written into the object would not stick and should not be written anyway. So at the function entry (observation gate OBS_UI_PROJECT, only in the touch rule domain)
 // swap x0 for a copy of the camera, with each projection column of the copy getting y += (2·y0 / height) × that column's w ⇒ the resulting y is smaller by exactly y0; not one byte of the game's camera is changed. When y0 = 0 (off / top-aligned / 16:9 screen), no swap.
 static _Atomic int g_proj_on;
+// Scene panning is performed at the final 3D composite, before UI. Apply the
+// same displacement to world-anchored text and to the projections used by
+// dm_world.c hit tests; its existing +dm_ui_proj_dy restores only UI placement.
+void dm_cam_pan_pixels(float *dx,float *dy) {
+    dm_camera_pan_delta(atomic_load(&g_portrait),atomic_load(&g_ingame),dx,dy);
+}
 static void ui_project_obs(const uint64_t *regs) {
-    int dy = atomic_load(&g_ingame) ? yoff() : 0; const uint8_t *c = (const uint8_t *)(uintptr_t)regs[0]; if (!dy || !c || c[0x160]) return;   // +0x160 = 投影待重算：函数自己会重算并盖掉副本里的偏移，这一次不换（只在改分辨率后的第一次调用） | +0x160 = projection pending recompute: the function will recompute it itself and overwrite the offset in the copy, so do not swap this time (only on the first call after a resolution change)
-    float H = *(const float *)(c + 0x144); if (!(H > 0)) return;
-    static _Thread_local _Alignas(16) uint8_t cam[0x170]; memcpy(cam, c, sizeof cam); float *m = (float *)(cam + 0x80), k = 2.0f * dy / H;
-    for (int j = 0; j < 4; j++) m[j * 4 + 1] += k * m[j * 4 + 3];
-    ((uint64_t *)(uintptr_t)regs)[0] = (uint64_t)(uintptr_t)cam;
+    int dy=atomic_load(&g_ingame)?yoff():0;float px,py;dm_cam_pan_pixels(&px,&py);
+    const uint8_t *c=(const uint8_t *)(uintptr_t)regs[0];
+    if ((!dy && !px && !py) || !c || c[0x160]) return;
+    float W=*(const float *)(c+0x140),H=*(const float *)(c+0x144);
+    if (!(W>0 && H>0)) return;
+    static _Thread_local _Alignas(16) uint8_t cam[0x170];memcpy(cam,c,sizeof cam);
+    dm_camera_pan_projection((float *)(cam+0x80),W,H,px,py,dy);
+    ((uint64_t *)(uintptr_t)regs)[0]=(uint64_t)(uintptr_t)cam;
 }
 int dm_ui_proj_dy(void) { return atomic_load(&g_proj_on) && atomic_load(&g_ingame) ? yoff() : 0; }
 // The signed static patch multiplies orthographic extents by this stable KZOOM slot.

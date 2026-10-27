@@ -2245,7 +2245,7 @@ static void ui_lift_pump(uint64_t root, uint64_t fr) {
         // between "lifted" and "restored", which showed up as the minimap flickering on a real device.
         if (nm && !strcmp(nm, "AutoMap")) continue;
         float ay = *(float *)(p + 0x4c); int layer = *(int32_t *)(p + 0x84); if (!(ay == 0 && layer <= -100)) continue;
-        int extra = nm && !strcmp(nm,"HUDWarnings") && dm_uiscreen_portrait() && h>0 ? (int)lround(50.0*2160/h) : 0;
+        int extra = nm && !strcmp(nm,"HUDWarnings") && dm_uiscreen_portrait() && h>0 ? (int)lround(100.0*2160/h) : 0;
         int32_t y0 = *(int32_t *)(p + 0x74); mv_offset(MV_LIFT, p, 1, -lift-extra, 0);
         if (*(int32_t *)(p + 0x74) != y0) { static int lg; if (lg++ < 16) LOG("贴顶上提：%s（层 %d）y %d → %d", nm ? nm : "?", layer, y0, *(int32_t *)(p + 0x74)); } }
 }
@@ -2588,8 +2588,8 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
       if (p && *(float *)(p + 0x80) != 1.0f) *(float *)(p + 0x80) = 1.0f;
       int sx=0, sy=0, sw=0, sh=0; dm_ui_rect(&sx,&sy,&sw,&sh);
       int port = dm_uiscreen_portrait();
-      int dx = port && sh > 0 ? (int)lround(18.0 * 2160 / sh) : 0;
-      int dy = port && sh > 0 ? (int)lround((-60.0 * 2160 / sh - ui_pt_units(20)) / DM_MERC_SCALE) : 0;
+      int dx = port && sh > 0 ? (int)lround(48.0 * 2160 / sh) : 0;
+      int dy = port && sh > 0 ? (int)lround((-90.0 * 2160 / sh - ui_pt_units(20)) / DM_MERC_SCALE) : 0;
       int ul = atomic_load(&g_safe_l) + dx, ulc = (int)((float)ul / DM_MERC_SCALE);
       uint64_t ch = p ? *(uint64_t *)(p + 0x58) : 0, n = p ? *(uint64_t *)(p + 0x60) : 0;
       static float lg;
@@ -2600,7 +2600,7 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
           mv_offset(MV_SAFE, c, 0, ulc, 1); mv_offset(MV_SAFE, c, 1, dy, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); int ux=0, uy=0, uw=0, uh=0; dm_ui_rect(&ux,&uy,&uw,&uh);
-        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(5.0 * 2160 / uh) + ui_pt_units(11) : 0;
+        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(35.0 * 2160 / uh) + ui_pt_units(11) : 0;
         mv_offset(MV_SAFE, h, 0, -u-dx, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
 
     // Match UIKit's shared portrait shift for live potion/orb contents and their opaque backings.
@@ -4582,7 +4582,10 @@ static void sel_keep(const char *cat, const char *act) {
     ((void (*)(int))(b + 0x7fe32c))((int)at); fe_send("MainMenuHD", "UpdateCharacterInfo", "");
     LOG("选角：确认的是「%s」，原版重排后当前成了「%s」（被选者没排到第一行）→ 已按名字设回第 %lld 行", want, nm ? nm : "", (long long)at);
 }
+__attribute__((weak)) void dm_frontend_quit_request(void) { LOG("前端退出：本宿主未提供确认界面"); }
+__attribute__((weak)) int dm_frontend_quit_visible(void) { return 0; }
 void dm_ui_on_uimsg(const char *cat, const char *act, const char *arg) {
+    if (!strcmp(cat, "PanelManager") && !strcmp(act, "ClosePanel") && arg && !strcmp(arg, "TouchQuitApp")) dm_frontend_quit_request();
     sel_keep(cat, act);
     // 位置守卫自检的四条路：关面板 / 切页签 / 退出到前端（切后台由前端 dm_ui_lifecycle 报）
     // The four paths of the position guard self-check: closing a panel / switching tabs / exiting to the front end (going to the background is reported by the front end's dm_ui_lifecycle)
@@ -4770,6 +4773,15 @@ static int ui_sendq_pop(char out[UI_SENDQ_BYTES]) {
     if(have) { memcpy(out,g_sendq[g_sendq_read],UI_SENDQ_BYTES);g_sendq_read=(g_sendq_read+1)%UI_SENDQ_CAP;g_sendq_count--; }
     pthread_mutex_unlock(&g_sendq_lock);return have;
 }
+static int fe_modal_open(uint64_t root) {
+    int blocked = dm_frontend_quit_visible();
+    static const char *panels[] = { "SettingsPanel", "VideoOptionsPanel", "SoundOptionsPanel", "GameplayOptionsPanel",
+        "CreditsModal", "CinematicsModal", "MoviePlayerPanel", "MoviePlayer", "ConfirmationModal", "DeleteCharacterModal", "LoadScreenPanel" };
+    for (unsigned i = 0; root && !blocked && i < sizeof panels / sizeof panels[0]; i++) {
+        uint64_t w = ui_panel(root, panels[i]); if (w && *(uint8_t *)(w + 0x50)) blocked = 1;
+    }
+    return blocked;
+}
 void dm_ui_frontend_pump(void) {   // 取手柄处调；各动作之间隔开几帧 | called where the controller is fetched; actions are spaced a few frames apart
     { char b[UI_SENDQ_BYTES], *c1,*c2; if(ui_sendq_pop(b)) { c1=strchr(b,':'); if(c1) { *c1++=0;c2=strchr(c1,':');if(c2)*c2++=0;fe_send(b,c1,c2?c2:""); } } }
     // 诊断：DM_DBG_FE_SEND="帧:类别:动作:参数;…"（帧号从 DM_UI_TAPS_AT 命中起算）到帧直接往界面根控件发一条界面消息，探「某条消息此刻收不收」用
@@ -4778,7 +4790,13 @@ void dm_ui_frontend_pump(void) {   // 取手柄处调；各动作之间隔开几
           for (char *t = strtok(buf, ";"); t && nd < 8; t = strtok(NULL, ";")) { unsigned long long f; ds[nd].g[0] = 0; if (sscanf(t, "%llu:%47[^:]:%47[^:]:%47s", &f, ds[nd].c, ds[nd].a, ds[nd].g) >= 3) { ds[nd].fr = f; nd++; } } } }
       uint64_t b = atomic_load(&g_taps_base), f0 = dm_guest_frame(); if (nd > 0 && b) for (int i = 0; i < nd; i++) if (!ds[i].done && f0 >= b + ds[i].fr) { ds[i].done = 1; if (ds[i].c[0] == '!') { void uimsg_emit(const char *, const char *, const char *); LOG("前端路径：只给订阅者补发 %s:%s %s（不进游戏）", ds[i].c + 1, ds[i].a, ds[i].g); uimsg_emit(ds[i].c + 1, ds[i].a, ds[i].g); } else fe_send(ds[i].c, ds[i].a, ds[i].g); } }   // 类别前加 ! = 只发给订阅者、不进游戏（造「消息上开着、游戏里没有」的现场用） | a ! before the category = sent only to subscribers, not into the game (for setting up the "open according to messages, absent in the game" scenario)
     rs_pump(); if (atomic_load(&g_rs) != RS_IDLE) return;   // 一键重开进行中：主菜单 / 选角页由它走，前端自动化不插手（不然主菜单上会按两次 X） | one-tap restart in progress: it handles the main menu / character select page and the front-end automation stays out (otherwise X would be pressed twice on the main menu)
-    static uint64_t next; uint64_t fr = dm_guest_frame(); if (fr < next) return;
+    static uint64_t next, bare; uint64_t fr = dm_guest_frame(); if (fr < next) return;
+    // Closing the character list to show Settings, a movie or a modal is not
+    // an abandoned character selection. Never inject X into these screens.
+    if (atomic_load(&g_fe_ribbon)) {
+        module_t *mm = main_module(); uint64_t root = 0; if (mm) memcpy(&root, mm->base + 0x2f05458, 8);
+        if (fe_modal_open(root)) { bare = 0; next = fr + 1; return; }
+    }
     if (atomic_load(&g_cc_open)) {   // 职业选择页的「返回」只在有存档（从选角页进来）时出现；无存档时这页就是首页 | 「返回」(Back) on the class selection page appears only when there are saves (entered from the character select page); with no saves this page is the home page
         module_t *m = main_module(); uint64_t root = 0; if (m) memcpy(&root, m->base + 0x2f05458, 8);
         uint64_t pn = root ? ui_find(root, "CharacterCreatePanel", 0) : 0, bk = pn ? ui_find(pn, "TouchBack", 0) : 0;
@@ -4905,7 +4923,7 @@ void dm_ui_frontend_pump(void) {   // 取手柄处调；各动作之间隔开几
     // After the list is collapsed (no new main menu message): sitting on the main menu for a full 20 frames with no other popup → reopen the character select page
     // Collapsing the list does not necessarily produce a ClosePanel message (tapping a list row = select and collapse, only SelectCharacter is emitted): read the visible bit of the character select panel widget directly
     int ribbon = atomic_load(&g_fe_ribbon), list_vis = 0; if (ribbon) { module_t *m = main_module(); uint64_t root = 0; if (m) memcpy(&root, m->base + 0x2f05458, 8); uint64_t w = root ? ui_find(root, "CharacterSelectPanel", 0) : 0; list_vis = w && *(uint8_t *)(w + 0x50); }   // 只有停在主菜单时才用得到这一位；局内不找（局内没有这个面板，每帧都是整树比完） | this bit is only needed while sitting on the main menu; not searched in a run (this panel does not exist in a run, so every frame would compare the whole tree)
-    static uint64_t bare; if (ribbon && !list_vis && !atomic_load(&g_fe_confirm_open)) { if (!bare) bare = fr; else if (fr - bare >= 20) { bare = 0; const char *sv = getenv("DM_SAVE"); if (!sv || has_character(sv, 0)) { fe_key(DM_BTN_X); next = fr + 30; LOG("前端路径：选角列表被收起 → 重新打开（X）"); }
+    if (ribbon && !list_vis && !atomic_load(&g_fe_confirm_open)) { if (!bare) bare = fr; else if (fr - bare >= 20) { bare = 0; const char *sv = getenv("DM_SAVE"); if (!sv || has_character(sv, 0)) { fe_key(DM_BTN_X); next = fr + 30; LOG("前端路径：选角列表被收起 → 重新打开（X）"); }
             else { atomic_store(&g_fe_ribbon, 0); fe_send("FrontEndNavigation", "ToCharacterCreate", "1"); next = fr + 30; LOG("前端路径：已没有角色（删掉了最后一个）→ 直达职业选择"); } } } else bare = 0;
 }
 // ---------- 模式切换事务的登记项（dm_mode_items.h；游戏主线程，改布局之前调） ----------

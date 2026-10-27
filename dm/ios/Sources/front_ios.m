@@ -39,6 +39,8 @@ static NSString *SWT(const char *k) { return @(dm_ui(k)); }   // 我们自己的
 // Local change: the portrait D2 Pal button -- first launch by bundle id (exact, the Pro app), then try the likely URL
 // schemes, and finally fall back to the App Store page (so a player without the app can install it). openURL itself
 // needs no whitelist, so Info.plist does not need LSApplicationQueriesSchemes.
+int dm_movie_cutscene_active(void); // hle_movie.c: excludes looping menu backgrounds.
+static BOOL touch_done(UITouch *t);
 static BOOL dm_pal_open_bundle(NSString *bundle) {
     Class ws_class = NSClassFromString(@"LSApplicationWorkspace");
     if (!ws_class) {
@@ -138,18 +140,27 @@ int front_ios_portrait(void) { return g_portrait; }
 // 局内才允许转屏：启动与所有前端页面一律横屏（用户 2026-10-23 反馈：竖屏启动会卡在版号画面）
 // Rotate only in a run: the launch and every front-end page stay landscape (user feedback 2026-10-23: a portrait launch hung on the version label).
 // 局内允许四向；竖屏时局内换图的读取画面（dm_uiscreen_ingame 短暂为 0）仍要许可竖屏，否则系统会把它转回横屏。
-// In a run all four orientations are allowed; while already portrait the in-run loading screen (dm_uiscreen_ingame is
-// briefly 0) must keep portrait allowed, or the system would rotate it back to landscape.
-int front_ios_ingame_autorotate(void) { return g_portrait || dm_uiscreen_ingame(); }
+// Keep the entry landscape until the user changes physical posture. Once portrait,
+// retain permission during in-run loading screens (dm_uiscreen_ingame is briefly 0).
+#include "dm_orientation_policy.h"
+static dm_orientation_entry g_orientation_entry = {0,-1,0};
+static int dm_physical_posture(void) {
+    UIDeviceOrientation o=UIDevice.currentDevice.orientation;
+    return UIDeviceOrientationIsLandscape(o)?0:o==UIDeviceOrientationPortrait?1:-1;
+}
+static void dm_orientation_observe(void) {
+    dm_orientation_entry_observe(&g_orientation_entry,dm_uiscreen_ingame(),dm_physical_posture());
+}
+int front_ios_ingame_autorotate(void) { return g_portrait || (dm_uiscreen_ingame() && g_orientation_entry.enabled); }
 static void dm_orient_apply(int p);
 static void dm_orientation_reconcile(const char *why);
 static unsigned g_orientation_resume_epoch;
-#include "dm_orientation_policy.h"
 #include "dm_touch_end_policy.h"
 void front_ios_set_launch_bounds(CGRect b, UIInterfaceOrientation o) {
     // 整体先横屏启动：前端页面 / 读取画面完全沿用横屏布局，竖屏只在局内由用户转屏进入。
     // Launch landscape as a whole: front-end pages / loading screens keep the landscape layout; portrait is only entered in a run when the user rotates.
     (void)b; (void)o;
+    dm_orientation_entry_reset(&g_orientation_entry);
     if (g_portrait) { g_portrait = 0; ++g_res_dir; }
     g_full = 0;
     LOG("前端：启动横屏（竖屏仅在局内转屏可用）");
@@ -341,6 +352,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 @implementation DmMetalView {
     UILabel *_verLabel;   // 左下角版本号（只显示版本，不带构建号） | bottom-left version label (version only)
     UITouch *_slot[16];   // 强引用（真机 SIGSEGV：原先不保留，某条路径没清槽时手指对象已释放，下次 pushFrom 读它就崩）。所有结束 / 取消路径都要清槽 | Strong references (real-device SIGSEGV: previously not retained, so when some path failed to clear the slot the finger object was already released and the next pushFrom crashed reading it). All end / cancel paths must clear the slot
+    NSMutableSet<UITouch *> *_movieTouches; // Full-screen hold is owned until release/cancel.
     dm_tc_state _controls;
     DmTouchOverlay *_overlay;
     UIView *_info;   // 信息层：秘境任务条、小地图任务终点。不是触屏控件，手柄模式也要显示（只在前端页面藏），所以不挂在 _overlay 上 | info layer: the Rift objective bar and the minimap quest goal. These are not touch controls and must show in controller mode too (hidden only on front-end pages), so they are not attached to _overlay
@@ -604,7 +616,8 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     // 指针登记为待写光标、再发布按键：宿主在游戏读手柄时把两者一起落地（dm_cursor.h）
     // Register the pointer as a pending cursor write, then publish the keys: the host applies both together when the game reads the controller (dm_cursor.h)
     if (_controls.pointer_valid) cursor_set_view(self,_controls.pointer_x,_controls.pointer_y); else dm_cursor_clear();
-    dm_input_set(_controls.buttons,_controls.lx,_controls.ly,_controls.rx,_controls.ry);
+    uint64_t buttons=dm_movie_cutscene_active() && _movieTouches.count ? DM_BTN_A : _controls.buttons;
+    dm_input_set(buttons,_controls.lx,_controls.ly,_controls.rx,_controls.ry);
     if (_controls.belt_request) { int br=_controls.belt_request; _controls.belt_request=0;   // 腰带展开 / 收起 / 喝上面几排的药（dm_actions.c） | Belt expand / collapse / drink a potion from the upper rows (dm_actions.c)
         if (br==1 || br==2) dm_belt_expand(br==1); else dm_belt_use(br&0xf, br>>4&0xf); }   // 腰带点按一律给玩家喝 | belt taps always go to the player
     if (_controls.diff_request) { dm_hud_request_players(_controls.diff_request); _controls.diff_request=0; }   // 难度选择条选中档位：宿主下一拍走原版 /players 路径 | Difficulty selector strip picked a level: the host takes the original game's /players path on the next tick
@@ -614,14 +627,14 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     }
     if(!_controls.portal_phase) {_modifierPublishEpoch=0;_modifierPublishEndNS=0;}
     _minLeft=MIN(_minLeft,_controls.lx); _maxLeft=MAX(_maxLeft,_controls.lx);
-    if((_controls.buttons & DM_BTN_A) && !(_lastButtons & DM_BTN_A))_touchAPresses++;
-    _lastButtons=_controls.buttons;
-    self.accessibilityValue=[NSString stringWithFormat:@"%@|buttons=%llu|lx=%d|ly=%d|min=%d|max=%d|a=%u|shot=%u",_navigation?@"navigation":@"game",_controls.buttons,_controls.lx,_controls.ly,_minLeft,_maxLeft,_touchAPresses,_touchShots];
+    if((buttons & DM_BTN_A) && !(_lastButtons & DM_BTN_A))_touchAPresses++;
+    _lastButtons=buttons;
+    self.accessibilityValue=[NSString stringWithFormat:@"%@|buttons=%llu|lx=%d|ly=%d|min=%d|max=%d|a=%u|shot=%u",_navigation?@"navigation":@"game",buttons,_controls.lx,_controls.ly,_minLeft,_maxLeft,_touchAPresses,_touchShots];
     if(diagnostic) {
         uint64_t first=_touchEventSeq>_touchPublishedEventSeq?_touchPublishedEventSeq+1:0;
         fprintf(stderr,"[touch-receipt] stage=output receiptseq=%llu eventseq=%llu event_first_seq=%llu event_last_seq=%llu mono_ns=%llu publish_end_ns=%llu source=%s phase=%s buttons=%#llx lx=%d ly=%d rx=%d ry=%d mode=%s portal_request=%llu portal_binding=%llu portal_scene=%llu portal_phase=%d portal_pending=%d modifier_publish_end_ns=%llu feedback_group_start_ns=%llu feedback_captured_ns=%llu feedback_secondary=%d feedback_seen=%u feedback_identity_scope=%d\n",
         (unsigned long long)++_touchReceiptSeq,(unsigned long long)_touchEventSeq,(unsigned long long)first,(unsigned long long)_touchEventSeq,(unsigned long long)publishStart,
-        (unsigned long long)publishEnd,source,phase,(unsigned long long)_controls.buttons,_controls.lx,_controls.ly,_controls.rx,_controls.ry,_navigation?"navigation":"game",
+        (unsigned long long)publishEnd,source,phase,(unsigned long long)buttons,_controls.lx,_controls.ly,_controls.rx,_controls.ry,_navigation?"navigation":"game",
         (unsigned long long)_controls.gesture_epoch,(unsigned long long)_controls.portal_binding_identity,(unsigned long long)_controls.portal_scene_epoch,
         _controls.portal_phase,_controls.portal_pending,(unsigned long long)_modifierPublishEndNS,
         (unsigned long long)_overlay.nativeMapping.group_started_ns,(unsigned long long)_overlay.nativeMapping.captured_ns,
@@ -633,6 +646,11 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 - (void)cancelControlsFrom:(const char *)source {
     if (strcmp(source, "pinch_began") != 0) _pinching = NO;
     _pendEnd=nil; _finalAsked=NO;
+    if(_movieTouches.count) {
+        if(!_swallow) _swallow=[NSHashTable weakObjectsHashTable];
+        for(UITouch *t in _movieTouches) [_swallow addObject:t];
+        [_movieTouches removeAllObjects]; dm_input_release_buttons(DM_BTN_A);
+    }
     for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:source phase:"none"];
     if(_uiDragOn) { _uiDragOn=NO; dm_ui_drag_end(); }
     _mapTouch=_mapBackTouch=_bindTouch=_palTouch=nil;
@@ -798,6 +816,14 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     static int lm=-1, ln=-1, lc; int m2=show ? mode : 0; if((m2!=lm || n!=ln) && lc<40) { lm=m2; ln=n; lc++; LOG("小地图终点：%s %d 个（地图 %d，每格 %.2f 像素 = %.2f 点）", show ? "画" : "不画", n, mode, cell, c); }
 }
 - (void)tickTouchControls:(double)now {
+    if(_movieTouches.count) {
+        if(!dm_movie_cutscene_active()) [self cancelControlsFrom:"movie_finished"];
+        else {
+            NSMutableSet *done=[NSMutableSet set];
+            for(UITouch *t in _movieTouches) if(touch_done(t)) [done addObject:t];
+            if(done.count) [self finishTouches:done phase:"cancelled"];
+        }
+    }
     [self mapGoalSync];
     // 本地改动：方向一变（转屏动画开始）就进入「保持重画」时段；effectiveGeometry 在旋转一开始就会变。
     // Local change: a change of interface orientation (the rotation animation starting) enters the repaint window;
@@ -808,6 +834,7 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     // portrait is allowed only in a run; the exit signal is FrontEndNavigation:ToFrontEnd, the in-run loading screen must
     // not count as an exit (dm_uiscreen_ingame is briefly 0, judging by it would snap back to landscape on every map change).
     [self recoverEndedTouches];
+    dm_orientation_observe();
     { static dm_orientation_retry retry = {-1,0,0}; static unsigned retryEpoch;
       if (retryEpoch != g_orientation_resume_epoch) { retryEpoch=g_orientation_resume_epoch; retry=(dm_orientation_retry){-1,0,0}; }
       UIDeviceOrientation physical=UIDevice.currentDevice.orientation;
@@ -824,6 +851,8 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
       static int lastIngame = -1; int ingame = dm_uiscreen_ingame();
       static unsigned seenResume; BOOL maskDirty = seenResume != g_orientation_resume_epoch;
       seenResume = g_orientation_resume_epoch;
+      static int lastAllowed; int allowed=front_ios_ingame_autorotate();
+      if(allowed!=lastAllowed) { maskDirty=YES; lastAllowed=allowed; }
       // 本地改动（构建 8.1）：方向判定每拍都做，不只看「变化那一拍」——读取画面期间转成竖屏（那时
       // dm_uiscreen_ingame 还是 0）不会错过，进局第一拍补切；转屏途中读到 Unknown 不更新 lastO，
       // 免得下一次真方向被当成没变化。
@@ -835,12 +864,13 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
           if (lastO != UIInterfaceOrientationUnknown && o != lastO) [self rotationChanged:"scene"];
           lastO = o;
           if (UIInterfaceOrientationIsLandscape(o)) { if (g_portrait) { dm_orient_apply(0); maskDirty = YES; } }   // 转回横屏：切回去 | rotated back to landscape: switch back
-          else if (ingame && !g_portrait) { dm_orient_apply(1); maskDirty = YES; }                                // 局内竖屏：切游戏分辨率 | portrait in a run: switch the game resolution
+          else if (ingame && allowed && !g_portrait) { dm_orient_apply(1); maskDirty = YES; }                                // 局内竖屏：切游戏分辨率 | portrait in a run: switch the game resolution
       }
       if (lastIngame >= 0 && ingame != lastIngame) maskDirty = YES;   // 进出局：支持方向跟着变（局内四向 / 局外横屏） | entering / leaving a run: the supported orientations follow (all four in a run / landscape outside)
       lastIngame = ingame;
       static double backDeadline;
       if (atomic_exchange(&g_back_frontend, 0)) {   // 回前端：先许可横屏，再请求系统转回横屏；方向真变过来时上面那段切游戏分辨率 | back to the front end: allow landscape first, then ask the system; the block above switches the game resolution once the orientation really changes
+          dm_orientation_entry_reset(&g_orientation_entry);
           maskDirty = YES; backDeadline = now + 1.0;
           if (@available(iOS 16.0, *)) { UIWindowScene *ws = self.window.windowScene;
               if (ws) { [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
@@ -955,6 +985,15 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     (void)e;
     if (_pinching) return;
     [self sweepEndedSlots];
+    if(dm_movie_cutscene_active()) {
+        if(!_movieTouches.count) {
+            [self cancelControlsFrom:"movie_begin"];
+            if(_uiFinger) { dm_ui_touch(3,0,0); _uiFinger=nil; }
+        }
+        if(!_movieTouches) _movieTouches=[NSMutableSet set];
+        for(UITouch *t in ts) { [_movieTouches addObject:t]; [self recordTouch:t slot:-1 phase:"began"]; }
+        [self pushFrom:"uitouch" phase:"began"]; return;
+    }
     // 手柄模式下碰屏幕 = 回触屏模式（dm_gamepad.m），这一下只做这一件事：此刻屏上是手柄版界面，触屏控件还没显示出来（布局重载要几十帧），
     // 照常往下走的话，落点正好在看不见的回城钮 / 技能钮位置就会直接回城、放技能，面板态还会对手柄版面板发点击。
     // Touching the screen in controller mode = back to touch mode (dm_gamepad.m), and this touch does that one thing only: at this moment the
@@ -1023,6 +1062,11 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     (void)e;
+    if(_movieTouches.count) {
+        NSMutableSet *rest=[ts mutableCopy];
+        for(UITouch *t in ts) if([_movieTouches containsObject:t]) { [self recordTouch:t slot:-1 phase:"moved"]; [rest removeObject:t]; }
+        ts=rest; if(!ts.count) return;
+    }
     if (_islandTouch && [ts containsObject:_islandTouch] && !_islandFired) {   // 移开 30 点 = 取消长按
         CGPoint p = [_islandTouch locationInView:self];
         CGFloat dx = p.x - _islandP0.x, dy = p.y - _islandP0.y;
@@ -1078,6 +1122,17 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
 - (void)finishTouches:(NSSet<UITouch *> *)ts phase:(const char *)phase {
     NSSet<UITouch *> *ending=ts;
     @try {
+    if(_movieTouches.count) {
+        NSMutableSet *rest=[ts mutableCopy]; BOOL changed=NO;
+        for(UITouch *t in ts) if([_movieTouches containsObject:t]) {
+            [self recordTouch:t slot:-1 phase:phase]; [_movieTouches removeObject:t]; [rest removeObject:t]; changed=YES;
+        }
+        if(changed) {
+            [self pushFrom:"uitouch" phase:phase];
+            if(!_movieTouches.count) dm_input_release_buttons(DM_BTN_A);
+        }
+        ts=rest; if(!ts.count) return;
+    }
     // 本地改动：灵动岛单击 —— 抬起时短按（≤0.45 秒）且没移开才开门，然后清掉记录。
     // Local change: Dynamic Island tap -- fire the portal on a short release (<=0.45 s) that did not move, then clear.
     if (_islandTouch && [ts containsObject:_islandTouch]) {
@@ -1805,6 +1860,7 @@ static void resign_save(void) {
 static void dm_orientation_reconcile(const char *why) {
     DmMetalView *v = g_touch_view; UIWindow *window = v.window; UIWindowScene *ws = window.windowScene;
     if (!v || !ws || ws.activationState != UISceneActivationStateForegroundActive) return;
+    dm_orientation_observe();
     ++g_orientation_resume_epoch;
     UIViewController *root = window.rootViewController;
     for (UIViewController *vc = root; vc; vc = vc.presentedViewController) [vc setNeedsUpdateOfSupportedInterfaceOrientations];
@@ -1812,7 +1868,7 @@ static void dm_orientation_reconcile(const char *why) {
     switch (UIDevice.currentDevice.orientation) {
         case UIDeviceOrientationLandscapeLeft: mask = UIInterfaceOrientationMaskLandscapeRight; break;
         case UIDeviceOrientationLandscapeRight: mask = UIInterfaceOrientationMaskLandscapeLeft; break;
-        case UIDeviceOrientationPortrait: if (front_ios_ingame_autorotate()) mask = UIInterfaceOrientationMaskPortrait; break;
+        case UIDeviceOrientationPortrait: mask = front_ios_ingame_autorotate() ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape; break;
         default: break; // Flat/unknown posture cannot choose a new interface orientation.
     }
     LOG("方向核对：%s 设备 %ld 场景 %ld 窗口 %.0fx%.0f 游戏 %s 请求 %#lx",why,(long)UIDevice.currentDevice.orientation,(long)dm_scene_orientation(v),window.bounds.size.width,window.bounds.size.height,g_portrait?"竖":"横",(unsigned long)mask);

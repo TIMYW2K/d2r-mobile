@@ -4657,6 +4657,7 @@ static void ghost_flush(void) {   // 渲染通道结束前：把认到的图标�
     for (int i = 0; i < g_gh.n; i++) free(g_gh.c[i].S_); g_gh.n = 0;
 }
 #include "nvn_metalfx.inc"
+#include "nvn_scene_pan.inc"
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
@@ -4664,7 +4665,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
         if (ng && pr) for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (sh && sh->stage == 1 && !strncmp(sh->key, neg, strlen(neg))) { static int once; if (!once++) MLOG("DM_NVN_RULER_NEG：被测模式丢弃着色器 %s 的绘制", sh->key); return; } }
     }
-    if (metalfx_draw(pr, dw, di)) return;
+    if (metalfx_draw(pr, dw, di)) { scene_pan_after_draw(pr,dw,di); return; }
     if (zskip_can_draw(pr)) {   // 零源跳过：输出恒为 0、写 0 盖 0，这次绘制不改变任何结果（见 zskip_can_draw） | Zero-source skip: the output is always 0, writing 0 over 0, so this draw changes no result (see zskip_can_draw)
         g_zskip_count++; { static int once; if (!once++) MLOG("零源跳过：首例 通道 %llu", g_stat_pass + 1); }
         PD("N %llu 零源跳过", g_stat_pass + 1); return; }
@@ -4815,8 +4816,8 @@ frz_plain:;
             double vp[4] = {S.has_vp ? S.vp[0][0] : 0, S.has_vp ? S.vp[0][1] : 0,
                             S.has_vp ? S.vp[0][2] : (double)tw, S.has_vp ? S.vp[0][3] : (double)th};
             int clip[4] = {R.sc.x, R.sc.y, R.sc.w, R.sc.h}; long delta;
-            if (nvn_minimap_scissor_shift(mr, rw, rh, vp, clip, dy, &delta)) {
-                double uy=0, uh=1; g_ui_rect_fn(&uy, &uh);
+            double uy=0, uh=1; g_ui_rect_fn(&uy, &uh);
+            if (nvn_minimap_scissor_shift(mr, rw, rh, vp, clip, uh, dy, &delta)) {
                 if (uh > 0 && uh < 1) {
                     so = lround(uy * th) + delta; vs = 1; map_move = 1;
                     if (ui_mat_ok()) { moff = 2.0 * so / vp[3]; vo = 0; }
@@ -4943,6 +4944,7 @@ frz_plain:;
                 di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
     }
     if (g_rt_range_pending) { PD("j rt_level_range pass=%llu vc=%u", g_stat_pass, (unsigned)(dw ? dw->count : di->count)); g_rt_range_pending=0; }
+    scene_pan_after_draw(pr,dw,di);
 }
 static nvn_hmap g_cps = {.klen = sizeof(void *)};
 static void warm_claim(void) {
