@@ -346,6 +346,7 @@ def set_cft_sizes(tvfs, pos, encoded_size, content_size):
 CHARACTER_SPRITE_PATHS = frozenset({
     'data/hd/global/ui/panel/hud_02/belt_uparrow.sprite',
     'data/hd/global/ui/panel/beta_exit/betasurveyqr.sprite',
+    'data/hd/global/ui/panel/advancedcharactersheet/advancedcharactersheet_skullscroller.sprite',
 })
 
 

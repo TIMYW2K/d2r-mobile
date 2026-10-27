@@ -14,6 +14,11 @@ int main(void) {
     assert(!nvn_minimap_scissor_shift(rect,1206,2622,native,other,1,-1144,&shift));
     const int rounded[4] = {403,49,401,445};
     assert(nvn_minimap_scissor_shift(rect,1206,2622,native,rounded,1,-1144,&shift));
+    const int smaller[4] = {450, 80, 200, 200};
+    assert(nvn_minimap_trace_candidate(rect,1206,2622,native,smaller,1));
+    assert(!nvn_minimap_trace_candidate(rect,1206,2622,native,other,1));
+    const int outside[4] = {0, 600, 100, 100};
+    assert(!nvn_minimap_trace_candidate(rect,1206,2622,native,outside,1));
     const int wrong[4] = {402,52,402,444};
     assert(!nvn_minimap_scissor_shift(rect,1206,2622,native,wrong,1,-1144,&shift));
     assert(!nvn_minimap_scissor_shift(rect,0,2622,native,sc,1,-1144,&shift));

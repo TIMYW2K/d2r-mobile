@@ -1,11 +1,11 @@
 #pragma once
 #include <stdint.h>
+#include "../../common/dm_hud_geometry.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define DM_TC_PORTRAIT_HUD_DX_PT 15.0f
 enum { DM_TC_MAX_TOUCH = 16, DM_TC_COUNT = 12 };
 enum {
     DM_TC_NONE = -1, DM_TC_JOYSTICK = -2, DM_TC_SWAP = -3, DM_TC_DIFF = -4,   /* DIFF：难度格 / 选择条占用的手指，不发按键 | DIFF: a finger captured by the difficulty cell / selector bar; sends no key */

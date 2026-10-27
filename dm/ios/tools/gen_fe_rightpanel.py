@@ -31,12 +31,12 @@ def resize_card(im, height):
 def build_character_rows(romfs):
     import struct
     from touch_layout import FE_CHARACTER_ROW_HEIGHT
-    for source,name in [('FrontEnd_CharacterTile','fe_character_tile.sprite'),('FrontEnd_Selector','fe_character_selector.sprite')]:
-        path='hd/global/ui/FrontEnd/HD/Final/'+source+'.sprite'
+    for path,name,extra in [('hd/global/ui/FrontEnd/HD/Final/FrontEnd_CharacterTile.sprite','fe_character_tile.sprite',0),('hd/global/ui/FrontEnd/HD/Final/FrontEnd_Selector.sprite','fe_character_selector.sprite',0),('hd/global/ui/Controller/HoverImages/CharacterListSelection_Hover.sprite','fe_character_focus.sprite',18)]:
+        source=path.rsplit('/',1)[-1]
         hdr=romfs_art.read(romfs,path);im=romfs_art.sprite(romfs,path)
         fw=struct.unpack_from('<H',hdr,6)[0];frames=struct.unpack_from('<H',hdr,20)[0]
         assert hdr[:4]==b'SpA1' and frames>0 and fw*frames<=im.width<=fw*frames+4*frames
-        row=resize_card(im,FE_CHARACTER_ROW_HEIGHT//2)
+        row=resize_card(im,FE_CHARACTER_ROW_HEIGHT//2+extra)
         out=os.path.join(gen_dir('NativeHUD','touch'),name)
         open(out,'wb').write(G.pack(G.lib(),hdr,G.bc3(row),row.width,row.height,fw,frames))
         print('fe_character_row:',source,im.size,'->',row.size,'frames',frames)

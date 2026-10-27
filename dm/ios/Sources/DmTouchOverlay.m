@@ -202,7 +202,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     CGFloat W=self.bounds.size.width, u=band.size.height/1320.0, oy=band.origin.y;
     BOOL portraitBar = band.size.height < self.bounds.size.height - 0.5;
     CGContextSaveGState(c);
-    if (portraitBar) CGContextTranslateCTM(c, DM_TC_PORTRAIT_HUD_DX_PT, 0);
+    if (portraitBar) CGContextTranslateCTM(c, DM_PORTRAIT_HUD_DX_PT, 0);
     CGFloat (^X)(CGFloat)=^(CGFloat px){ return (px-1434)*u+W/2; };
     // 底栏静态美术：效果图原生分辨率直接贴（不经游戏 1568×720 渲染再放大）；腰带格内挖空透出游戏画的药水、球心挖空透出球液
     // Bottom bar static art: blit the mockup directly at native resolution (not rendered by the game at 1568×720 and then upscaled); the belt cells are cut out to show the potions drawn by the game, and the orb centers are cut out to show the orb liquid

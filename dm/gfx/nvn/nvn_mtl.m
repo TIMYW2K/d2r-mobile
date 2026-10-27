@@ -4587,6 +4587,7 @@ static int bloomq_capture(void) {
 // Vertical position and height of the UI rectangle in the real picture (both as a fraction of the picture height: y = 0 touches the top, h = 1 is the whole picture); registered by the front end and read fresh on every draw (changes when switching between docked / handheld mode).
 // The game draws the UI into the upper h portion of the UI texture (the viewport is the whole texture, and the projection matrix carries the scaling).
 extern int dm_ui_minimap_render_rect(int rect[4], int *dy) __attribute__((weak));
+extern void dm_ui_minimap_render_applied(void) __attribute__((weak));
 extern int dm_screen_real(int *w, int *h) __attribute__((weak));
 static void (*g_ui_rect_fn)(double *y, double *h);
 void mtl_set_ui_rect_fn(void (*fn)(double *y, double *h)) { g_ui_rect_fn = fn; }
@@ -4810,6 +4811,18 @@ frz_plain:;
     // Relocate only draws with the exact native minimap scissor; map batches may be indexed
     // or contain more than four vertices, so do not apply the ordinary UI quad-count filter.
     int map_move = 0;
+    // If UI-like draws arrive without a native scissor, preserve one bounded
+    // sample: the strict map matcher cannot move such a draw.
+    if (g_ui_rect_fn && !R.has_sc && S.nattr == 2 && S.stream[0].stride == 20 && dm_ui_minimap_render_rect) {
+        static int reported_no_scissor;
+        if (!reported_no_scissor) { int map_rect[4], map_dy;
+            if (dm_ui_minimap_render_rect(map_rect, &map_dy)) {
+                reported_no_scissor = 1;
+                MLOG("地图诊断：竖屏出现无裁剪的界面样式绘制（此样本不代表已确认地图）；目标 %d,%d %dx%d，索引 %d，数量 %u",
+                     map_rect[0],map_rect[1],map_rect[2],map_rect[3],di != NULL,(unsigned)(dw ? dw->count : di->count));
+            }
+        }
+    }
     if (g_ui_rect_fn && R.has_sc && dm_ui_minimap_render_rect && dm_screen_real) {
         int mr[4], dy=0, rw=0, rh=0;
         if (dm_ui_minimap_render_rect(mr, &dy) && dm_screen_real(&rw, &rh)) {
@@ -4817,12 +4830,26 @@ frz_plain:;
                             S.has_vp ? S.vp[0][2] : (double)tw, S.has_vp ? S.vp[0][3] : (double)th};
             int clip[4] = {R.sc.x, R.sc.y, R.sc.w, R.sc.h}; long delta;
             double uy=0, uh=1; g_ui_rect_fn(&uy, &uh);
+            // Capture bounded, distinct candidate clips to diagnose real devices;
+            // samples do not participate in matching or change draw state.
+            typedef struct { int clip[4]; double vp[4]; unsigned attr, stride, indexed; } mm_sample;
+            static int sample_n; static mm_sample samples[24];
+            if (sample_n < 24 && nvn_minimap_trace_candidate(mr,rw,rh,vp,clip,uh)) {
+                int seen=0; unsigned attr=(unsigned)S.nattr, stride=(unsigned)S.stream[0].stride, indexed=di != NULL;
+                for (int i=0; i<sample_n; i++) if (!memcmp(samples[i].clip,clip,sizeof clip) && !memcmp(samples[i].vp,vp,sizeof vp) &&
+                    samples[i].attr==attr && samples[i].stride==stride && samples[i].indexed==indexed) { seen=1; break; }
+                if (!seen) { mm_sample *sample=&samples[sample_n++]; memcpy(sample->clip,clip,sizeof clip); memcpy(sample->vp,vp,sizeof vp);
+                    sample->attr=attr; sample->stride=stride; sample->indexed=indexed;
+                    MLOG("地图裁剪样本：目标 %d,%d %dx%d，裁剪 %d,%d %dx%d，视口 %.0f,%.0f %.0fx%.0f，UI %.5f/%.5f，顶点属性 %u 步长 %u，索引 %u 数量 %u",
+                         mr[0],mr[1],mr[2],mr[3],clip[0],clip[1],clip[2],clip[3],vp[0],vp[1],vp[2],vp[3],uy,uh,
+                         attr,stride,indexed,(unsigned)(dw ? dw->count : di->count)); }
+            }
             if (nvn_minimap_scissor_shift(mr, rw, rh, vp, clip, uh, dy, &delta)) {
                 if (uh > 0 && uh < 1) {
                     so = lround(uy * th) + delta; vs = 1; map_move = 1;
                     if (ui_mat_ok()) { moff = 2.0 * so / vp[3]; vo = 0; }
                     else { vo = so; moff = 0; }
-                    static int lg; if (lg++ < 6) MLOG("小地图绘制上移：原剪裁 %d,%d %dx%d，额外 %ld px，总移位 %ld px，矩阵 %d", clip[0],clip[1],clip[2],clip[3],delta,so,moff != 0);
+                    static int lg; if (lg++ < 6) MLOG("小地图剪裁匹配：原剪裁 %d,%d %dx%d，额外 %ld px，总移位 %ld px，矩阵 %d", clip[0],clip[1],clip[2],clip[3],delta,so,moff != 0);
                 }
             }
         }
@@ -4943,6 +4970,9 @@ frz_plain:;
         if (di->count) enc_r_draw_indexed(en, mp, di->count, di->itype == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, gpu, ((__bridge id<MTLBuffer>)mb).length - mo,
                 di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
     }
+    // Only publish after a non-empty, non-culled draw was actually encoded.
+    if (map_move && dm_ui_minimap_render_applied && (dw ? (prim == 7 ? dw->count >= 4 : dw->count != 0) : di->count != 0))
+        dm_ui_minimap_render_applied();
     if (g_rt_range_pending) { PD("j rt_level_range pass=%llu vc=%u", g_stat_pass, (unsigned)(dw ? dw->count : di->count)); g_rt_range_pending=0; }
     scene_pan_after_draw(pr,dw,di);
 }

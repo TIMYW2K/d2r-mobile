@@ -10,6 +10,7 @@ int dm_padmode_current(void) { return controller; }
 int dm_uiscreen_ingame(void) { return ingame; }
 int dm_uiscreen_portrait(void) { return portrait; }
 int dm_uiscreen_panel(void) { return 0; }
+void dm_hud_get(dm_hud_info *out) { memset(out,0,sizeof *out); }
 int dm_screen_real(int *w,int *h) { *w=1206; *h=2622; return 1; }
 _Atomic uint64_t g_ui_hover_xy;
 int dm_cursor_item(dm_cursor_item_info *out) { (void)out; return 0; }
@@ -31,7 +32,7 @@ static void widget(void *v,const char *name,uint64_t parent) {
 }
 static void tick(void) { frame+=6; ui_safe_pump(&g_mod[0],ptr(root),frame); }
 static void shifted(void) {
- for(int i=0;i<7;i++) CHECK(*x(nodes[i])==base_x[i]+(i<2?52:i==2?46:73)-(i>=3?30000:0));
+ for(int i=0;i<7;i++) CHECK(*x(nodes[i])==base_x[i]+(i<2?55:i==2?8:73)-(i>=3?30000:0));
  CHECK(mv_count(MV_SAFE)==7);
 }
 static void restored(void) {
@@ -49,6 +50,17 @@ int main(void) {
  for(int i=0;i<7;i++) { widget(nodes[i],names[i],ptr(hud)); *x(nodes[i])=base_x[i]; hud_children[i]=ptr(nodes[i]); }
  *(float *)(nodes[0]+0x80)=1.4f; *(float *)(nodes[1]+0x80)=1.4f; *(float *)(nodes[2]+0x80)=1.6f;
  dm_ui_set_band_height_pt(444.6667f); CHECK(ui_pt_units(5)==24);
+ // Compare the new translations against independently measured build 22.1
+ // screenshot centers (1206x2622) and the v4 art's slot/orb centers.
+ double unit=1334.0/2160.0, art=1334.0/1320.0;
+ double orb_old=lround(ui_pt_units(15)/0.7)*unit;
+ double orb_new=(ui_pt_units(15)+dm_hud_px_to_units(DM_PORTRAIT_ORB_CONTENT_DX_PX,1334))*unit;
+ double belt_old=lround(ui_pt_units(15)/1.6)*unit;
+ double belt_new=(ui_pt_units(15)+dm_hud_px_to_units(DM_PORTRAIT_BELT_CONTENT_DX_PX,1334))*unit;
+ CHECK(fabs((186.9 + orb_new-orb_old) - (603+(949-1434)*art+45)) < 3);
+ CHECK(fabs((1080.1 + orb_new-orb_old) - (603+(1831-1434)*art+45)) < 3);
+ CHECK(fabs((444.9 + belt_new-belt_old) - (603+(1210-1434)*art+45)) < 3);
+ CHECK(fabs((565.9 + belt_new-belt_old) - (603+(1330-1434)*art+45)) < 3);
  tick(); shifted(); CHECK(relayouts==7);
  // Repeated pumping must not accumulate another portrait shift.
  for(int i=0;i<10;i++) { tick(); shifted(); } CHECK(relayouts==7);
@@ -66,8 +78,8 @@ int main(void) {
  widget(hire,"HireablesPanel",ptr(root)); widget(merc,"Pet",ptr(hire)); *x(merc)=40; *(int32_t *)(merc+0x74)=60;
  pets[0]=ptr(merc); *(uint64_t *)(hire+0x58)=ptr(pets); *(uint64_t *)(hire+0x60)=1;
  root_children[1]=ptr(warnings); root_children[2]=ptr(hire); *(uint64_t *)(root+0x60)=3;
- tick(); CHECK(*x(warnings)==-58); CHECK(*x(merc)==135); CHECK(*(int32_t *)(merc+0x74)==-161);
- tick(); CHECK(*x(warnings)==-58); CHECK(*x(merc)==135); CHECK(*(int32_t *)(merc+0x74)==-161);
+ tick(); CHECK(*x(warnings)==-107); CHECK(*x(merc)==172); CHECK(*(int32_t *)(merc+0x74)==-197);
+ tick(); CHECK(*x(warnings)==-107); CHECK(*x(merc)==172); CHECK(*(int32_t *)(merc+0x74)==-197);
  portrait=0; tick(); CHECK(*x(warnings)==100); CHECK(*x(merc)==40); CHECK(*(int32_t *)(merc+0x74)==60);
  // Exercise the production map publisher using the portrait band geometry
  // captured from the device, rather than a hand-written expected draw rect.
@@ -82,6 +94,13 @@ int main(void) {
  CHECK(mr[0]==402 && mr[1]==48 && mr[2]==401 && mr[3]==443);
  CHECK(1288+mr[1]+delta==210); // top 8% of 2622; safely in the red box
  CHECK(1288+mr[1]+delta+mr[3]<=654);
+ // Hit region follows the unshifted map until a matching GPU draw confirms relocation.
+ float hit[4]; ui_minimap_pump(&g_mod[0],ptr(root),1206,1334,frame);
+ CHECK(dm_ui_minimap_rect(hit)); CHECK(fabsf(hit[1]-48.0f/1334)<0.001f);
+ dm_ui_minimap_render_applied(); frame+=6; ui_minimap_pump(&g_mod[0],ptr(root),1206,1334,frame);
+ CHECK(dm_ui_minimap_rect(hit)); CHECK(fabsf(hit[1]-(48.0f+delta)/1334)<0.001f);
+ frame+=18; ui_minimap_pump(&g_mod[0],ptr(root),1206,1334,frame);
+ CHECK(dm_ui_minimap_rect(hit)); CHECK(fabsf(hit[1]-48.0f/1334)<0.001f);
  for(int i=0;i<10;i++) { tick(); int next[4],nd; CHECK(dm_ui_minimap_render_rect(next,&nd)); CHECK(!memcmp(mr,next,sizeof mr)&&delta==nd); }
  // Both native mini modes share the same portrait position, fullscreen does not.
  *(int32_t *)(base+0x2d479f4)=1; tick(); CHECK(dm_ui_minimap_render_rect(mr,&delta)); CHECK(mr[0]==402);

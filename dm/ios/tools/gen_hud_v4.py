@@ -81,14 +81,8 @@ by={c['name']:c for c in j['children']}
 # The UIKit base has transparent potion apertures. Portrait suppresses the duplicate native Overlay,
 # so provide separate opaque backings below Belt; they start off-screen and the host enables them
 # only in portrait touch mode. They do not cover the native potion sprites or change landscape art.
-backings=[]
-for i in range(4):
-    x0,y0,_,_=g['slots'][i+1]
-    backings.append({'type':'NineTileImageWidget','name':'TouchPortraitBeltBacking%d'%i,
-        'fields':{'anchor':{'x':0.5,'y':1},
-            'rect':{'x':round((x0+g['IX0']-W/2)/U+30000,1),'y':round((y0+g['IY0']-H)/U,1),
-                    'width':round((g['IX1']-g['IX0']+1)/U,1),'height':round((g['IY1']-g['IY0']+1)/U,1)},
-            'backgroundColor':[0.025,0.025,0.025,1.0]}})
+from hud_belt_backings import portrait_belt_backings
+backings=portrait_belt_backings(g,W,H,U)
 belt_index=j['children'].index(by['Belt'])
 j['children'][belt_index:belt_index]=backings
 

@@ -83,7 +83,7 @@ void dm_tc_layout_make(dm_tc_layout *l, float width, float height) {
     /* 腰带四列对十字键：左 = 第 1 列、上 = 第 2 列、下 = 第 3 列、右 = 第 4 列（原版实测：按「右」第 4 列减、按「下」第 3 列减；首版把后两个写反了，真机才撞到） | The four belt columns map to the D-pad: left = column 1, up = column 2, down = column 3, right = column 4 (measured in the original game: pressing "right" decrements column 4, pressing "down" decrements column 3; the first version had the last two swapped, which was only hit on a real device) */
     const uint64_t bottom[5] = {DM_BTN_LEFT, DM_BTN_UP, DM_BTN_DOWN, DM_BTN_RIGHT, DM_BTN_PLUS};
     const int cell[5] = {1, 2, 3, 4, 5};
-    float bar_dx = port ? DM_TC_PORTRAIT_HUD_DX_PT : 0;
+    float bar_dx = port ? DM_PORTRAIT_HUD_DX_PT : 0;
     float u = band_u4(l), by = (port ? g_ui_y : 0) + 1241.5f * u;   // 竖屏：底栏贴界面带底边（1241.5 是 v4 设计像素，按界面带高换算） | Portrait: the bar sits on the UI band's bottom edge (1241.5 is a v4 design pixel, converted by the band height)
     for (int i = 0; i < 5; ++i)
         l->target[DM_TC_BELT1+i] = (dm_tc_target){l->width/2+bar_dx+(1090+120*cell[i]-1434)*u, by, 57*u, bottom[i]};

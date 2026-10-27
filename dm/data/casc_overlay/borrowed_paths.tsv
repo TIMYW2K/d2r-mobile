@@ -10,5 +10,5 @@ data/hd/global/ui/PANEL/HUD_02/BugBTN.sprite	0	0	0	0	已借	底部 UI v4 底图�
 data/hd/global/ui/PANEL/HUD_02/front_panel.sprite	0	0	0	0	已借	局内面板外框关闭按钮图（dm/ios/tools/gen_romfs_overlay.py ← NativeHUD/touch/close.png）
 data/hd/global/ui/PANEL/HUD_02/Belt_UpArrow.sprite	0	0	0	0	已借	触屏角色列表加高底板（gen_fe_rightpanel.py）
 data/hd/global/ui/PANEL/Beta_Exit/BetaSurveyQR.sprite	0	0	0	0	已借	触屏角色列表加高选中框（gen_fe_rightpanel.py）
-data/hd/global/ui/PANEL/AdvancedCharacterSheet/AdvancedCharacterSheet_SkullScroller.sprite	0	0	0	0	可借	未用
+data/hd/global/ui/PANEL/AdvancedCharacterSheet/AdvancedCharacterSheet_SkullScroller.sprite	0	0	0	0	已借	触屏角色列表加高焦点高亮（gen_fe_rightpanel.py）
 data/hd/global/ui/PANEL/HUD_02/quest_button.sprite	0	1	1	1	禁借	—（字符串查不到、布局不引用，但每局都被读）

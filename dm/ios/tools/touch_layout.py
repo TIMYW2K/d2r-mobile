@@ -355,6 +355,8 @@ PCFRONT = {
     'controller/console/mainmenulinkshd.json': ('mainmenulinkshd.json', None),
 }
 PCFRONT_PLAIN = ('mainmenubuttonribbonhd.json', 'mainmenulinkshd.json')
+def _pc_character_focus(mid):
+    return _sub1(mid, 'Controller/HoverImages/CharacterListSelection_Hover', 'PANEL/AdvancedCharacterSheet/AdvancedCharacterSheet_SkullScroller')
 def build_pcfront(romfs, outdir):
     """键鼠版底层布局阉割后另放新目录 1touchbase_lay/<名>（原路径保持原版，手柄模式的原版页继承的是它）；手柄版（controller/console/<名>，生成器会搬进触屏目录）换成原包「键鼠界面 + 手柄焦点」那层（controller/<名>，继承键鼠版底层）——
     这样手柄键仍能在选角页上走（X 进选角页；冒烟与触屏脚本的进局键序用「X 进选角页 → LoadCharacter」）；那层里的键位提示控件照例挪走。
@@ -374,6 +376,8 @@ def build_pcfront(romfs, outdir):
             o = os.path.join(outdir, 'pcfront_base_' + pc); open(o, 'w', encoding='utf-8').write(text); repl[base] = o
             _, mid = read_layout(romfs, 'controller/' + pc); mid, _n = offscreen(mid)
             mid = _sub1(mid, '"basedOn": "%s"' % os.path.basename(ppath), '"basedOn": "1touchbase_lay/%s"' % pc)
+        if pc == 'characterselectpanelhd.json':
+            mid = _pc_character_focus(mid)
         if pc == 'mainmenupanelhd.json': i = mid.rstrip().rfind(']'); mid = mid[:i] + _UPDATE_STUB + mid[i:]   # 继承层要按名字逐个点到子控件才会建：新加的七个也列上 | The inheriting layer only builds child widgets that are named one by one: the seven newly added ones are listed too
         o = os.path.join(outdir, 'pcfront_' + rel.replace('/', '_')); open(o, 'w', encoding='utf-8').write(mid); repl[cpath.lower()] = o
     return repl

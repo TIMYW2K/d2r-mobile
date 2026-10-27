@@ -38,3 +38,7 @@ assert layout.FE_CHARACTER_LIST_HEIGHT==6*layout.FE_CHARACTER_ROW_HEIGHT
 assert 10+64<=84 and 84+76<=164 and 164+76<layout.FE_CHARACTER_ROW_HEIGHT
 assert 140+layout.FE_CHARACTER_LIST_HEIGHT<40+1775
 print('character geometry: 10 physical px inset, three non-overlapping text rows, six cards, footer clearance passed')
+
+focus = layout._pc_character_focus('{"focusIndicatorFilename":"Controller/HoverImages/CharacterListSelection_Hover"}')
+assert 'AdvancedCharacterSheet_SkullScroller' in focus and 'CharacterListSelection_Hover' not in focus
+print('character focus: touch layout uses dedicated enlarged focus art')

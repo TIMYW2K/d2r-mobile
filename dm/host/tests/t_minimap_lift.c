@@ -17,10 +17,12 @@ static int checks,fails;
 #define CHECK(c) do { checks++; if(!(c)) { fails++; printf("FAIL line %d: %s\n",__LINE__,#c); } } while(0)
 static _Alignas(8) unsigned char root[160], maps[2][160], extra[160], hud[160], old[96][160], incoming[160];
 static uint64_t children[97];
+static uint64_t test_vtable[4]; static int text_relayouts;
+static void relayout(uint64_t w) { (void)w; text_relayouts++; }
 static uint64_t ptr(void *p) { return (uint64_t)(uintptr_t)p; }
 static int32_t *y(void *p) { return (int32_t *)((unsigned char *)p+0x74); }
 static void widget(void *v,const char *name,int y0) {
- unsigned char *p=v; memset(p,0,160); *(const char **)(p+8)=name;
+ unsigned char *p=v; memset(p,0,160); *(uint64_t *)p=ptr(test_vtable); *(const char **)(p+8)=name;
  *(int32_t *)(p+0x74)=y0; *(int32_t *)(p+0x78)=1280; *(int32_t *)(p+0x7c)=720;
  *(int32_t *)(p+0x84)=-110; p[0x50]=1;
 }
@@ -28,6 +30,7 @@ static void tick(void) { frame+=6; ui_lift_pump(ptr(root),frame); }
 int main(void) {
  unsigned char *base=calloc(1,0x2f05460); if(!base)return 2;
  g_nmod=1; strcpy(g_mod[0].name,"main"); g_mod[0].base=base;
+ test_vtable[2]=ptr(relayout);
  *(uint64_t *)(base+0x2f05458)=ptr(root); *(uint64_t *)(root+0x58)=ptr(children); *(uint64_t *)(root+0x60)=1;
  // AutoMap's CPU clip must remain positive; its presentation shift has one separate owner.
  widget(maps[0],"AutoMap",78); children[0]=ptr(maps[0]); tick(); CHECK(*y(maps[0])==78 && g_nmv==0);
@@ -128,8 +131,9 @@ int main(void) {
  mv_restore(ptr(root),MV_LIFT); *(uint64_t *)(root+0x60)=1;
  widget(extra,"HUDWarnings",12); children[0]=ptr(extra); portrait=1;
  int ax,ay,aw,ah; dm_ui_rect(&ax,&ay,&aw,&ah);
- int expected=12-(int)((long)ay*2160/ah)-(int)lround(150.0*2160/ah);
- tick(); tick(); CHECK(*y(extra)==expected); tick(); CHECK(*y(extra)==expected);
+ int before_layout=text_relayouts;
+ int expected=12-(int)((long)ay*2160/ah)-(int)lround(200.0*2160/ah);
+ tick(); tick(); CHECK(*y(extra)==expected); CHECK(text_relayouts>before_layout); tick(); CHECK(*y(extra)==expected);
  portrait=0; tick(); CHECK(*y(extra)==12-(int)((long)ay*2160/ah));
  free(base); printf("t_minimap_lift: %d checks, %d failures\n",checks,fails); return fails!=0;
 }
