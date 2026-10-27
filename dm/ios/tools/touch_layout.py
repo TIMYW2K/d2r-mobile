@@ -290,10 +290,16 @@ def _pc_mainmenu(s):
     if n != 3: raise SystemExit('touch_layout：键鼠版主菜单要挪走的控件应为 3 个，找到 %d 个' % n)
     i = s.rstrip().rfind(']'); assert s.rstrip().endswith('}') and i > 0
     return s[:i].rstrip(' ') + _UPDATE + '    ' + s[i:], n + 2
+FE_EXTRA_INSET_PX = 10
+FE_EXTRA_INSET_UNITS = round(FE_EXTRA_INSET_PX * 2160 / 1206) # iPhone16Pro physical pixels -> design units.
+FE_CHARACTER_ROW_HEIGHT = 272
+FE_CHARACTER_LIST_HEIGHT = FE_CHARACTER_ROW_HEIGHT * 6
+
+
 def _pc_charselect(s):
     # 右侧存档列表：整块往里收 SAFE_X；「线上 / 离线」页签挪走（只有离线）；列表三行字放大为 40/44/40，保留三行布局与字体风格
     # Save list on the right: the whole block is pulled inward by SAFE_X; the 「线上 / 离线」(Online / Offline) tabs are moved away (offline only); the three text lines use 40/44/40 while retaining the original typeface and three-line structure
-    s = _sub1(s, '"rect": { "x": -801, "y": 0 },', '"rect": { "x": %d, "y": 0 },' % (-801 - SAFE_X))
+    s = _sub1(s, '"rect": { "x": -801, "y": 0 },', '"rect": { "x": %d, "y": 0 },' % (-801 - SAFE_X - FE_EXTRA_INSET_UNITS))
     s, n = offscreen(s, types=(), names=('Tabs', 'ConvertCharacter'))
     if n != 2: raise SystemExit('touch_layout：键鼠版选角列表的页签 / 转换按钮没找到')
     # 「转换角色」不留，底图上它的槽和两槽之间的十字花一起去掉、只留居中一个槽（底图构建时由 gen_fe_rightpanel.py 从原图改出，gen_romfs_overlay.py 换进去）；垃圾桶移到居中槽上（+116 单位）
@@ -313,13 +319,24 @@ def _pc_charselect(s):
         i = s.index('"type": "TextBoxWidget", "name": "%s"' % name); m = re.compile(r'"pointSize":\s*"(\$[A-Za-z]+)"').search(s, i)
         if not m or m.group(1) != var: raise SystemExit('touch_layout：选角列表 %s 的字号不是原样（原版布局变了？）' % name)
         s = s[:m.start()] + '"pointSize": %d' % size + s[m.end():]; n += 1
-    return s, n + 1
+    # Match larger text with actual card art, list stride and highlight height.
+    s=set_rect(s,'CharacterTemplate',0,0,612,FE_CHARACTER_ROW_HEIGHT)
+    s=set_rect(s,'CharacterList',77,140,613,FE_CHARACTER_LIST_HEIGHT)
+    s=set_rect(s,'Title',25,10,400,64)
+    s=set_rect(s,'Name',25,84,560,76)
+    s=set_rect(s,'Level&Class',25,164,400,76)
+    s=_sub1(s,'"noTitleCharacterNamePosition": { "x": 25, "y": 68 }','"noTitleCharacterNamePosition": { "x": 25, "y": 56 }')
+    s=_sub1(s,'"noTitleCharacterLevelClassPosition": { "x": 25, "y": 120 }','"noTitleCharacterLevelClassPosition": { "x": 25, "y": 140 }')
+    s=_sub1(s,'"rect": { "x": 5, "y": 31, "width": 24, "height": 1590 }','"rect": { "x": 5, "y": 31, "width": 24, "height": 1572 }')
+    s=_sub1(s,'FrontEnd\\\\HD\\\\Final\\\\FrontEnd_CharacterTile','PANEL/HUD_02/Belt_UpArrow')
+    s=_sub1(s,'FrontEnd\\\\HD\\\\Final\\\\FrontEnd_Selector','PANEL/Beta_Exit/BetaSurveyQR')
+    return s, n + 11
 def _pc_ribbon(s):
     # Keep the native Settings/Cinematics/Credits actions. Quit is confirmed by
     # the iOS host instead of entering the desktop-only ToExit state machine.
     # Move the entire ribbon, including its hit regions, past the island inset.
     s = _sub1(s, '"rect": { "x": 0, "y": 0 }, "filename": "FrontEnd/HD/Final/FrontEnd_LeftPanel"',
-              '"rect": { "x": %d, "y": 0 }, "filename": "FrontEnd/HD/Final/FrontEnd_LeftPanel"' % SAFE_X)
+              '"rect": { "x": %d, "y": 0 }, "filename": "FrontEnd/HD/Final/FrontEnd_LeftPanel"' % (SAFE_X + FE_EXTRA_INSET_UNITS))
     s = _sub1(s, '"onClickMessage": "FrontEndNavigation:ToExit",',
               '"onClickMessage": "PanelManager:ClosePanel:TouchQuitApp",')
     import movie_config

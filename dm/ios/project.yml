@@ -70,6 +70,7 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationLandscapeLeft
+        NSMotionUsageDescription: 用于根据设备方向切换游戏横竖屏。
         UIRequiresFullScreen: true
         UIStatusBarHidden: true
         UIViewControllerBasedStatusBarAppearance: false
@@ -98,6 +99,7 @@ targets:
         com.apple.developer.ubiquity-container-identifiers: ["iCloud.${DM_BUNDLE_ID}"]
     dependencies:
       - target: RomfsDownloader      # 苹果托管资源包要求的下载扩展（系统缺省实现） | Download extension required by Apple-hosted asset packs (system default implementation)
+      - sdk: CoreMotion.framework
       - sdk: BackgroundAssets.framework
       - sdk: Network.framework             # iCloud 首次同步看网络通不通（cloud_ios.m first_listing_ok） | iCloud first sync checks whether the network is reachable (cloud_ios.m first_listing_ok)
     settings:

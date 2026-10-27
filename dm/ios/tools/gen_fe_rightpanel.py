@@ -18,6 +18,30 @@ SRC = 'hd/global/ui/FrontEnd/HD/Final/FrontEnd_RightPanel.sprite'
 Y0, Y1 = 980, 1040
 COPY = ((112, 52, 58), (170, 112, 60), (230, 53, 1), (231, 52, 1), (232, 52, 58))   # (目标列, 来源列, 列数) | (destination column, source column, column count)
 
+def resize_card(im, height):
+    # Keep original upper/lower borders; extend the centre without changing style.
+    keep=min(8,im.height//4)
+    out=Image.new('RGBA',(im.width,height))
+    out.paste(im.crop((0,0,im.width,keep)),(0,0))
+    middle=im.crop((0,keep,im.width,im.height-keep)).resize((im.width,height-2*keep),Image.Resampling.LANCZOS)
+    out.paste(middle,(0,keep));out.paste(im.crop((0,im.height-keep,im.width,im.height)),(0,height-keep))
+    return out
+
+
+def build_character_rows(romfs):
+    import struct
+    from touch_layout import FE_CHARACTER_ROW_HEIGHT
+    for source,name in [('FrontEnd_CharacterTile','fe_character_tile.sprite'),('FrontEnd_Selector','fe_character_selector.sprite')]:
+        path='hd/global/ui/FrontEnd/HD/Final/'+source+'.sprite'
+        hdr=romfs_art.read(romfs,path);im=romfs_art.sprite(romfs,path)
+        fw=struct.unpack_from('<H',hdr,6)[0];frames=struct.unpack_from('<H',hdr,20)[0]
+        assert hdr[:4]==b'SpA1' and frames>0 and fw*frames<=im.width<=fw*frames+4*frames
+        row=resize_card(im,FE_CHARACTER_ROW_HEIGHT//2)
+        out=os.path.join(gen_dir('NativeHUD','touch'),name)
+        open(out,'wb').write(G.pack(G.lib(),hdr,G.bc3(row),row.width,row.height,fw,frames))
+        print('fe_character_row:',source,im.size,'->',row.size,'frames',frames)
+
+
 def main(romfs):
     b = romfs_art.read(romfs, SRC); o = np.array(romfs_art.sprite(romfs, SRC)); w, h = o.shape[1], o.shape[0]
     assert (w, h) == (401, 1080), (w, h)
@@ -26,6 +50,7 @@ def main(romfs):
     p = os.path.join(gen_dir('NativeHUD', 'touch'), 'fe_rightpanel.sprite')
     open(p, 'wb').write(G.pack(G.lib(), b, G.bc3(Image.fromarray(m, 'RGBA')), w, h, w))
     print('fe_rightpanel：%d×%d → %s' % (w, h, p))
+    build_character_rows(romfs)
 
 if __name__ == '__main__':
     main(sys.argv[1])

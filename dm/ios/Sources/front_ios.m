@@ -16,6 +16,7 @@ int dm_thermal_now(void) { return g_dm_thermal; }   // 最近的温控档位（0
 #include <dlfcn.h>
 #import <WebKit/WebKit.h>   // 本地改动：过场动画播放层用 WKWebView（系统模块会自动链接 WebKit.framework） | local change: the cutscene layer uses WKWebView (the system module auto-links WebKit.framework)
 #import <Metal/Metal.h>
+#import <CoreMotion/CoreMotion.h>
 #include <signal.h>
 #include "front.h"
 #include "dm_input.h"
@@ -146,15 +147,44 @@ int front_ios_portrait(void) { return g_portrait; }
 // Keep the entry landscape until the user changes physical posture. Once portrait,
 // retain permission during in-run loading screens (dm_uiscreen_ingame is briefly 0).
 #include "dm_orientation_policy.h"
-static dm_orientation_entry g_orientation_entry = {0,-1,0};
+static dm_orientation_state g_orientation_state={0,0,-1,-1,0,0};
+static _Atomic int g_orientation_session_signal;
+static CMMotionManager *g_orientation_motion;
+static double g_orientation_gx,g_orientation_gy,g_orientation_gz,g_orientation_sample_age;
+static int g_orientation_motion_valid;
+static void dm_orientation_motion_start(void) {
+    if(!g_orientation_motion) { g_orientation_motion=[CMMotionManager new];g_orientation_motion.deviceMotionUpdateInterval=.1; }
+    if(g_orientation_motion.deviceMotionAvailable && !g_orientation_motion.deviceMotionActive) [g_orientation_motion startDeviceMotionUpdates];
+}
 static int dm_physical_posture(void) {
+    CMDeviceMotion *m=g_orientation_motion.deviceMotion;
+    if(g_orientation_motion.deviceMotionActive) {
+        static double stamp=-1,observedAt;
+        double now=CACurrentMediaTime();
+        if(m && m.timestamp!=stamp) { stamp=m.timestamp;observedAt=now; }
+        g_orientation_sample_age=m?now-observedAt:999;
+        g_orientation_motion_valid=m && g_orientation_sample_age>=0 && g_orientation_sample_age<.5;
+        if(!g_orientation_motion_valid) return -1;
+        g_orientation_gx=m.gravity.x;g_orientation_gy=m.gravity.y;g_orientation_gz=m.gravity.z;
+        return dm_orientation_gravity(g_orientation_gx,g_orientation_gy,g_orientation_gz);
+    }
+    g_orientation_motion_valid=0;
     UIDeviceOrientation o=UIDevice.currentDevice.orientation;
     return UIDeviceOrientationIsLandscape(o)?0:o==UIDeviceOrientationPortrait?1:-1;
 }
 static void dm_orientation_observe(void) {
-    dm_orientation_entry_observe(&g_orientation_entry,dm_uiscreen_ingame(),dm_physical_posture());
+    int signal=atomic_exchange(&g_orientation_session_signal,0);
+    if(signal<0) dm_orientation_stop(&g_orientation_state);
+    else if(signal>0) { dm_orientation_start(&g_orientation_state);atomic_store(&g_back_frontend,0);LOG("方向会话：开始，初始横屏，等待独立姿态基线"); }
+    int physical=dm_physical_posture();
+    if(dm_orientation_sample(&g_orientation_state,physical,CACurrentMediaTime()))
+        LOG("方向意图：目标 %s，来源 %s，重力 %.2f,%.2f,%.2f，设备原始 %ld，序号 %u",g_orientation_state.target?"竖":"横",g_orientation_motion_valid?"CoreMotion":"UIDevice",g_orientation_gx,g_orientation_gy,g_orientation_gz,(long)UIDevice.currentDevice.orientation,g_orientation_state.changes);
 }
-int front_ios_ingame_autorotate(void) { return g_portrait || (dm_uiscreen_ingame() && g_orientation_entry.enabled); }
+// Session permission is independent of the initial posture and rendering HUD.
+int front_ios_ingame_autorotate(void) { return g_orientation_state.session || g_portrait; }
+UIInterfaceOrientationMask front_ios_supported_orientations(void) {
+    return dm_orientation_target(&g_orientation_state)?UIInterfaceOrientationMaskPortrait:UIInterfaceOrientationMaskLandscape;
+}
 static void dm_orient_apply(int p);
 static void dm_orientation_reconcile(const char *why);
 static unsigned g_orientation_resume_epoch;
@@ -163,7 +193,7 @@ void front_ios_set_launch_bounds(CGRect b, UIInterfaceOrientation o) {
     // 整体先横屏启动：前端页面 / 读取画面完全沿用横屏布局，竖屏只在局内由用户转屏进入。
     // Launch landscape as a whole: front-end pages / loading screens keep the landscape layout; portrait is only entered in a run when the user rotates.
     (void)b; (void)o;
-    dm_orientation_entry_reset(&g_orientation_entry);
+    dm_orientation_stop(&g_orientation_state);
     if (g_portrait) { g_portrait = 0; ++g_res_dir; }
     g_full = 0;
     LOG("前端：启动横屏（竖屏仅在局内转屏可用）");
@@ -840,12 +870,11 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     dm_orientation_observe();
     { static dm_orientation_retry retry = {-1,0,0}; static unsigned retryEpoch;
       if (retryEpoch != g_orientation_resume_epoch) { retryEpoch=g_orientation_resume_epoch; retry=(dm_orientation_retry){-1,0,0}; }
-      UIDeviceOrientation physical=UIDevice.currentDevice.orientation;
-      int posture=UIDeviceOrientationIsLandscape(physical)?0:physical==UIDeviceOrientationPortrait?1:-1;
+      int posture=dm_orientation_target(&g_orientation_state);
       CGSize windowSize=self.window.bounds.size;
       BOOL settled=posture>=0 && windowSize.width>0 && windowSize.height>0 &&
           (windowSize.height>windowSize.width)==posture && g_portrait==posture;
-      BOOL active=self.window.windowScene.activationState==UISceneActivationStateForegroundActive && front_ios_ingame_autorotate();
+      BOOL active=self.window.windowScene.activationState==UISceneActivationStateForegroundActive && g_orientation_state.session;
       if (dm_orientation_retry_step(&retry,active,posture,settled,now)) {
           dm_orientation_reconcile("posture-watchdog"); retryEpoch=g_orientation_resume_epoch;
       }
@@ -867,18 +896,15 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
           if (lastO != UIInterfaceOrientationUnknown && o != lastO) [self rotationChanged:"scene"];
           lastO = o;
           if (UIInterfaceOrientationIsLandscape(o)) { if (g_portrait) { dm_orient_apply(0); maskDirty = YES; } }   // 转回横屏：切回去 | rotated back to landscape: switch back
-          else if (ingame && allowed && !g_portrait) { dm_orient_apply(1); maskDirty = YES; }                                // 局内竖屏：切游戏分辨率 | portrait in a run: switch the game resolution
+          else if (allowed && dm_orientation_target(&g_orientation_state) && !g_portrait) { dm_orient_apply(1); maskDirty = YES; }                                // 局内竖屏：切游戏分辨率 | portrait in a run: switch the game resolution
       }
       if (lastIngame >= 0 && ingame != lastIngame) maskDirty = YES;   // 进出局：支持方向跟着变（局内四向 / 局外横屏） | entering / leaving a run: the supported orientations follow (all four in a run / landscape outside)
       lastIngame = ingame;
       static double backDeadline;
       if (atomic_exchange(&g_back_frontend, 0)) {   // 回前端：先许可横屏，再请求系统转回横屏；方向真变过来时上面那段切游戏分辨率 | back to the front end: allow landscape first, then ask the system; the block above switches the game resolution once the orientation really changes
-          dm_orientation_entry_reset(&g_orientation_entry);
+          dm_orientation_stop(&g_orientation_state);
           maskDirty = YES; backDeadline = now + 1.0;
-          if (@available(iOS 16.0, *)) { UIWindowScene *ws = self.window.windowScene;
-              if (ws) { [self.window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
-                  [ws requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscape]
-                      errorHandler:^(NSError *e) { if (e) LOG("前端：请求转回横屏失败：%s", e.localizedDescription.UTF8String); }]; } }
+          dm_orientation_reconcile("frontend-exit");
       }
       if (backDeadline && now > backDeadline) { backDeadline = 0;   // 系统没转（请求失败等）：至少把游戏切回横屏 | the system did not rotate (request failed etc.): at least switch the game back to landscape
           if (g_portrait && !ingame) { dm_orient_apply(0); maskDirty = YES; } }
@@ -1445,6 +1471,12 @@ static void touch_ui_message(const char *cat,const char *act,const char *arg) {
     // 原UMS客体回调先同步scene，再排UIKit；不拿主线程异步状态当玩法确认。
     // The original UMS guest callback syncs scene first, then schedules UIKit; main-thread async state is not taken as gameplay confirmation.
     dm_touch_game_set_scene(!mode,sceneEpoch,worldEpoch);
+    static int orientationSession;
+    if(!strcmp(cat,"FrontEndNavigation") && !strcmp(act,"ToFrontEnd")) {
+        orientationSession=0;atomic_store(&g_orientation_session_signal,-1);
+    } else if(scene.game && !orientationSession) {
+        orientationSession=1;atomic_store(&g_orientation_session_signal,1);
+    }
     int fe=!scene.game;
     if(atomic_exchange(&g_touch_frontend,fe)!=fe) dispatch_async(dispatch_get_main_queue(),^{ [g_touch_view frontendMode:fe]; });
     // 测试：DM_TOUCH_SCRIPT_START=menu 时触点脚本从主菜单出现起计时（缺省从首次进局起），前端页面的玩家路径用例用
@@ -1557,6 +1589,7 @@ UIView *front_ios_view(CGRect frame) {
     // 本地改动：设备方向变化 = 转屏动画的开始（界面方向锁不拦这个通知），用它进入「控件层保持可见 + 重画」时段。
     // Local change: a device orientation change marks the start of the rotation animation (the interface-orientation lock
     // does not suppress this notification); use it to enter the "control layer stays visible + repaint" window.
+    dm_orientation_motion_start();
     [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceOrientationDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
         (void)n; DmMetalView *tv = g_touch_view; if (tv) [tv rotationChanged:"device"];
@@ -1874,16 +1907,17 @@ static void dm_orientation_reconcile(const char *why) {
     ++g_orientation_resume_epoch;
     UIViewController *root = window.rootViewController;
     for (UIViewController *vc = root; vc; vc = vc.presentedViewController) [vc setNeedsUpdateOfSupportedInterfaceOrientations];
-    UIInterfaceOrientationMask mask = 0;
-    switch (UIDevice.currentDevice.orientation) {
-        case UIDeviceOrientationLandscapeLeft: mask = UIInterfaceOrientationMaskLandscapeRight; break;
-        case UIDeviceOrientationLandscapeRight: mask = UIInterfaceOrientationMaskLandscapeLeft; break;
-        case UIDeviceOrientationPortrait: mask = front_ios_ingame_autorotate() ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskLandscape; break;
-        default: break; // Flat/unknown posture cannot choose a new interface orientation.
-    }
-    LOG("方向核对：%s 设备 %ld 场景 %ld 窗口 %.0fx%.0f 游戏 %s 请求 %#lx",why,(long)UIDevice.currentDevice.orientation,(long)dm_scene_orientation(v),window.bounds.size.width,window.bounds.size.height,g_portrait?"竖":"横",(unsigned long)mask);
-    if (mask) [ws requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask]
-        errorHandler:^(NSError *e) { LOG("前端：%s 方向重同步失败：%s", why, e.localizedDescription.UTF8String); }];
+    int target=dm_orientation_target(&g_orientation_state);
+    UIInterfaceOrientationMask mask=target?UIInterfaceOrientationMaskPortrait:UIInterfaceOrientationMaskLandscape;
+    if(!target && g_orientation_motion_valid && fabs(g_orientation_gx)>.30)
+        mask=g_orientation_gx>0?UIInterfaceOrientationMaskLandscapeLeft:UIInterfaceOrientationMaskLandscapeRight;
+    LOG("方向核对：%s 原始设备 %ld 重力有效 %d age %.2f gravity %.2f,%.2f,%.2f session %d baseline %d target %d seq %u HUD局内 %d 前端 %d 场景 %ld 窗口 %.0fx%.0f 游戏 %s 许可 %#lx 请求 %#lx",why,(long)UIDevice.currentDevice.orientation,g_orientation_motion_valid,g_orientation_sample_age,g_orientation_gx,g_orientation_gy,g_orientation_gz,g_orientation_state.session,g_orientation_state.baseline,target,g_orientation_state.changes,dm_uiscreen_ingame(),atomic_load(&g_touch_frontend),(long)dm_scene_orientation(v),window.bounds.size.width,window.bounds.size.height,g_portrait?"竖":"横",(unsigned long)front_ios_supported_orientations(),(unsigned long)mask);
+    unsigned epoch=g_orientation_resume_epoch;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if(epoch!=g_orientation_resume_epoch || target!=dm_orientation_target(&g_orientation_state) || ws.activationState!=UISceneActivationStateForegroundActive) return;
+        [ws requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask]
+            errorHandler:^(NSError *e) { LOG("前端：%s 方向重同步失败：%s",why,e.localizedDescription.UTF8String); }];
+    });
     [v rotationChanged:why];
     UIView *host = v.superview ?: v; [host setNeedsLayout]; [host layoutIfNeeded]; [v setNeedsLayout]; [v layoutIfNeeded];
 }
@@ -1895,6 +1929,8 @@ void front_ios_focus_event(int ev) {
     if (ev == 3 && suspended) front_ios_focus_event(2);
     static const char *k[] = {"sceneWillResignActive", "sceneDidEnterBackground", "sceneWillEnterForeground", "sceneDidBecomeActive"};
     { uint64_t guest_ns(void); LOG("前端：%s（客体时钟 %.3f s，声卡回调累计 %llu）", k[ev], guest_ns() / 1e9, (unsigned long long)dm_audio_render_calls()); }   // 两个读数：核对后台那段没算进游戏时间、回来后声卡回调继续涨 | Two readings: to check that the background period was not counted into game time and that audio device callbacks keep increasing after return
+    if(ev==1) { [g_orientation_motion stopDeviceMotionUpdates];g_orientation_motion_valid=0; }
+    if(ev==2 || ev==3) dm_orientation_motion_start();
     switch (ev) {
         case 0: [g_touch_view cancelControls]; { void dm_gamepad_reset(void); dm_gamepad_reset(); } dm_focus_set(2); resign_save(); break;   // 手柄的键和摇杆一并清零：按着键切走、在后台松开，回来不会补「松开」 | Controller buttons and sticks are zeroed as well: if a button is held while switching away and released in the background, no "release" is delivered on return
         // 进后台：客体时钟一并冻结（等效 Switch 挂起）——否则游戏线程挡在提交处、墙钟照走，回来时游戏内时间一下跳过整段后台时长（补拍 / 动画 / 冷却全跟着跳）

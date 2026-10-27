@@ -99,6 +99,10 @@ with tempfile.TemporaryDirectory() as t:
     # Character select page right panel base image: remove the 「转换角色」(Convert Character) slot and the cross ornament, leaving only one centered slot (modified after decoding the original image, same size)
     shutil.copy(os.path.join(__import__('gen_paths').gen_dir('NativeHUD','touch'),'fe_rightpanel.sprite'),os.path.join(t,'fe_rightpanel.sprite'))   # 构建时由 gen_fe_rightpanel.py 从原图生成（DXT5 + 块线性）；原始 RGBA 的 v31 在 401×1080 这个尺寸上游戏读出竖条花屏 | Generated at build time by gen_fe_rightpanel.py from the original image (DXT5 + block-linear); raw RGBA v31 at this 401×1080 size is read by the game as vertical-stripe garbage
     REPL['data/hd/global/ui/frontend/hd/final/frontend_rightpanel.sprite']='fe_rightpanel.sprite'
+    # Dedicated borrowed art: only the touch character list references these.
+    for source,destination in [('fe_character_tile.sprite','data/hd/global/ui/panel/hud_02/belt_uparrow.sprite'),('fe_character_selector.sprite','data/hd/global/ui/panel/beta_exit/betasurveyqr.sprite')]:
+        shutil.copy(os.path.join(__import__('gen_paths').gen_dir('NativeHUD','touch'),source),os.path.join(t,source))
+        REPL[destination]=source
     im=Image.open(os.path.join(V4,'base.png')).convert('RGBA'); w,h=im.size
     # SpA1 v31 原始 RGBA：头 0x28 字节（版本 31、帧宽、宽、高、帧数 1、像素字节数），游戏实测可读
     # SpA1 v31 raw RGBA: 0x28-byte header (version 31, frame width, width, height, frame count 1, pixel byte count), measured to be readable by the game

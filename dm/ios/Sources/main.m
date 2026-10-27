@@ -296,6 +296,7 @@ UIView *front_ios_view(CGRect frame); // front_ios.m
 void front_ios_lifecycle_install(void); // front_ios.m
 void front_ios_set_launch_bounds(CGRect b, UIInterfaceOrientation o);   // front_ios.m：启动方向锁定（竖屏 / 横屏） | launch orientation lock (portrait / landscape)
 int front_ios_portrait(void);           // front_ios.m：是不是竖屏启动 | whether the launch orientation is portrait
+UIInterfaceOrientationMask front_ios_supported_orientations(void);
 int front_ios_ingame_autorotate(void);  // front_ios.m：现在允许四向（局内 / 已在竖屏），否则只许横屏 | whether all four orientations are allowed now (in a run / already portrait); otherwise landscape only
 void front_ios_focus_event(int ev);     // front_ios.m
 static char *g_boot_argv[8];
@@ -843,7 +844,7 @@ static void run_boot(void);
 // Once the assets are complete the game starts in place inside this controller (see ready), so it must make the same two declarations as DmGameVC -- otherwise, in the run played right after the first-install download,
 // a single swipe up from the bottom edge / pull down from the top edge takes effect and the home indicator stays lit (the download screen itself has no edge-hugging widgets, so declaring them does no harm)
 - (BOOL)shouldAutorotate { return YES; }   // 方向许可由 supportedInterfaceOrientations 决定：局外只许横屏，局内四向 | orientation permission comes from supportedInterfaceOrientations: landscape only outside a run, all four in a run
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return front_ios_ingame_autorotate() ? (UIInterfaceOrientationMaskPortrait | UIInterfaceOrientationMaskLandscape) : UIInterfaceOrientationMaskLandscape; }
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return front_ios_supported_orientations(); }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
@@ -1084,7 +1085,7 @@ static void astc_handoff(UIWindow *w) {   // 补充包到位（玩家刚拷好 /
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (BOOL)shouldAutorotate { return YES; }   // 方向许可由 supportedInterfaceOrientations 决定：局外只许横屏，局内四向 | orientation permission comes from supportedInterfaceOrientations: landscape only outside a run, all four in a run
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return front_ios_ingame_autorotate() ? (UIInterfaceOrientationMaskPortrait | UIInterfaceOrientationMaskLandscape) : UIInterfaceOrientationMaskLandscape; }
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return front_ios_supported_orientations(); }
 - (void)viewSafeAreaInsetsDidChange {   // 安全区实际数值记进启动日志（排控件位置用，从 UIKit 读、不凭印象） | Record the actual safe-area values in the boot log (used for placing widgets; read from UIKit, not from memory)
     [super viewSafeAreaInsetsDidChange]; UIEdgeInsets i = self.view.safeAreaInsets; CGSize z = self.view.bounds.size;
     plog("安全区 上 %.1f 左 %.1f 下 %.1f 右 %.1f（点）；视图 %.0fx%.0f；朝向 %ld", i.top, i.left, i.bottom, i.right, z.width, z.height, (long)self.view.window.windowScene.interfaceOrientation);
