@@ -2245,7 +2245,7 @@ static void ui_lift_pump(uint64_t root, uint64_t fr) {
         // between "lifted" and "restored", which showed up as the minimap flickering on a real device.
         if (nm && !strcmp(nm, "AutoMap")) continue;
         float ay = *(float *)(p + 0x4c); int layer = *(int32_t *)(p + 0x84); if (!(ay == 0 && layer <= -100)) continue;
-        int extra = nm && !strcmp(nm,"HUDWarnings") && dm_uiscreen_portrait() && h>0 ? (int)lround(100.0*2160/h) : 0;
+        int extra = nm && !strcmp(nm,"HUDWarnings") && dm_uiscreen_portrait() && h>0 ? (int)lround(150.0*2160/h) : 0;
         int32_t y0 = *(int32_t *)(p + 0x74); mv_offset(MV_LIFT, p, 1, -lift-extra, 0);
         if (*(int32_t *)(p + 0x74) != y0) { static int lg; if (lg++ < 16) LOG("贴顶上提：%s（层 %d）y %d → %d", nm ? nm : "?", layer, y0, *(int32_t *)(p + 0x74)); } }
 }
@@ -2588,8 +2588,8 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
       if (p && *(float *)(p + 0x80) != 1.0f) *(float *)(p + 0x80) = 1.0f;
       int sx=0, sy=0, sw=0, sh=0; dm_ui_rect(&sx,&sy,&sw,&sh);
       int port = dm_uiscreen_portrait();
-      int dx = port && sh > 0 ? (int)lround(48.0 * 2160 / sh) : 0;
-      int dy = port && sh > 0 ? (int)lround((-90.0 * 2160 / sh - ui_pt_units(20)) / DM_MERC_SCALE) : 0;
+      int dx = port && sh > 0 ? (int)lround(78.0 * 2160 / sh) : 0;
+      int dy = port && sh > 0 ? (int)lround((-120.0 * 2160 / sh - ui_pt_units(20)) / DM_MERC_SCALE) : 0;
       int ul = atomic_load(&g_safe_l) + dx, ulc = (int)((float)ul / DM_MERC_SCALE);
       uint64_t ch = p ? *(uint64_t *)(p + 0x58) : 0, n = p ? *(uint64_t *)(p + 0x60) : 0;
       static float lg;
@@ -2600,7 +2600,7 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
           mv_offset(MV_SAFE, c, 0, ulc, 1); mv_offset(MV_SAFE, c, 1, dy, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); int ux=0, uy=0, uw=0, uh=0; dm_ui_rect(&ux,&uy,&uw,&uh);
-        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(35.0 * 2160 / uh) + ui_pt_units(11) : 0;
+        int dx = dm_uiscreen_portrait() && uh > 0 ? (int)lround(65.0 * 2160 / uh) + ui_pt_units(11) : 0;
         mv_offset(MV_SAFE, h, 0, -u-dx, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
 
     // Match UIKit's shared portrait shift for live potion/orb contents and their opaque backings.
@@ -2612,8 +2612,11 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
       for (uint64_t i = 0; ch && i < n && i < 256; i++) {
           uint64_t w = *(uint64_t *)(ch + 8*i); if (!w) continue;
           const char *name = (const char *)*(uint64_t *)(w + 8); if (!name) continue;
-          if (!strcmp(name,"HealthBall") || !strcmp(name,"ManaBall") || !strcmp(name,"Belt"))
-              mv_offset(MV_SAFE,w,0,bar_dx,1);
+          if (!strcmp(name,"HealthBall") || !strcmp(name,"ManaBall") || !strcmp(name,"Belt")) {
+              float scale = *(float *)(w + 0x80);
+              if (!(scale > 0.1f && scale < 10.0f)) scale = 1.0f;
+              mv_offset(MV_SAFE,w,0,(int)lroundf(bar_dx / scale),1);
+          }
           else if (!strncmp(name,"TouchPortraitBeltBacking",24))
               mv_offset(MV_SAFE,w,0,portrait_touch ? -30000+bar_dx : 0,1);
           else if (!strcmp(name,"Overlay") || !strcmp(name,"ExpBar") || !strcmp(name,"SkillButton6") ||

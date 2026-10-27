@@ -128,7 +128,7 @@ int main(void) {
  mv_restore(ptr(root),MV_LIFT); *(uint64_t *)(root+0x60)=1;
  widget(extra,"HUDWarnings",12); children[0]=ptr(extra); portrait=1;
  int ax,ay,aw,ah; dm_ui_rect(&ax,&ay,&aw,&ah);
- int expected=12-(int)((long)ay*2160/ah)-(int)lround(100.0*2160/ah);
+ int expected=12-(int)((long)ay*2160/ah)-(int)lround(150.0*2160/ah);
  tick(); tick(); CHECK(*y(extra)==expected); tick(); CHECK(*y(extra)==expected);
  portrait=0; tick(); CHECK(*y(extra)==12-(int)((long)ay*2160/ah));
  free(base); printf("t_minimap_lift: %d checks, %d failures\n",checks,fails); return fails!=0;

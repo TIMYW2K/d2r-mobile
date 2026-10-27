@@ -267,6 +267,22 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
 - (void)drawRect:(CGRect)rect {
     (void)rect;
     CGContextRef c = UIGraphicsGetCurrentContext();
+    // Outline the current portrait minimap hit region; do not show a stale or fullscreen map.
+    extern int dm_ui_minimap_rect(float r[4]);
+    extern int dm_ui_minimap_render_rect(int rect[4], int *dy);
+    float map[4]; int source[4], dy;
+    if (self.bounds.size.height > self.bounds.size.width && !self.navigationMode &&
+        dm_ui_minimap_render_rect(source, &dy) && dm_ui_minimap_rect(map)) {
+        CGRect band = front_ios_ui_band(self);
+        CGRect outline = CGRectMake(band.origin.x + map[0]*band.size.width,
+            band.origin.y + map[1]*band.size.height,
+            (map[2]-map[0])*band.size.width, (map[3]-map[1])*band.size.height);
+        CGContextSaveGState(c);
+        CGContextSetStrokeColorWithColor(c, UIColor.redColor.CGColor);
+        CGContextSetLineWidth(c, 2.0);
+        CGContextStrokeRect(c, outline);
+        CGContextRestoreGState(c);
+    }
     // Draw to the actual window edge. The former 2pt black overlay was itself the long-edge border.
     // 本地改动（T38）：左侧回城键改成「灵动岛壳体的完整胶囊按钮」——之前只画 5 点金属环再把内胶囊挖空（内路径反向），
     // 看上去就是被切掉一大块的椭圆空轮廓；用户要的是完整胶囊按钮。按用户给的 SwiftUI 参数：内胶囊 125×36、圆角 18，

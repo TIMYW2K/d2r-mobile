@@ -330,7 +330,10 @@ def _pc_charselect(s):
     s=_sub1(s,'"rect": { "x": 5, "y": 31, "width": 24, "height": 1590 }','"rect": { "x": 5, "y": 31, "width": 24, "height": 1572 }')
     s=_sub1(s,'FrontEnd\\\\HD\\\\Final\\\\FrontEnd_CharacterTile','PANEL/HUD_02/Belt_UpArrow')
     s=_sub1(s,'FrontEnd\\\\HD\\\\Final\\\\FrontEnd_Selector','PANEL/Beta_Exit/BetaSurveyQR')
-    return s, n + 11
+    marker = '"type": "ImageWidget", "name": "Selection"'
+    i = s.index(marker); j = s.index('"filename": "PANEL/Beta_Exit/BetaSurveyQR"', i)
+    s = s[:j] + '"rect": { "x": 0, "y": 0, "width": 612, "height": 272 }, ' + s[j:]
+    return s, n + 12
 def _pc_ribbon(s):
     # Keep the native Settings/Cinematics/Credits actions. Quit is confirmed by
     # the iOS host instead of entering the desktop-only ToExit state machine.
