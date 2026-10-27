@@ -341,6 +341,28 @@ def set_cft_sizes(tvfs, pos, encoded_size, content_size):
     tvfs[pos + 20 + idx:pos + 24 + idx] = struct.pack(">I", content_size)
 
 
+# These two borrowed assets now hold larger character-list sprites. Their
+# single-file VFS span must match the replacement, not the original asset size.
+CHARACTER_SPRITE_PATHS = frozenset({
+    'data/hd/global/ui/panel/hud_02/belt_uparrow.sprite',
+    'data/hd/global/ui/panel/beta_exit/betasurveyqr.sprite',
+})
+
+
+def set_single_file_span(tvfs, logical, cft_position, content_size):
+    path_off,path_size,vfs_off,vfs_size,cft_off,cft_size=struct.unpack('>IIIIII',tvfs[12:36])
+    width=offset_field_size(cft_size)
+    matches=[value for _,path,value,folder,_ in walk_paths(tvfs,path_off,path_off+path_size)
+             if folder is None and norm_path(path.decode('utf-8'))==logical]
+    if len(matches)!=1: die(f'expected one VFS entry for {logical}, found {len(matches)}')
+    pos=vfs_off+matches[0]
+    if pos+9+width>vfs_off+vfs_size or tvfs[pos]!=1 or struct.unpack_from('>I',tvfs,pos+1)[0]!=0:
+        die(f'expected a whole-file single VFS span for {logical}')
+    if cft_off+int.from_bytes(tvfs[pos+9:pos+9+width],'big')!=cft_position:
+        die(f'VFS/CFT mismatch for {logical}')
+    struct.pack_into('>I',tvfs,pos+5,content_size)
+
+
 def cft_position(vfs_content, cft_offset, cft_end, manifest, logical):
     """逻辑路径 → 它在 TVFS 容器文件表里的条目位置（按旧 EKey 唯一命中） | Logical path → the position of its entry in the TVFS container file table (unique hit by the old EKey)"""
     row = manifest.get(logical)
@@ -454,8 +476,8 @@ def rewrite_tvfs(source, output, replacements, prebuilt=None):
     adds = {k[1:]: v for k, v in replacements.items() if k.startswith("+")}
     replacements = {k: v for k, v in replacements.items() if not k.startswith("+")}
     for logical, replacement in replacements.items():
-        updates.append((cft_position(vfs_content, cft_offset, cft_end, manifest, logical), replacement.read_bytes()))
-    prebuilt_pos = [(cft_position(vfs_content, cft_offset, cft_end, manifest, logical), entry) for logical, entry in (prebuilt or {}).items()]
+        updates.append((logical, cft_position(vfs_content, cft_offset, cft_end, manifest, logical), replacement.read_bytes()))
+    prebuilt_pos = [(logical, cft_position(vfs_content, cft_offset, cft_end, manifest, logical), entry) for logical, entry in (prebuilt or {}).items()]
 
     new_chunk, new_archive = available_location(data_dir)
     new_data = bytearray()
@@ -468,15 +490,17 @@ def rewrite_tvfs(source, output, replacements, prebuilt=None):
 
     est_off, est_size = struct.unpack(">II", vfs_content[38:46])
     especs = bytes(vfs_content[est_off:est_off + est_size]).split(b"\0")
-    for pos, content in updates:
+    for logical, pos, content in updates:
         espec = especs[vfs_content[pos + 20]].decode()   # 规格序号 1 字节（规格表 13 字节） | Spec index is 1 byte (spec table is 13 bytes)
         ekey, decoded_size, encoded_size = append(content, espec)
         vfs_content[pos:pos + 9] = ekey[:9]
         vfs_content[pos + 9:pos + 16] = ekey[9:]
         set_cft_sizes(vfs_content, pos, encoded_size, decoded_size)
-    for pos, (ekey, encoded_size, decoded_size) in prebuilt_pos:   # 独立数据档里已写好的条目：只改指向，不复制内容 | Entries already written in the standalone data archive: only repoint them, do not copy the content
+        if logical in CHARACTER_SPRITE_PATHS: set_single_file_span(vfs_content, logical, pos, decoded_size)
+    for logical, pos, (ekey, encoded_size, decoded_size) in prebuilt_pos:   # 独立数据档里已写好的条目：只改指向，不复制内容 | Entries already written in the standalone data archive: only repoint them, do not copy the content
         vfs_content[pos:pos + 16] = ekey
         set_cft_sizes(vfs_content, pos, encoded_size, decoded_size)
+        if logical in CHARACTER_SPRITE_PATHS: set_single_file_span(vfs_content, logical, pos, decoded_size)
 
     if adds:
         espec_index = next((i for i, e in enumerate(especs) if e == b"z"), 0)   # 新文件用裸 zlib（与原版小文件同） | New files use raw zlib (same as small files in the original game)
