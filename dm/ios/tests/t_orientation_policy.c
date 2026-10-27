@@ -28,5 +28,9 @@ int main(void) {
  dm_orientation_entry_reset(&gate);
  dm_orientation_entry_observe(&gate,1,-1);dm_orientation_entry_observe(&gate,1,1);assert(!gate.enabled);
  dm_orientation_entry_observe(&gate,1,0);assert(gate.enabled);
+ dm_orientation_entry_reset(&gate);
+ dm_orientation_entry_observe(&gate,1,0);assert(gate.enabled); // Late old-run frame is harmless.
+ dm_orientation_entry_observe(&gate,0,0);assert(!gate.started && !gate.enabled);
+ dm_orientation_entry_observe(&gate,1,1);assert(!gate.enabled); // Next portrait entry still stays landscape.
  puts("PASS orientation: immediate landscape permission, first rotation, missed frontend ticks, unknown readings, portrait entry hold, map loading and reset");
 }

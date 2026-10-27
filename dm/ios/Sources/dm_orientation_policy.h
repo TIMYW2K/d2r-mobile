@@ -12,16 +12,22 @@ static inline int dm_orientation_retry_step(dm_orientation_retry *s,int active,i
 // landscape->portrait transition without depending on an out-of-run tick.
 // If physically portrait on entry, retain landscape until a real posture
 // change; unknown/flat readings cannot select portrait. No permanent wait gate.
-typedef struct { int started, posture, enabled; } dm_orientation_entry;
+typedef struct { int started, posture, enabled, reset_pending; } dm_orientation_entry;
 static inline void dm_orientation_entry_observe(dm_orientation_entry *s,int ingame,int posture) {
-    if (!ingame || posture<0) return;
+    if (!ingame) {
+        // Clear any late old-run sample once the front end is observed, but
+        // never wait for that sample before permitting a new landscape run.
+        if(s->reset_pending) *s=(dm_orientation_entry){0,-1,0,0};
+        return;
+    }
+    if(posture<0) return;
     if (!s->started) {
-        *s=(dm_orientation_entry){1,posture,posture==0};
+        *s=(dm_orientation_entry){1,posture,posture==0,s->reset_pending};
         return;
     }
     if (posture==0 || (s->posture>=0 && posture!=s->posture)) s->enabled=1;
     s->posture=posture;
 }
 static inline void dm_orientation_entry_reset(dm_orientation_entry *s) {
-    *s=(dm_orientation_entry){0,-1,0};
+    *s=(dm_orientation_entry){0,-1,0,1};
 }
