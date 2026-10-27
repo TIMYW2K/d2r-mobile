@@ -133,7 +133,14 @@ int main(void) {
  int ax,ay,aw,ah; dm_ui_rect(&ax,&ay,&aw,&ah);
  int before_layout=text_relayouts;
  int expected=12-(int)((long)ay*2160/ah)-(int)lround(200.0*2160/ah);
- tick(); tick(); CHECK(*y(extra)==expected); CHECK(text_relayouts>before_layout); tick(); CHECK(*y(extra)==expected);
+ // 面板的 +0x10 不是布局刷新，而是装载后钩子：HUDWarnings 重绑文字子控件，HireablesPanel 重建头像列表并在
+ // 第一次构建时销毁 Template（再调会空指针）。23.1 在这里对面板传 relayout=1，横转竖第一帧即闪退；
+ // 上提面板只写矩形，不再调 +0x10。
+ // A panel's +0x10 is a post-load hook, not a layout refresh: HUDWarnings re-binds its text children and
+ // HireablesPanel rebuilds its portrait list, destroying the Template on the first build (a second call dereferences
+ // null). 23.1 passed relayout=1 for the panel here and crashed on the first portrait frame; lifting now only
+ // writes the rect.
+ tick(); tick(); CHECK(*y(extra)==expected); CHECK(text_relayouts==before_layout); tick(); CHECK(*y(extra)==expected);
  portrait=0; tick(); CHECK(*y(extra)==12-(int)((long)ay*2160/ah));
  free(base); printf("t_minimap_lift: %d checks, %d failures\n",checks,fails); return fails!=0;
 }

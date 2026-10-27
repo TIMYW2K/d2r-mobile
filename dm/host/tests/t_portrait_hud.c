@@ -20,7 +20,9 @@ void dm_ui_rect(int *x,int *y,int *w,int *h) { *x=0; *y=1288; *w=1206; *h=1334; 
 static int checks,fails,relayouts;
 #define CHECK(c) do { checks++; if(!(c)) { fails++; printf("FAIL line %d: %s\n",__LINE__,#c); } } while(0)
 static _Alignas(8) unsigned char root[160], hud[160], nodes[7][160];
-static uint64_t root_children[4], hud_children[7], vtable[4];
+static uint64_t root_children[4], hud_children[7], vtable[4], panel_vtable[4];
+static int panel_hooks;   // panels' vtable +0x10 must never be called: on real panels it is a destructive post-load hook
+static void panel_relayout(uint64_t w) { (void)w; panel_hooks++; }
 static const char *names[7]={"HealthBall","ManaBall","Belt","TouchPortraitBeltBacking0","TouchPortraitBeltBacking1","TouchPortraitBeltBacking2","TouchPortraitBeltBacking3"};
 static const int base_x[7]={-900,600,-500,29543,29740,29936,30133};
 static uint64_t ptr(void *p) { return (uint64_t)(uintptr_t)p; }
@@ -42,7 +44,7 @@ static void restored(void) {
 int main(void) {
  unsigned char *base=calloc(1,0x2f05460); if(!base)return 2;
  g_nmod=1; strcpy(g_mod[0].name,"main"); g_mod[0].base=base;
- vtable[2]=ptr(relayout);
+ vtable[2]=ptr(relayout); panel_vtable[2]=ptr(panel_relayout);
  widget(root,"Root",0); widget(hud,"HUDPanel",ptr(root));
  *(uint64_t *)(base+0x2f05458)=ptr(root);
  root_children[0]=ptr(hud); *(uint64_t *)(root+0x58)=ptr(root_children); *(uint64_t *)(root+0x60)=1;
@@ -74,13 +76,23 @@ int main(void) {
  // Another orientation/return cycle exercises repopulating the guard after restoration.
  ingame=1; portrait=0; tick(); restored(); portrait=1; tick(); shifted();
  static _Alignas(8) unsigned char warnings[160],hire[160],merc[160]; static uint64_t pets[1];
- widget(warnings,"HUDWarnings",ptr(root)); *x(warnings)=100;
- widget(hire,"HireablesPanel",ptr(root)); widget(merc,"Pet",ptr(hire)); *x(merc)=40; *(int32_t *)(merc+0x74)=60;
+ widget(warnings,"HUDWarnings",ptr(root)); *x(warnings)=100; *(uint64_t *)warnings=ptr(panel_vtable);
+ widget(hire,"HireablesPanel",ptr(root)); *(uint64_t *)hire=ptr(panel_vtable); widget(merc,"Pet",ptr(hire)); *x(merc)=40; *(int32_t *)(merc+0x74)=60;
  pets[0]=ptr(merc); *(uint64_t *)(hire+0x58)=ptr(pets); *(uint64_t *)(hire+0x60)=1;
  root_children[1]=ptr(warnings); root_children[2]=ptr(hire); *(uint64_t *)(root+0x60)=3;
  tick(); CHECK(*x(warnings)==-107); CHECK(*x(merc)==172); CHECK(*(int32_t *)(merc+0x74)==-197);
  tick(); CHECK(*x(warnings)==-107); CHECK(*x(merc)==172); CHECK(*(int32_t *)(merc+0x74)==-197);
  portrait=0; tick(); CHECK(*x(warnings)==100); CHECK(*x(merc)==40); CHECK(*(int32_t *)(merc+0x74)==60);
+ // 23.1 passed relayout=1 for the panels; HireablesPanel's hook rebuilt its portrait list from an already-destroyed
+ // Template and crashed on the first portrait frame. Only the merc leaf widgets may be re-laid out.
+ int n0=relayouts; portrait=1; tick();
+ CHECK(relayouts==n0+9); CHECK(panel_hooks==0);   // 7 HUD leaves + 2 merc fields; the panel itself contributes none
+ // Same for the top-lift path: moving the panels must not invoke either hook.
+ *(int32_t *)(warnings+0x84)=-100; *(int32_t *)(hire+0x84)=-100; *(int32_t *)(warnings+0x74)=0; *(int32_t *)(hire+0x74)=0;
+ ui_lift_pump(ptr(root),frame+=6);
+ CHECK(*(int32_t *)(warnings+0x74)<0 && *(int32_t *)(hire+0x74)<0);
+ CHECK(panel_hooks==0);
+ mv_restore(ptr(root),MV_LIFT); CHECK(panel_hooks==0);
  // Exercise the production map publisher using the portrait band geometry
  // captured from the device, rather than a hand-written expected draw rect.
  static _Alignas(8) unsigned char map[0x1600];

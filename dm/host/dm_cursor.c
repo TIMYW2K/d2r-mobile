@@ -1869,6 +1869,15 @@ static void mv_prune(void) {   // 不在界面树上的条目直接忘掉（不�
     if (g_nmv != n0) { static int lg; if (lg++ < 20) LOG("位置守卫：%d 条的控件已不在界面树上（界面重建过），忘掉（剩 %d）", n0 - g_nmv, g_nmv); }
 }
 static int32_t g_mv_base; static int g_mv_base_on;   // 调用方知道这个控件的原位时（如小地图面板贴边 = -宽）在调用前给出：按它算，不拿控件此刻的值当原值（界面重建出来的新控件可能带着我们上一遍挪过的值） | When the caller knows this widget's original position (e.g. the minimap panel flush against the edge = -width), it supplies it before the call: compute from that instead of taking the widget's current value as the original (a new widget produced by a UI rebuild may carry the value we shifted on the previous pass)
+// +0x10 不是统一的布局刷新，而是各类自己的钩子：只给确认「改完矩形需要补调」的控件（球液 / 腰带 / 佣兵头像，
+// 以及仓库 / 魔盒那几个布局面板）传 1。HUDWarnings 的钩子按名字重绑文字子控件；HireablesPanel 的重建头像列表，
+// 且第一次构建时就销毁了 Template —— 再调会拿空 Template 去克隆。给这个面板传 1 = 横转竖第一帧闪退，
+// 回归见 tests/t_portrait_hud.c。
+// +0x10 is not a generic layout refresh but each class's own hook: pass 1 only for widgets known to need it after a
+// rect change (orb liquid / belt / merc icons, plus the stash/cube layout panels). HUDWarnings' hook re-binds its
+// text children by name; HireablesPanel's rebuilds the portrait list and its first build destroys the Template -- a
+// second call clones from a null Template. Passing 1 for that panel = crash on the first portrait frame;
+// regression coverage is in tests/t_portrait_hud.c.
 static void mv_offset(int own, uint64_t w, int f, int32_t delta, int relayout) {   // f：0 x、1 y、2 宽 | f: 0 x, 1 y, 2 width
     if (!w) return; int32_t *v = (int32_t *)(w + 0x70 + 4 * f); int i = 0; while (i < g_nmv && !(g_mv[i].r.w == w && g_mv[i].f == f)) i++;   // 按原指针认条目（只比身份）：w 是调用方此刻从界面树上取的活控件；同址的新控件由下面「现值≠上次写的值 → 现值当原值」接住 | Match entries by original pointer (identity comparison only): w is the live widget the caller just took from the UI tree; a new widget at the same address is caught by the "current value ≠ last written value → treat current value as the original" rule below
     if (i == g_nmv) { if (!delta) return; if (!mv_allowed(own, w)) { static int lg; if (lg++ < 8) LOG("【红】位置守卫：%s 要挪的控件「%s」不在名单里，不写", mv_name[own], (const char *)*(uint64_t *)(w + 8)); return; }
@@ -2244,9 +2253,14 @@ static void ui_lift_pump(uint64_t root, uint64_t fr) {
         if (nm && !strcmp(nm, "AutoMap")) continue;
         float ay = *(float *)(p + 0x4c); int layer = *(int32_t *)(p + 0x84); if (!(ay == 0 && layer <= -100)) continue;
         int extra = nm && !strcmp(nm,"HUDWarnings") && dm_uiscreen_portrait() && h>0 ? (int)dm_hud_px_to_units(DM_PORTRAIT_AREA_UP_PX,h) : 0;
-        // Recompute the text panels after moving them so their cached glyph and shadow geometry follows together.
-        int relayout_text = dm_uiscreen_portrait() && nm && (!strcmp(nm,"HUDWarnings") || !strcmp(nm,"HireablesPanel"));
-        int32_t y0 = *(int32_t *)(p + 0x74); mv_offset(MV_LIFT, p, 1, -lift-extra, relayout_text);
+        // 面板不能走「重排」：虚表 +0x10 是各类自己的装载后钩子，不是布局刷新。HUDWarnings 的那个按名字重新绑定
+        // 文字子控件；HireablesPanel 的那个重建头像列表，而且第一次构建结束时就销毁了 Template —— 再调一次会拿空
+        // Template 去克隆（横转竖第一帧闪退）。文字阴影按控件矩形现画，挪面板本身不需要重排。
+        // Panels must not be "relaid out": vtable +0x10 is each class's own post-load hook, not a layout refresh.
+        // HUDWarnings' re-binds its text children by name; HireablesPanel's rebuilds the portrait list, and its first
+        // build destroys the Template -- calling it again clones from a null Template (crash on the first portrait frame).
+        // Text shadows are drawn from the widget rect, so moving the panel itself needs no relayout.
+        int32_t y0 = *(int32_t *)(p + 0x74); mv_offset(MV_LIFT, p, 1, -lift-extra, 0);
         if (*(int32_t *)(p + 0x74) != y0) { static int lg; if (lg++ < 16) LOG("贴顶上提：%s（层 %d）y %d → %d", nm ? nm : "?", layer, y0, *(int32_t *)(p + 0x74)); } }
 }
 // 珍宝匣：宝石 / 材料 / 符文三页的格位合到了宝石页那一页（布局 wide_stash.py trove_slots，底图 gen_trove_art.py），页签条上只留「个人 / 共享 / 珍宝匣 / 编年史」。
@@ -2609,7 +2623,7 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); int ux=0, uy=0, uw=0, uh=0; dm_ui_rect(&ux,&uy,&uw,&uh);
         int dx = dm_uiscreen_portrait() && uh > 0 ? dm_hud_px_to_units(DM_PORTRAIT_AREA_LEFT_PX, uh) + ui_pt_units(11) : 0;
-        mv_offset(MV_SAFE, h, 0, -u-dx, dm_uiscreen_portrait()); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }
+        mv_offset(MV_SAFE, h, 0, -u-dx, 0); if (*(int32_t *)(h + 0x70) != x0) LOG("安全区：信息栏 x %d → %d", x0, *(int32_t *)(h + 0x70)); }   // 面板不重排：+0x10 是装载后钩子（见 ui_lift_pump） | no relayout for panels: +0x10 is a post-load hook (see ui_lift_pump)
 
     // Match UIKit's shared portrait shift for live potion/orb contents and their opaque backings.
     // Duplicate native decorations remain off-screen; all original coordinates restore outside portrait touch.
@@ -3678,8 +3692,8 @@ static void dm_hud_names_pump(module_t *m, uint64_t root) {
         {   // 用户要求：名字小一号。只缩名字控件自己（+0x80），不动面板/其它文字；游戏若每拍写回就每拍补一次，变化才写 | user request: names one size smaller. Scale only the name widget itself (+0x80), not the panel or other text; rewrite only when the game changes it back
             float *ns = (float *)(uintptr_t)(nm + 0x80);
             if (*ns != DM_HUD_NAME_SCALE) { *ns = DM_HUD_NAME_SCALE;
-                // Text size changes must refresh the same cached layout used by its shadow.
-                if (dm_uiscreen_portrait()) ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)nm + 0x10))(nm);
+                // 文字控件的 +0x10 是空函数（main+0xb79f50 只有 ret），字号改完直接写即可；阴影按矩形现画。
+                // The text class's +0x10 is an empty function (main+0xb79f50 is a bare ret), so just write the scale; the shadow is drawn from the rect.
                 static int lgs; if (lgs++ < 3) LOG("名字字号：名字控件缩放改为 %.2f（小一号）", (double)DM_HUD_NAME_SCALE); }
         }
         char buf[40]; size_t tl = 0;
