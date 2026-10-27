@@ -268,5 +268,5 @@ $(B)/t_frontend_modal: t_frontend_modal.c ../dm_cursor.c ../dm_cursor.h | $(B)
 $(B)/t_camera_pan: t_camera_pan.c ../dm_camera_pan.h | $(B)
 	clang -O2 -I.. -o $@ t_camera_pan.c -lm
 
-$(B)/t_movie_touch_state: t_movie_touch_state.c ../hle_movie.c ../dm_movie_decode.h | $(B)
+$(B)/t_movie_touch_state: t_movie_touch_state.c ../hle_movie.c ../dm_movie_decode.h ../../ios/Sources/dm_movie_touch_policy.h | $(B)
 	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_movie_touch_state.c -lm

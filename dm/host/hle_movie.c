@@ -372,10 +372,13 @@ int dm_movie_cutscene_active(void) { return atomic_load(&movie_cutscenes)>0; }
 // The title-screen loop is decoded too, but must never capture menu touches.
 static int movie_is_cutscene(const char *path) {
     if (!path) return 0;
-    const char *loop="logoloop";
-    for (const char *p=path;*p;p++) {
-        size_t n=0;while(loop[n] && p[n] && tolower((unsigned char)p[n])==loop[n]) n++;
-        if (!loop[n]) return 0;
+    static const char *backgrounds[]={"logoloop","credits"};
+    for(size_t i=0;i<sizeof backgrounds/sizeof backgrounds[0];i++) {
+        const char *loop=backgrounds[i];
+        for(const char *p=path;*p;p++) {
+            size_t n=0;while(loop[n] && p[n] && tolower((unsigned char)p[n])==loop[n]) n++;
+            if(!loop[n]) return 0;
+        }
     }
     return 1;
 }

@@ -22,3 +22,13 @@ for enabled in ('1','0'):
  assert ('99999' in cine)==(enabled=='0')
  assert '99999' in layout._widget_block(out,'MotDSection')
 print('frontend sidebar: safe inset, settings, native quit, optional cinematics passed')
+
+credits='{"type":"CreditsModal","name":"CreditsModal","children":[{"type":"ButtonWidget","name":"ExitButton","children": [{"type":"ButtonLegendWidget","name":"DismissLegend","fields":{"presets":[{"action":"back"}]}}]}]}'
+credits,_=layout.offscreen(credits)
+credits=layout.credits_exit_touch(credits)
+exit_widget=layout._widget_block(credits,'ExitButton')
+assert 'CreditsModalMessage:Finish' in exit_widget
+assert '"anchor": { "x": 1.0, "y": 1.0 }' in exit_widget
+assert '"rect": { "x": -766, "y": -245 }' in exit_widget
+assert '99999' in layout._widget_block(credits,'DismissLegend')
+print('credits exit: visible inherited button, bottom-right anchor, original Finish action, hidden pad legend passed')

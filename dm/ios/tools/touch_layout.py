@@ -203,12 +203,20 @@ def set_rect(s, name, x, y, w, h):
     r = re.compile(r'"rect"\s*:\s*\{[^}]*\}').search(s, m.end()); assert r and r.start() - m.end() < 200, name
     return s[:r.start()] + '"rect": { "x": %d, "y": %d, "width": %d, "height": %d }' % (x, y, w, h) + s[r.end():]
 
+def credits_exit_touch(s):
+    block=_widget_block(s,'ExitButton')
+    if not block or '"fields"' in block.split('"children"',1)[0]: raise SystemExit('touch_layout: unexpected controller credits exit')
+    updated=block.replace('"children": [', '"fields": { "rect": { "x": -766, "y": -245 }, "anchor": { "x": 1.0, "y": 1.0 }, "onClickMessage": "CreditsModalMessage:Finish" },\n            "children": [',1)
+    return s.replace(block,updated,1)
+
+
 def build(romfs, outdir, files=FRONTEND):
     """生成改好的布局到 outdir，返回 {包内逻辑路径(小写): 本地文件}；每个文件至少要改到 1 处，否则报错（原版布局变了就不该悄悄漏掉）。 | Generate the modified layouts into outdir and return {logical path in package (lowercase): local file}; each file must have at least 1 place changed, otherwise it is an error (if the original game's layout has changed it must not be silently missed)."""
     repl = {}; total = 0
     for rel, names in files:
         path, text = read_layout(romfs, rel); new, n = offscreen(text, names=names)
         if n == 0: raise SystemExit('touch_layout：%s 里没找到键位提示控件（原版布局变了？）' % rel)
+        if rel == 'controller/creditsmodalhd.json': new = credits_exit_touch(new)
         if rel == 'controller/console/charactercreatepanelhd.json':
             for nm, x0, x1 in CLASS_STRIPS: new = set_rect(new, nm, x0, 450, x1 - x0, 1300)
         if rel in INSERT:

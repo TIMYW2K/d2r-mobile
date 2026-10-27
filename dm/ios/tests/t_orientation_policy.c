@@ -11,17 +11,22 @@ int main(void) {
  assert(!dm_orientation_retry_step(&s,1,1,1,12)); assert(s.attempts==0);
  assert(dm_orientation_retry_step(&s,1,0,0,13));
  dm_orientation_entry gate={0,-1,0};
- dm_orientation_entry_observe(&gate,0,1); assert(!gate.started && !gate.enabled);
- dm_orientation_entry_observe(&gate,1,1); assert(gate.started && !gate.enabled);
- dm_orientation_entry_observe(&gate,1,1); assert(!gate.enabled); // Entry cannot snap portrait.
- dm_orientation_entry_observe(&gate,0,-1); assert(!gate.enabled); // Loading/flat preserves baseline.
- dm_orientation_entry_observe(&gate,1,0); assert(gate.enabled); // User rotates after entry.
- dm_orientation_entry_observe(&gate,0,1); assert(gate.enabled); // Map loading retains session.
- dm_orientation_entry_reset(&gate); assert(!gate.started && !gate.enabled);
- dm_orientation_entry_observe(&gate,1,1); assert(!gate.started); // Late old-run tick after exit.
- dm_orientation_entry_observe(&gate,0,1); assert(!gate.wait_frontend);
- dm_orientation_entry_observe(&gate,1,-1); assert(!gate.enabled);
- dm_orientation_entry_observe(&gate,1,1); assert(!gate.enabled); // First valid reading is baseline.
- dm_orientation_entry_observe(&gate,1,0); assert(gate.enabled); // Also works after resume.
- puts("PASS orientation retry: active-only, flat ignored, delayed geometry retries, cap, changed posture, settled reset, landscape entry and explicit-exit gate");
+ dm_orientation_entry_observe(&gate,0,1);assert(!gate.started && !gate.enabled);
+ dm_orientation_entry_observe(&gate,1,0);assert(gate.started && gate.enabled); // Normal landscape entry already supports rotation.
+ dm_orientation_entry_observe(&gate,1,1);assert(gate.enabled);
+ dm_orientation_entry_observe(&gate,0,-1);assert(gate.enabled); // Map loading does not revoke permission.
+ dm_orientation_entry_reset(&gate);
+ dm_orientation_entry_observe(&gate,1,0);assert(gate.enabled); // Missed frontend tick cannot deadlock.
+ dm_orientation_entry_reset(&gate);
+ dm_orientation_entry_observe(&gate,1,1);assert(gate.started && !gate.enabled); // Portrait device on entry cannot snap.
+ dm_orientation_entry_observe(&gate,1,1);assert(!gate.enabled);
+ dm_orientation_entry_observe(&gate,1,0);assert(gate.enabled);
+ dm_orientation_entry_observe(&gate,1,1);assert(gate.enabled);
+ dm_orientation_entry_reset(&gate);
+ dm_orientation_entry_observe(&gate,1,-1);assert(!gate.started && !gate.enabled);
+ dm_orientation_entry_observe(&gate,1,0);assert(gate.enabled); // Delayed first sensor reading.
+ dm_orientation_entry_reset(&gate);
+ dm_orientation_entry_observe(&gate,1,-1);dm_orientation_entry_observe(&gate,1,1);assert(!gate.enabled);
+ dm_orientation_entry_observe(&gate,1,0);assert(gate.enabled);
+ puts("PASS orientation: immediate landscape permission, first rotation, missed frontend ticks, unknown readings, portrait entry hold, map loading and reset");
 }

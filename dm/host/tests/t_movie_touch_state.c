@@ -5,8 +5,11 @@
 #include "../hle_movie.c"
 #include <assert.h>
 #include <stdio.h>
+#include "../../ios/Sources/dm_movie_touch_policy.h"
 void dm_movie_decode_close(dm_movie_decode *decode) { assert(decode==(dm_movie_decode *)1); }
 int main(void) {
+    assert(dm_movie_touch_allowed(1,0));assert(!dm_movie_touch_allowed(1,1));assert(!dm_movie_touch_allowed(0,0));
+    assert(!movie_is_cutscene("DATA/Movies/CREDITS.webm"));
     assert(!movie_is_cutscene(NULL));assert(!movie_is_cutscene("data/LOCAL/LogoLoop.webm"));
     assert(!movie_is_cutscene("logoloop"));assert(movie_is_cutscene("data/movies/act1.webm"));
     mvreal a={.decode=(dm_movie_decode *)1,.cutscene=1},b={.decode=(dm_movie_decode *)1,.cutscene=1};

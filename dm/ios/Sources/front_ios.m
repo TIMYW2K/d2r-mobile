@@ -40,6 +40,9 @@ static NSString *SWT(const char *k) { return @(dm_ui(k)); }   // 我们自己的
 // schemes, and finally fall back to the App Store page (so a player without the app can install it). openURL itself
 // needs no whitelist, so Info.plist does not need LSApplicationQueriesSchemes.
 int dm_movie_cutscene_active(void); // hle_movie.c: excludes looping menu backgrounds.
+#include "dm_movie_touch_policy.h"
+static _Atomic int g_credits_touch_owner;
+static int dm_movie_touch_active(void) { return dm_movie_touch_allowed(dm_movie_cutscene_active(),atomic_load(&g_credits_touch_owner)); }
 static BOOL touch_done(UITouch *t);
 static BOOL dm_pal_open_bundle(NSString *bundle) {
     Class ws_class = NSClassFromString(@"LSApplicationWorkspace");
@@ -616,7 +619,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     // 指针登记为待写光标、再发布按键：宿主在游戏读手柄时把两者一起落地（dm_cursor.h）
     // Register the pointer as a pending cursor write, then publish the keys: the host applies both together when the game reads the controller (dm_cursor.h)
     if (_controls.pointer_valid) cursor_set_view(self,_controls.pointer_x,_controls.pointer_y); else dm_cursor_clear();
-    uint64_t buttons=dm_movie_cutscene_active() && _movieTouches.count ? DM_BTN_A : _controls.buttons;
+    uint64_t buttons=dm_movie_touch_active() && _movieTouches.count ? DM_BTN_A : _controls.buttons;
     dm_input_set(buttons,_controls.lx,_controls.ly,_controls.rx,_controls.ry);
     if (_controls.belt_request) { int br=_controls.belt_request; _controls.belt_request=0;   // 腰带展开 / 收起 / 喝上面几排的药（dm_actions.c） | Belt expand / collapse / drink a potion from the upper rows (dm_actions.c)
         if (br==1 || br==2) dm_belt_expand(br==1); else dm_belt_use(br&0xf, br>>4&0xf); }   // 腰带点按一律给玩家喝 | belt taps always go to the player
@@ -817,7 +820,7 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
 }
 - (void)tickTouchControls:(double)now {
     if(_movieTouches.count) {
-        if(!dm_movie_cutscene_active()) [self cancelControlsFrom:"movie_finished"];
+        if(!dm_movie_touch_active()) [self cancelControlsFrom:"movie_finished"];
         else {
             NSMutableSet *done=[NSMutableSet set];
             for(UITouch *t in _movieTouches) if(touch_done(t)) [done addObject:t];
@@ -985,7 +988,7 @@ static BOOL touch_done(UITouch *t) { UITouchPhase ph=t.phase; return ph==UITouch
     (void)e;
     if (_pinching) return;
     [self sweepEndedSlots];
-    if(dm_movie_cutscene_active()) {
+    if(dm_movie_touch_active()) {
         if(!_movieTouches.count) {
             [self cancelControlsFrom:"movie_begin"];
             if(_uiFinger) { dm_ui_touch(3,0,0); _uiFinger=nil; }
@@ -1412,7 +1415,14 @@ static void hud_stack_watch(void) {
 // 原版面板状态只决定控件用途/显隐；不把MouseMove消息误当鼠标注入。
 // The original game's panel state only decides widget purpose / visibility; MouseMove messages are not mistaken for mouse injection.
 static void touch_ui_message(const char *cat,const char *act,const char *arg) {
-    if(!strcmp(cat,"PanelManager")) hud_stack_message(act,arg);
+    if(!strcmp(cat,"PanelManager")) {
+        hud_stack_message(act,arg);
+        if(arg && !strcmp(arg,"CreditsModal")) {
+            if(!strcmp(act,"OpenPanel") || !strcmp(act,"OpenExclusivePanel")) atomic_store(&g_credits_touch_owner,1);
+            else if(!strcmp(act,"ClosePanel") || !strcmp(act,"UnloadPanel")) atomic_store(&g_credits_touch_owner,0);
+        }
+    }
+    if(!strcmp(cat,"CreditsModalMessage") && !strcmp(act,"Finish")) atomic_store(&g_credits_touch_owner,0);
     // 退出到前端（真正离开这一局，不是局内换图的读取画面）：置标志，tick 里请求转回横屏。
     // Leaving for the front end (really exiting the run, not an in-run map-change loading screen): set the flag; the tick asks to rotate back to landscape.
     if(!strcmp(cat,"FrontEndNavigation") && !strcmp(act,"ToFrontEnd")) atomic_store(&g_back_frontend,1);
