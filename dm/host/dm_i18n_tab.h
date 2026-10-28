@@ -382,4 +382,11 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmCustomTouchSwapFarHint", "位于技能区左上，松手后切换", "Above-left of skills; release to switch" },
     { "dmCustomMetalfx", "MetalFX 超分辨率（自动）", "MetalFX Upscaling (Auto)" },
     { "dmAppQuitConfirm", "确定退出暗黑破坏神？", "Quit Diablo II?" },
+    { "dmCustomCam", "镜头视角", "Camera view" },
+    { "dmCustomCamOff", "原版视角", "Original view" },
+    { "dmCustomCamOffHint", "斜俯视，与原版相同", "Angled top-down, as in the original" },
+    { "dmCustomCamOts", "越肩视角（实验）", "Over-the-shoulder (experimental)" },
+    { "dmCustomCamOtsHint", "右半屏上下拖动调整视角", "Drag up or down on the right half to tilt" },
+    { "dmCustomCamFp", "第一人称（实验）", "First person (experimental)" },
+    { "dmCustomCamFpHint", "右半屏拖动转身和抬头", "Drag on the right half to turn and look" },
 };

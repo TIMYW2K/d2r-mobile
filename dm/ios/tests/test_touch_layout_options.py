@@ -35,6 +35,13 @@ for name in ('TouchCustom_q3d_smooth', 'TouchCustom_q3d', 'TouchCustom_q3d_force
     assert nodes[name]['type'] == 'ToggleButtonWidget', name
     assert nodes[name]['fields']['onClickMessage'].endswith(name), name
 assert nodes['TouchCustom_q3d_Text']['fields']['rect']['height'] == 3 * 180, nodes['TouchCustom_q3d_Text']['fields']['rect']
+# v2.1.0 experimental camera: one three-choice group, within the existing scroll extent.
+for name in ('TouchCustom_cam', 'TouchCustom_cam_ots', 'TouchCustom_cam_fp'):
+    assert nodes[name]['type'] == 'ToggleButtonWidget', name
+    assert nodes[name]['fields']['onClickMessage'].endswith(name)
+assert nodes['TouchCustom_cam_Text']['fields']['rect']['height'] == 3 * 180
+assert nodes['TouchCustom_cam_Text']['fields']['rect']['y'] + 540 <= nodes['TouchCustomRows']['fields']['rect']['height']
+
 for key in ('@dmCustomQ3dSmooth', '@dmCustomQ3dQuality', '@dmCustomQ3dForce'):
     assert any(n.get('fields', {}).get('text') == key for n in nodes.values()), key
 for key in ('@dmCustomQ3dSmoothHint', '@dmCustomQ3dQualityHint', '@dmCustomQ3dForceHint'):

@@ -9,6 +9,11 @@ static int step(dm_minimap_entry *s, uint64_t frame, int ready, int area, int sh
 }
 int main(void) {
     dm_minimap_entry s = {0};
+    CHECK(dm_minimap_recovery_ready(1,1,0,1,1,0,0), "ready touch game with auto map");
+    CHECK(!dm_minimap_recovery_ready(1,1,0,1,1,1,0), "never toggle during cinematics");
+    CHECK(!dm_minimap_recovery_ready(1,1,0,1,0,0,0), "auto-open disabled stays disabled");
+    CHECK(!dm_minimap_recovery_ready(1,1,1,1,1,0,0), "no toggle during loading");
+    CHECK(!dm_minimap_recovery_ready(1,1,0,1,1,0,1), "controller mode retains manual control");
     int fired = 0;
     // Readiness represents all integration gates: ingame, valid player, load<=0, live AutoMap/vtable.
     for (int f = 0; f < 20; ++f) fired += step(&s, f, 0, 1, 0);
@@ -45,7 +50,11 @@ int main(void) {
     CHECK(!step(&s, 1120, 1, 3, 1), "already-visible new-area map is never toggled closed");
     CHECK(!s.pending && s.attempts == 0, "already-visible entry needs no retry");
     CHECK(!step(&s, 1200, 1, 3, 0), "manual close of initially visible map stays respected");
-    CHECK(!step(&s, 1201, 1, 0, 0) && !s.active, "unknown area cannot request a key");
+    // A story movie resets the scene latch even if the next act reuses the same area id.
+    CHECK(!step(&s, 1201, dm_minimap_recovery_ready(1,1,0,1,1,1,0), 3, 0), "movie blocks input and rearms");
+    CHECK(!step(&s, 1202, dm_minimap_recovery_ready(1,1,0,1,1,0,0), 3, 0), "movie completion starts a new grace period");
+    CHECK(step(&s, 1208, dm_minimap_recovery_ready(1,1,0,1,1,0,0), 3, 0), "map reopens after movie ends");
+    CHECK(!step(&s, 1209, 1, 0, 0) && !s.active, "unknown area cannot request a key");
     CHECK(!step(&s, 1210, 1, 4, 0), "new valid area begins grace after unknown-area interval");
     CHECK(!step(&s, 1216, 0, 4, 0), "readiness loss at retry deadline prevents input");
     CHECK(!step(&s, 1220, 1, 4, 0), "readiness recovery uses a new grace period");

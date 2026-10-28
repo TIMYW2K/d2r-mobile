@@ -9,6 +9,7 @@
 
 static int checks, fails, reset_count;
 void dm_3d_scale_reset_level(void) { ++reset_count; }
+int dm_cam_label_matrix(const float p[16], float out[16]) { (void)p; (void)out; return 0; }
 // No game/UI is loaded: these unrelated dm_uiscreen dependencies are inert in this test.
 module_t g_mod[MAX_MOD]; int g_nmod;
 uint64_t front_game_res(int docked) { (void)docked; return 0; }

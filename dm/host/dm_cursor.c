@@ -1886,14 +1886,20 @@ static void mv_offset(int own, uint64_t w, int f, int32_t delta, int relayout) {
         if (!mv_count(own)) { static int lg[MV_N]; if (lg[own]++ < 40) LOG("位置守卫：%s 开始挪（%s）", mv_name[own], (const char *)*(uint64_t *)(w + 8)); }   // 每次「开挪」留一条证据（绑定框只挪 0.2 秒，自检碰不上） | Leave one line of evidence at every "start moving" (the binding box is only moved for 0.2 s, which the self-check never catches)
         i = g_nmv;   // prune 后新条目的下标可能已变；后续必须更新实际插入的条目 | Pruning can move the insertion slot; update the entry actually inserted | Pruning can move the insertion slot; update the entry actually inserted
         g_mv[g_nmv] = (mvent){ { 0, 0 }, own, f, relayout, *v, *v }; dm_wref_set(&g_mv[g_nmv++].r, w); }
-    mvent *e = &g_mv[i]; if (g_mv_base_on) e->orig = g_mv_base; else if (*v != e->val) e->orig = *v;   // 游戏重建 / 重排过：现值当原值（调用方给了原位就用给的） | The game has rebuilt / re-laid out the UI: take the current value as the original value (if the caller supplied an original position, use that)
+    mvent *e = &g_mv[i];
+    // Upstream #152: the game can temporarily move the widened inventory while
+    // closing the stash. Keep its original position until the game writes our
+    // shifted value back. Limit this to MV_WIDE so portrait restoration is unchanged.
+    if (own == MV_WIDE && !delta && !g_mv_base_on && *v != e->val) return;
+    if (g_mv_base_on) e->orig = g_mv_base; else if (*v != e->val) e->orig = *v;   // 游戏重建 / 重排过：现值当原值（调用方给了原位就用给的） | The game has rebuilt / re-laid out the UI: take the current value as the original value (if the caller supplied an original position, use that)
     if (!delta) { if (*v == e->val && *v != e->orig) { *v = e->orig; if (e->relayout) ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x10))(w); } g_mv[i] = g_mv[--g_nmv]; return; }
     int32_t want = e->orig + delta; if (*v != want) { *v = want; if (relayout) ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x10))(w); } e->val = want;
 }
 static void mv_restore(uint64_t root, int own) {   // 这一位的条目全部写回原值（只写还挂在界面树上的，不在了就忘掉） | Write all entries of this bit back to their original values (only those still attached to the UI tree; forget the ones that are gone)
     int n0 = mv_count(own); if (!n0) return;
     for (int i = g_nmv - 1; i >= 0; i--) if (g_mv[i].own == own) { if (root && ui_has(root, g_mv[i].r.w, 0)) mv_offset(own, g_mv[i].r.w, g_mv[i].f, 0, g_mv[i].relayout); else g_mv[i] = g_mv[--g_nmv]; }
-    static int lg[MV_N]; if (lg[own]++ < 40) LOG("位置守卫：%s 条件没了，%d 处全部写回（剩 %d）", mv_name[own], n0, mv_count(own));
+    int n1 = mv_count(own); if (n1 == n0) return;
+    static int lg[MV_N]; if (lg[own]++ < 40) LOG("位置守卫：%s 条件没了，%d 处全部写回（剩 %d）", mv_name[own], n0, n1);
 }
 static int mv_count(int own) { int n = 0; for (int i = 0; i < g_nmv; i++) n += g_mv[i].own == own; return n; }
 static uint64_t g_mv_audit_at; static const char *g_mv_audit_path = "";
@@ -1903,7 +1909,7 @@ static void mv_audit_arm(const char *path) {   // 前一条还没到点就合并
 void dm_ui_lifecycle(int background) { mv_audit_arm(background ? "切后台" : "回前台"); }   // iOS 前端进 / 出后台时调（front_ios.m） | Called by the iOS front end on entering / leaving the background (front_ios.m)
 static void mv_audit_pump(uint64_t root, uint64_t fr) {
     if (!g_mv_audit_at || fr < g_mv_audit_at) return; g_mv_audit_at = 0; int bad = 0; char line[256]; int k = 0;
-    for (int o = 0; o < MV_N; o++) { int live = 0; for (int i = 0; i < g_nmv; i++) live += g_mv[i].own == o && ui_has(root, g_mv[i].r.w, 0);
+    for (int o = 0; o < MV_N; o++) { int live = 0; for (int i = 0; i < g_nmv; i++) live += g_mv[i].own == o && ui_has(root, g_mv[i].r.w, 0) && (o != MV_WIDE || *(int32_t *)(g_mv[i].r.w + 0x70 + 4 * g_mv[i].f) == g_mv[i].val);
         if (!g_mv_want[o] && live) { bad++; k += snprintf(line + k, sizeof line - k, "%s 还剩 %d 处没写回；", mv_name[o], live); }
         else if (k < 200) k += snprintf(line + k, sizeof line - k, "%s %s；", mv_name[o], g_mv_want[o] ? "条件成立、挪着" : "已全部写回"); }
     static const char *lp; static uint64_t lfr; if (!bad && lp == g_mv_audit_path && fr - lfr < 600) return;   // 都对：同一条路 10 秒内只记一次（关面板消息很密）；红的一律记 | All correct: the same path is logged only once per 10 s (close-panel messages are dense); failure lines are always logged
@@ -2000,8 +2006,10 @@ static void ui_map_center(module_t *m, uint64_t root, int mini) {
     { static int lg; if (lg++ < 8) LOG("全屏地图中心：纵向卷动量 %d → %d 格", *sc, want); } *sc = want; ours = want;
 }
 static _Atomic int g_load_up = -1;
+static _Atomic int g_map_movie, g_map_movie_rearm;
 static void ui_map_pump(module_t *m, uint64_t root) {
     static dm_minimap_entry entry;
+    if (atomic_exchange(&g_map_movie_rearm, 0)) dm_minimap_entry_step(&entry, dm_guest_frame(), 0, 0, 0);
     dm_hud_info hi; dm_hud_get(&hi);
     uint64_t am = root ? ui_panel(root,"AutoMap") : 0;
     if (!hi.valid || !dm_uiscreen_ingame() || !am || *(uint64_t *)am!=(uint64_t)m->base+0x20c58a0) {
@@ -2022,7 +2030,9 @@ static void ui_map_pump(module_t *m, uint64_t root) {
     mini=*(volatile int32_t *)(m->base+0x2d5c748);
     { dm_hud_info hi; dm_hud_get(&hi);
       uint64_t am = root ? ui_panel(root,"AutoMap") : 0;
-      int ready = dm_uiscreen_ingame() && hi.valid && atomic_load(&g_load_up)<=0 && am && *(uint64_t *)am==(uint64_t)m->base+0x20c58a0;
+      int ready = dm_minimap_recovery_ready(dm_uiscreen_ingame(), hi.valid, atomic_load(&g_load_up)>0,
+          am && *(uint64_t *)am==(uint64_t)m->base+0x20c58a0, *(volatile int32_t *)(m->base+0x2d485b4)!=0,
+          atomic_load(&g_map_movie), dm_padmode_current());
       int shown = am && *(uint64_t *)am==(uint64_t)m->base+0x20c58a0 && *(uint8_t *)(am+0x50);
       if (!ready) dm_minimap_entry_step(&entry,dm_guest_frame(),0,hi.area,shown);
       else if (!dm_uiscreen_panel() && dm_minimap_entry_step(&entry,dm_guest_frame(),1,hi.area,shown)) {
@@ -4617,6 +4627,9 @@ static void sel_keep(const char *cat, const char *act) {
 __attribute__((weak)) void dm_frontend_quit_request(void) { LOG("前端退出：本宿主未提供确认界面"); }
 __attribute__((weak)) int dm_frontend_quit_visible(void) { return 0; }
 void dm_ui_on_uimsg(const char *cat, const char *act, const char *arg) {
+    // v2.1.0: story act transitions close AutoMap for cinematics; rearm only after completion.
+    if (!strcmp(cat, "ProgressionMessage") && !strcmp(act, "PlayVideo")) { atomic_store(&g_map_movie, 1); atomic_store(&g_map_movie_rearm, 1); }
+    else if ((!strcmp(cat, "Cinematics") && !strcmp(act, "MovieComplete")) || (!strcmp(cat, "FrontEndNavigation") && !strcmp(act, "ToFrontEnd"))) atomic_store(&g_map_movie, 0);
     if (!strcmp(cat, "PanelManager") && !strcmp(act, "ClosePanel") && arg && !strcmp(arg, "TouchQuitApp")) dm_frontend_quit_request();
     sel_keep(cat, act);
     // 位置守卫自检的四条路：关面板 / 切页签 / 退出到前端（切后台由前端 dm_ui_lifecycle 报）

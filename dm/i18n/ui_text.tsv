@@ -381,3 +381,11 @@ dmCustomTouchSwapFarHint	位于技能区左上，松手后切换	Above-left of s
 dmCustomMetalfx	MetalFX 超分辨率（自动）	MetalFX Upscaling (Auto)	独立开关；保留原性能模式和字体
 
 dmAppQuitConfirm	确定退出暗黑破坏神？	Quit Diablo II?	iOS 主菜单退出确认
+
+dmCustomCam	镜头视角	Camera view	自定义页镜头单选的标题（实验；dm_custom.c 键 cam）
+dmCustomCamOff	原版视角	Original view	镜头单选第一项（缺省，cam=0）
+dmCustomCamOffHint	斜俯视，与原版相同	Angled top-down, as in the original	原版视角下面的说明小字
+dmCustomCamOts	越肩视角（实验）	Over-the-shoulder (experimental)	镜头单选第二项（cam=1）
+dmCustomCamOtsHint	右半屏上下拖动调整视角	Drag up or down on the right half to tilt	越肩下面的说明小字
+dmCustomCamFp	第一人称（实验）	First person (experimental)	镜头单选第三项（cam=2）
+dmCustomCamFpHint	右半屏拖动转身和抬头	Drag on the right half to turn and look	第一人称下面的说明小字

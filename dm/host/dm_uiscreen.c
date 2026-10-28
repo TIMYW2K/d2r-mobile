@@ -77,10 +77,14 @@ void dm_cam_pan_pixels(float *dx,float *dy) {
 static void ui_project_obs(const uint64_t *regs) {
     int dy=atomic_load(&g_ingame)?yoff():0;float px,py;dm_cam_pan_pixels(&px,&py);
     const uint8_t *c=(const uint8_t *)(uintptr_t)regs[0];
-    if ((!dy && !px && !py) || !c || c[0x160]) return;
+    if (!c || c[0x160]) return;
+    int dm_cam_label_matrix(const float p[16], float out[16]);
+    float pm[16]; int perspective=dm_cam_label_matrix((const float *)(c+0x80),pm);
+    if (!dy && !px && !py && !perspective) return;
     float W=*(const float *)(c+0x140),H=*(const float *)(c+0x144);
     if (!(W>0 && H>0)) return;
     static _Thread_local _Alignas(16) uint8_t cam[0x170];memcpy(cam,c,sizeof cam);
+    if (perspective) memcpy(cam+0x80,pm,sizeof pm);
     dm_camera_pan_projection((float *)(cam+0x80),W,H,px,py,dy);
     ((uint64_t *)(uintptr_t)regs)[0]=(uint64_t)(uintptr_t)cam;
 }
@@ -101,6 +105,7 @@ static void zoom_unlock(void) { atomic_flag_clear_explicit(&g_zoom_lock, memory_
 static float zoom_far(int portrait) { return portrait ? DM_ZOOM_PORTRAIT_EXTENT : DM_ZOOM_LANDSCAPE_EXTENT; }
 float dm_cam_zoom_near_extent(void) { return DM_ZOOM_MIN_EXTENT; }
 float dm_cam_zoom_far_extent(void) { return zoom_far(atomic_load(&g_portrait)); }
+int dm_ui_proj_gate(void) { return atomic_load(&g_proj_on); }
 
 void dm_uiscreen_set_portrait(int on) {
     int portrait = on != 0;

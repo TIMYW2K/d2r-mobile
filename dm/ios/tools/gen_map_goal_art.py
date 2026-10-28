@@ -79,6 +79,28 @@ def main():
     for i in range(7): sym.crop((i * pitch, 0, i * pitch + fw, sym.height)).save(os.path.join(OUT, 'sym_%d.png' % i))
     units, ufw, un, upitch = sprite_png('hd/global/ui/AUTOMAP/Units.sprite'); assert un == 8
     cross = units.crop((6 * upitch, 0, 6 * upitch + ufw, units.height)); a = cross.split()[3].point(lambda v: v // 2); cross.putalpha(a); cross.save(os.path.join(OUT, 'cross.png'))
+    # 镜头实验的人物朝向指针（front_ios.m mapHeadingSync）：原版手柄表情轮盘的指针（鎏金三角嵌宝石，本来就是从中心指向一个方向）。
+    # 12 帧 = 左 / 下 / 右 / 上 四个方向 × 三种状态，取第 3 帧（常态、朝上），前端按朝向旋转
+    # Facing pointer for the camera experiment (front_ios.m mapHeadingSync): the pointer of the original controller emote wheel (a gilded, jewelled
+    # triangle that already points outward from a centre). 12 frames = left / down / right / up x three states; frame 3 (normal, pointing up) is taken
+    # and the front end rotates it to the heading
+    ptr, pfw, pn, ppitch = sprite_png('hd/global/ui/Controller/Panel/EmoteWheel/Emote_Arrow.sprite'); assert pn == 12
+    # 原图是等边三角形，缩小到地图上看不出哪个是尖（jhz 真机反馈）：横向收到 0.5，成细长的箭头形，尖端一眼可辨，鎏金与宝石照旧
+    # The original is an equilateral triangle, and shrunk onto the map it is unclear which corner is the tip (jhz, on the phone): narrowed to 0.5 across
+    # into a slim arrowhead whose tip reads at a glance; the gilding and the jewel stay
+    up = ptr.crop((3 * ppitch, 0, 3 * ppitch + pfw, ptr.height)).resize((max(1, pfw // 2), ptr.height), Image.LANCZOS); up.save(os.path.join(OUT, 'heading.png'))
+    # 画面外怪物的指针（front_ios.m threatsSync，宿主 dm_cam_threats）：同一个指针按档位套原版名字配色——普通怪银白（去色）、冠军蓝（原版蓝名精英）、
+    # 独特暗金（原版暗金名字的金，即指针本色）、幕首领红（原版红字）。去色后按亮度乘目标色，鎏金纹理与宝石的明暗都留着
+    # Pointers for monsters off the picture (front_ios.m threatsSync, host dm_cam_threats): the same pointer in the original name colours by tier -- normal
+    # silver-white (desaturated), elite blue (the original elite monster name blue), Boss gold (the original unique name gold, the pointer's own colour).
+    # Desaturated and multiplied by the target colour by brightness, so the gilding texture and the jewel keep their light and shade
+    def tint(im, rgb):
+        a = im.getchannel('A'); g = im.convert('L').point(lambda v: min(255, v * 2))
+        out = Image.merge('RGB', [g.point(lambda v, c=c: v * c // 255) for c in rgb]).convert('RGBA'); out.putalpha(a); return out
+    tint(up, (225, 225, 225)).save(os.path.join(OUT, 'threat_0.png'))
+    tint(up, (110, 110, 255)).save(os.path.join(OUT, 'threat_1.png'))   # 冠军（蓝名精英） | champion (blue-named elite)
+    up.save(os.path.join(OUT, 'threat_2.png'))   # 独特 / 超级独特（暗金名） | unique / super unique (gold name)
+    tint(up, (255, 80, 64)).save(os.path.join(OUT, 'threat_3.png'))   # 幕首领：原版红字 | act boss: the original red text
     font = ImageFont.truetype(romfs_art.font(ROMFS, 'BlizzardGlobal-V5_81.ttf'), TEXT_PX)
     oldp = os.path.join(HERE, 'annot', 'oldnames.tsv')   # 旧译名对照表可以没有（公开仓库不带）：没有就都用现行名 | the old-name table may be absent (the public repository does not carry it): without it the current names are used throughout
     old = {(r[0], r[1]): r[3] for r in csv.reader(open(oldp, encoding='utf-8'), delimiter='\t') if len(r) >= 4} if os.path.isfile(oldp) else {}
@@ -91,6 +113,6 @@ def main():
         en = cache[f][key]['enUS']; label(en, col, font).save(os.path.join(OUT, 'label_%d_en.png' % i))   # 英文版：原版 enUS 名字，游戏语言不是简中时前端用它 | English version: the original enUS name, used by the front end when the game language is not Simplified Chinese
         man.append({'id': i, 'file': f, 'key': key, 'zhCN': zh, 'old': zo, 'enUS': en, 'color': list(col)})
     json.dump({'text_px': TEXT_PX, 'symbol_frames': 7, 'labels': man}, open(os.path.join(OUT, 'mapgoal.json'), 'w'), ensure_ascii=False, indent=1)
-    print('mapgoal：符号 7 帧、十字 1、名牌 %d（旧译名不同的 %d）→ %s' % (len(man), sum(m['old'] != m['zhCN'] for m in man), OUT))
+    print('mapgoal：符号 7 帧、十字 1、朝向指针 1、名牌 %d（旧译名不同的 %d）→ %s' % (len(man), sum(m['old'] != m['zhCN'] for m in man), OUT))
 
 if __name__ == '__main__': ROMFS = sys.argv[1]; main()

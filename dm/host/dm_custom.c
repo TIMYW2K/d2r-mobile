@@ -20,9 +20,9 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom", "metalfx", "show_fps" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS；show_fps 不在自定义页，排末尾、只走游戏设置页）。T18：省电模式（eco_fps）已删除，帧率只由温控决定 | order = the custom page's top-to-bottom rows (touch_layout.py _CUSTOM_ROWS; show_fps is not on the custom page, it is last and only lives on the game's settings page). T18: the power-saving mode (eco_fps) is gone; the frame rate is only capped by the thermal state
+static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom", "metalfx", "cam", "show_fps" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS；show_fps 不在自定义页，排末尾、只走游戏设置页）。T18：省电模式（eco_fps）已删除，帧率只由温控决定 | order = the custom page's top-to-bottom rows (touch_layout.py _CUSTOM_ROWS; show_fps is not on the custom page, it is last and only lives on the game's settings page). T18: the power-saving mode (eco_fps) is gone; the frame rate is only capped by the thermal state
 #define NK (int)(sizeof k_keys / sizeof *k_keys)   // 行数（解冲突时漏掉过，这里补回）
-static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0 };   // 缺省值：性能模式流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0、show_fps=0，其余开；zoom=1（允许双指缩放） | defaults: performance mode smoothness first (q3d=0), touch_swap_above=0 (left of portal), hdr=0, show_fps=0, the rest on; zoom=1 (pinch-to-zoom allowed)
+static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0 };   // 缺省值：性能模式流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0、show_fps=0，其余开；zoom=1（允许双指缩放） | defaults: performance mode smoothness first (q3d=0), touch_swap_above=0 (left of portal), hdr=0, show_fps=0, the rest on; zoom=1 (pinch-to-zoom allowed)
 // q3d（性能模式，自定义页）：0 = 流畅优先（60 帧，掉帧就自动降 3D 比例）、1 = 画质优先（60 帧，不自动降，过热仍会自动降档）、
 // 2 = 画质优先（强制）（60 帧固定、固定 3D 画质，忽略过热自动降档——永不 30 帧、永不降 3D 比例）。生效 = 调 hle_oe.c 的
 // dm_3d_quality_mode_set，读盘与点「应用」时当场调，下一帧控制器就按新档走；q3d==2 时 dm_fps_setting 恒 60、并立刻清掉已有温控降档。
@@ -38,6 +38,11 @@ static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1
 #define K_TOUCH_SWAP 14
 #define K_SHOW_FPS (NK - 1)   // show_fps 排在键表末尾、只在游戏设置页有勾选框 | show_fps is last in the key table and only has a checkbox on the game's settings page
 #define K_PAGE_ROWS (NK - 1)  // 自定义页的行数 = 除 show_fps 外的全部键 | rows on the custom page = every key except show_fps
+#define K_CAM (NK - 2)
+#define CAM_N 3
+static const char *const k_cam_box[CAM_N] = { "TouchCustom_cam", "TouchCustom_cam_ots", "TouchCustom_cam_fp" };
+static const char *const k_cam_name[CAM_N] = { "off", "over-the-shoulder", "first-person" };
+void dm_cam_set_mode(int m);
 void dm_3d_quality_mode_set(int mode);
 static const char *q3d_name(int m) { return m >= 2 ? "画质优先（强制）" : m == 1 ? "画质优先" : "流畅优先"; }   // 三档名字 | the three mode names
 static const char *const q3d_box[3] = { "TouchCustom_q3d_smooth", "TouchCustom_q3d", "TouchCustom_q3d_force" };   // 勾选框（值 0/1/2） | checkboxes (values 0/1/2)
@@ -78,7 +83,8 @@ static void load_once(void) {
     FILE *f = fopen(p, "r"); char ln[128];
     int lang = -1, merc = -1;
     // q3d 是 0/1/2：这一项按数字读（其余键仍是 0/1） | q3d is 0/1/2: this key is parsed as a number (the other keys stay 0/1)
-    while (f && fgets(ln, sizeof ln, f)) { char *eq = strchr(ln, '='); if (!eq) continue; *eq = 0; int i = key_index(ln); if (i >= 0) v[i] = i == (int)K_Q3D ? atoi(eq + 1) : eq[1] != '0'; if (i == 0) lang = v[0]; if (!strcmp(ln, "merc_pot_v2")) merc = eq[1] != '0'; }
+    while (f && fgets(ln, sizeof ln, f)) { char *eq = strchr(ln, '='); if (!eq) continue; *eq = 0; int i = key_index(ln); if (i >= 0) v[i] = (i == (int)K_Q3D || i == (int)K_CAM) ? atoi(eq + 1) : eq[1] != '0'; if (i == 0) lang = v[0]; if (!strcmp(ln, "merc_pot_v2")) merc = eq[1] != '0'; }
+    if (v[K_CAM] < 0 || v[K_CAM] >= CAM_N) v[K_CAM] = 0;
     if (f) fclose(f);
     if (lang < 0) v[0] = !dm_lang_zh();   // 没写过：按当前实际语言显示 | Never written: display according to the current actual language
     atomic_store(&g_lang_explicit, lang);
@@ -86,6 +92,7 @@ static void load_once(void) {
     if (v[K_Q3D] < 0) v[K_Q3D] = 0;
     if (v[K_Q3D] > 2) v[K_Q3D] = 2;   // 迁移：旧配置只有 0/1，1 保持画质优先 | migration: old files only have 0/1; 1 stays quality first
     for (int i = 0; i < NK; i++) { atomic_store(&g_val[i], v[i]); atomic_store(&g_pend[i], -1); }
+    dm_cam_set_mode(v[K_CAM]);
     dm_3d_quality_mode_set(v[K_Q3D]); LOG("自定义设置：性能模式读盘为%s（q3d=%d，已交给 3D 比例控制）", q3d_name(v[K_Q3D]), v[K_Q3D]);
     if (v[K_Q3D] == 2) { dm_perf_thermal_set(0); LOG("自定义设置：强制画质模式（q3d=2）→ 固定 60 帧 / 固定 3D 画质，忽略过热降档"); }
     if (!atomic_exchange(&g_loaded, 1)) LOG("自定义设置：读盘 %s%s lang_en=%d%s auto_mana=%d merc_pot=%d drop_light=%d map_mark=%d item_notes=%d icloud=%d pot_pick=%d drop_haptic=%d gem_pick=%d store_btn=%d show_fps=%d", p, f ? "" : "（没有文件，全按缺省）", v[0], lang < 0 ? "（没写，按当前语言）" : "", v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[K_SHOW_FPS]);
@@ -141,7 +148,7 @@ void dm_custom_on_uimsg(const char *cat, const char *act, const char *arg) {
     (void)arg; if (!cat || !act || strcmp(cat, "OptionsPanelMessage")) return;
     load_once();
     if (!strcmp(act, "AcceptChanges")) { int ch = 0;
-        for (int i = 0; i < NK; i++) { int pd = atomic_exchange(&g_pend[i], -1); if (pd >= 0 && pd != atomic_load(&g_val[i])) { atomic_store(&g_val[i], pd); ch = 1; if (i == K_Q3D) { int dm_3d_quality_mode_get(void); float dm_3d_scale_cur(void); dm_3d_quality_mode_set(pd);
+        for (int i = 0; i < NK; i++) { int pd = atomic_exchange(&g_pend[i], -1); if (pd >= 0 && pd != atomic_load(&g_val[i])) { atomic_store(&g_val[i], pd); ch = 1; if (i == K_CAM) dm_cam_set_mode(pd); if (i == K_Q3D) { int dm_3d_quality_mode_get(void); float dm_3d_scale_cur(void); dm_3d_quality_mode_set(pd);
             if (pd == 2) { dm_perf_thermal_set(0); LOG("自定义设置：强制画质模式（q3d=2）→ 固定 60 帧 / 固定 3D 画质，忽略过热降档"); }
             LOG("自定义设置：性能模式 → %s（已交给 3D 比例控制，读回模式 %d，此刻 3D 比例 %.2f）", q3d_name(pd), dm_3d_quality_mode_get(), dm_3d_scale_cur()); } if (i == 0) atomic_store(&g_lang_explicit, pd); if (i == K_MERC) atomic_store(&g_merc_explicit, pd); LOG("自定义设置：%s → %s（应用%s）", k_keys[i], pd ? "开" : "关", i == 0 ? "；语言下次启动生效" : ""); } }
         if (ch) save(); }
@@ -202,6 +209,21 @@ static void fi_show(uint64_t w, int on) {
     if (*(uint8_t *)(w + 0x50) != (uint8_t)on) *(uint8_t *)(w + 0x50) = (uint8_t)on;
 }
 
+
+// 多项单选行（语言五项、镜头视角三项）：几个勾选框互斥、存一个键 i（值 = 选中第几项）。页刚出现（布局里一律没勾）先摆成该显示的值、这一帧不当玩家点了；
+// 之后点没选中的那一项 = 选它，点已选中的那一项不变（摆回勾上）。改了只记待定值，点「应用」才生效
+// Multi-option radio rows (language: five, camera view: three): the checkboxes are mutually exclusive and store one key i (value = which option is selected).
+// When the page has just appeared (everything unchecked in the layout), first set what should show and do not treat this frame as a tap; after that,
+// tapping an unselected option = select it, tapping the selected one changes nothing (it is re-checked). A change only records the pending value; Apply makes it take effect
+static void radio_pump(uint64_t sp, int i, const char *const *box, const char *const *name, int n, dm_wref *seen) {
+    uint64_t bx[8]; int ok = n <= 8; for (int k = 0; ok && k < n; k++) { bx[k] = find_w(sp, box[k], 0); ok &= bx[k] && *(uint8_t *)(bx[k] + 0x50); }
+    if (!ok) return;
+    int pd0 = atomic_load(&g_pend[i]), shown = pd0 >= 0 ? pd0 : atomic_load(&g_val[i]), to = shown;
+    if (dm_wref_get(seen) != bx[0]) dm_wref_set(seen, bx[0]);
+    else for (int k = 0; k < n; k++) if (k != shown && TOGGLED(bx[k])) { to = k; break; }
+    if (to != shown) { atomic_store(&g_pend[i], to); LOG("自定义设置：%s → %s（点「应用」生效）", k_keys[i], name[to]); }
+    for (int k = 0; k < n; k++) if (TOGGLED(bx[k]) != (k == to)) set_toggle(bx[k], k == to);
+}
 void dm_custom_ui_pump(unsigned long long root) {
     if (!root || !main_base()) return;
     // T41：触屏模式不画原版手柄焦点金框（宽控件上就是那条「高亮条」；手柄模式保留——它是手柄导航的焦点框） | T41: do not draw the original gamepad focus gold frame in touch mode (the "bar highlight" on wide widgets); keep it in controller mode, where it is the gamepad navigation focus frame
@@ -233,6 +255,9 @@ void dm_custom_ui_pump(unsigned long long root) {
                   LOG("自定义设置：%s → %s（手柄 A 在三项间切换；点「应用」生效）", k_keys[sel], q3d_name(nx)); }
               else if (sel == K_TOUCH_SWAP) { int p0 = atomic_load(&g_pend[sel]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[sel]); atomic_store(&g_pend[sel], !sh); set_toggle(cw, !sh); { uint64_t z = find_w(sp, rev_box(sel), 0); if (z) set_toggle(z, sh); }
                   LOG("自定义设置：%s → %d（手柄 A 在两项间切换；点「应用」生效）",k_keys[sel],!sh); }
+              else if (sel == K_CAM) { int p0 = atomic_load(&g_pend[K_CAM]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[K_CAM]), to = (sh + 1) % CAM_N; atomic_store(&g_pend[K_CAM], to);   // 镜头视角三项：A 依次轮换 | camera view: A cycles through the three
+                  for (int k = 0; k < CAM_N; k++) { uint64_t z = find_w(sp, k_cam_box[k], 0); if (z) set_toggle(z, k == to); }
+                  LOG("自定义设置：镜头视角 → %s（手柄 A 在三项间轮换；点「应用」生效）", k_cam_name[to]); }
               else if (sel == 0) { int p0 = atomic_load(&g_pend[0]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[0]); atomic_store(&g_pend[0], !sh); set_toggle(cw, !sh); { uint64_t z = find_w(sp, "TouchCustom_lang_zh", 0); if (z) set_toggle(z, sh); }   // 语言行是单选的两项：两个框当场摆好（只改待定值的话，下面读框状态会把没跟上的框当成玩家点的） | The language row is a single choice between two items: both boxes are set on the spot (if only the pending value were changed, the code below that reads the box states would take the box that has not caught up as a player tap)
                   LOG("自定义设置：语言 → %s（手柄 A 在两项间切换；点「应用」生效）", !sh ? "English" : "中文"); }
               else set_toggle(cw, !TOGGLED(cw)); } }
@@ -249,7 +274,8 @@ void dm_custom_ui_pump(unsigned long long root) {
           if (sv && f - lf >= 4) { int32_t *t = (int32_t *)(tw + 0x70), *c = (int32_t *)(cw + 0x70); int top = (t[1] < c[1] ? t[1] : c[1]) - 10, bot = (t[1] + t[3] > c[1] + c[3] ? t[1] + t[3] : c[1] + c[3]) + 10;
               int off = -*(int32_t *)(view + 0x74), vh = *(int32_t *)(sv + 0x7c); if (vh <= 0) vh = 1260; void dm_ui_wheel_on(uint64_t, int); if (sel == 0) top = 0;   /* 选回第一行：一直滚到最顶，把标题行露出来 | selection back on the first row: scroll all the way to the top so that the header row is revealed */
               if (top < off) { lf = f; dm_ui_wheel_on(sv, 1); } else if (bot > off + vh) { lf = f; dm_ui_wheel_on(sv, -1); } } } }
-    for (int i = 0; i < NK; i++) { char nm[48]; snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[i]);
+    radio_pump(sp, K_CAM, k_cam_box, k_cam_name, CAM_N, &seen[K_CAM]);
+    for (int i = 0; i < NK; i++) { if (i == K_CAM) continue; char nm[48]; snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[i]);
         uint64_t w = find_w(sp, nm, 0); if (!w || !*(uint8_t *)(w + 0x50)) continue;
         int pd0 = atomic_load(&g_pend[i]), want = pd0 >= 0 ? pd0 : atomic_load(&g_val[i]);
         if (i == K_Q3D) {   // 性能模式三选一：三框互斥 | performance mode, three-way radio: the three boxes are mutually exclusive

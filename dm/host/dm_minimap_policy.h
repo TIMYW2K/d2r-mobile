@@ -1,5 +1,9 @@
 #pragma once
 #include <stdint.h>
+// v2.1.0: never open the map during movies or if the player disabled auto-open.
+static inline int dm_minimap_recovery_ready(int ingame, int player, int loading, int map_valid, int auto_open, int movie, int controller) {
+    return ingame && player && !loading && map_valid && auto_open && !movie && !controller;
+}
 // Per-scene bounded recovery. Once visible, a later user close is respected for that scene.
 typedef struct { int active, area, pending, attempts; uint64_t next; } dm_minimap_entry;
 static inline int dm_minimap_entry_step(dm_minimap_entry *s, uint64_t frame, int ready, int area, int shown) {

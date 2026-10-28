@@ -658,7 +658,24 @@ static void belt_single_double(void) {
         dm_tc_tick(&s, t + 1); CHECK(s.belt_request == 0);
     }
 }
+static void camera_drag_modes(void) {
+    for (int mode=0; mode<=2; ++mode) {
+        dm_tc_state s; dm_tc_init(&s, 956, 440); s.cam_on=mode;
+        CHECK(dm_tc_hit(&s.layout, 600, 60)==DM_TC_NONE);
+        dm_tc_begin_at(&s,0,600,60,1.0);
+        CHECK(s.finger[0].target==DM_TC_NONE);
+        dm_tc_move_at(&s,0,650,100,1.1);
+        if (mode==2) { CHECK(s.finger[0].cam_drag); CHECK(s.cam_yaw>0); CHECK(s.cam_pitch<0); }
+        else { CHECK(!s.finger[0].cam_drag); CHECK(s.cam_yaw==0 && s.cam_pitch==0); }
+        dm_tc_end_at(&s,0,1.2);
+    }
+    dm_tc_state s; dm_tc_init(&s,956,440); s.cam_on=1;
+    dm_tc_begin_at(&s,0,600,120,1.0); dm_tc_move_at(&s,0,600,60,1.1);
+    CHECK(s.finger[0].cam_drag); CHECK(s.cam_pitch>0); CHECK(s.cam_yaw==0);
+    dm_tc_end_at(&s,0,1.2);
+}
 int main(void) {
+    RUN(camera_drag_modes);
     RUN(layout_667); RUN(layout_812); RUN(layout_956); RUN(layout_1024); RUN(layout_ipad169); RUN(layout_pixels); RUN(small_layout); RUN(difficulty_picker);
     RUN(hit_edges); RUN(key_hold_and_ownership); RUN(two_fingers_same_key); RUN(joystick_deadzone); RUN(joystick_clamp_956);
     RUN(joystick_axes); RUN(joystick_plus_skills); RUN(no_auto_handoff); RUN(background_no_key);

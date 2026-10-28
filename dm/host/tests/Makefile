@@ -25,6 +25,7 @@ run: \
 	$(B)/t_audio \
 	$(B)/t_audio_spsc \
 	$(B)/t_cam_zoom \
+	$(B)/t_cam_mode \
 	$(B)/t_cloudsync \
 	$(B)/t_condvar \
 	$(B)/t_condvar_old \
@@ -45,6 +46,7 @@ run: \
 	$(B)/t_oe \
 	$(B)/t_padmap \
 	$(B)/t_portrait_hud \
+	$(B)/t_widestash_restore \
 	$(B)/t_rift_clock \
 	$(B)/t_rift_next \
 	$(B)/t_rift_oldrun \
@@ -109,8 +111,10 @@ run: \
 	$(B)/t_notice_dispatch
 	$(B)/t_pouch_notice
 	$(B)/t_cam_zoom
+	$(B)/t_cam_mode
 	$(B)/t_minimap_lift
 	$(B)/t_portrait_hud
+	$(B)/t_widestash_restore
 	$(B)/t_minimap_policy
 	$(B)/t_minimap_shift
 	$(B)/t_modetx
@@ -140,12 +144,16 @@ $(B)/t_padmap: t_padmap.c ../dm_padmap.h ../dm_input.h | $(B)
 	clang -O1 -Wall -Werror -o $@ t_padmap.c
 $(B)/t_cam_zoom: t_cam_zoom.c ../dm_uiscreen.c ../dm_uiscreen.h ../dm_camera_pan.h ../dm.h ../hle.h | $(B)
 	clang -std=c11 -O1 -Wall -Werror -I.. -o $@ t_cam_zoom.c ../dm_uiscreen.c -lm
+$(B)/t_cam_mode: t_cam_mode.c ../dm_cam.c ../dm.h | $(B)
+	clang -std=c11 -O1 -Wall -Wno-unused-function -ffunction-sections -Wl,-dead_strip -I.. -o $@ t_cam_mode.c ../dm_cam.c -lm
 $(B)/t_minimap_policy: t_minimap_policy.c ../dm_minimap_policy.h | $(B)
 	clang -std=c11 -O1 -Wall -Werror -o $@ t_minimap_policy.c
 $(B)/t_minimap_shift: ../../gfx/tests/test_minimap_shift.c ../../gfx/nvn/nvn_minimap_shift.h | $(B)
 	clang -std=c11 -O1 -Wall -Werror -o $@ ../../gfx/tests/test_minimap_shift.c -lm
 $(B)/t_minimap_lift: t_minimap_lift.c ../dm_cursor.c ../dm_cursor.h | $(B)
 	clang -O1 -Wall -Werror -Wno-unused-function -I.. -Wl,-dead_strip -o $@ t_minimap_lift.c
+$(B)/t_widestash_restore: t_widestash_restore.c ../dm_cursor.c ../dm_cursor.h | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function -I.. -Wl,-dead_strip -o $@ t_widestash_restore.c
 $(B)/t_portrait_hud: t_portrait_hud.c ../dm_cursor.c ../dm_cursor.h | $(B)
 	clang -O1 -Wall -Werror -Wno-unused-function -I.. -Wl,-dead_strip -o $@ t_portrait_hud.c
 $(B)/t_modetx: t_modetx.c ../dm_modetx.h | $(B)
