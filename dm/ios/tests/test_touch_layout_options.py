@@ -141,6 +141,7 @@ assert bn >= 4, bn
 assert '$OptionsCarouselFocusIndicatorFilename' not in bout and '$OptionsSliderFocusIndicatorFilename' not in bout
 assert '$OptionsToggleFocusIndicatorFilename' in bout          # 开关/按钮的焦点框不动
 assert '"focusIndicatorOffset"' not in bout
+assert bout.count('"focusIndicatorVisible": false') == 2, bout
 
 def _t41_title(nm):
     return ('{\n  "type": "TextBoxWidget", "name": "%s",\n  "fields": {\n    "rect": { "x": 0, "y": 0, "width": 308, "height": 86 },\n'

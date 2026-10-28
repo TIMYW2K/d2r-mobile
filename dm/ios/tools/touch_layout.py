@@ -1280,15 +1280,22 @@ def _hide_drag_highlight(fn):
                 if not m: break
                 end = _block_end(text, m.start()) + 1
                 blk, k = _drop_row_fields(text[m.start():end], ('focusIndicatorFilename', 'focusIndicatorPadding', 'focusIndicatorOffset'))
-                if k:
-                    text = text[:m.start()] + blk + text[end:]
-                    end = m.start() + len(blk); hits += k
+                # Removing the artwork override alone may let the engine inherit its default
+                # focus frame. Suppress the focus indicator on the widget itself, too.
+                if re.search(r'"focusIndicatorVisible"\s*:', blk):
+                    blk, added = re.subn(r'"focusIndicatorVisible"\s*:\s*(?:true|false)', '"focusIndicatorVisible": false', blk, count=1)
+                else:
+                    blk, added = re.subn(r'("fields"\s*:\s*\{)', r'\1 "focusIndicatorVisible": false,', blk, count=1)
+                if added != 1:
+                    raise SystemExit('touch_layout: settings widget has no fields for focusIndicatorVisible')
+                text = text[:m.start()] + blk + text[end:]
+                end = m.start() + len(blk); hits += k + added
                 pos = end
         if hits < 2:
             raise SystemExit('touch_layout：设置页里没删到拖动高亮字段（原版布局变了？）')
         for typ in _BAR_WIDGETS:
             for m in re.finditer(r'\{\s*"type"\s*:\s*"%s"' % typ, text):
-                if 'focusIndicator' in text[m.start():_block_end(text, m.start()) + 1]:
+                if re.search(r'"focusIndicator(?:Filename|Padding|Offset)"', text[m.start():_block_end(text, m.start()) + 1]):
                     raise SystemExit('touch_layout：%s 里还有 focusIndicator 字段（原版布局变了？）' % typ)
         return text, n + hits
     return g
