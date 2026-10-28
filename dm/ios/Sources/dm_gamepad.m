@@ -121,10 +121,7 @@ static void attach(GCController *c) {
     g.valueChangedHandler = ^(GCExtendedGamepad *gp, GCControllerElement *el) { (void)el; GCController *sc = wc; if (sc) publish(sc, gp); };
 }
 void dm_gamepad_start(void (*on_mode)(int pad)) {
+    // iPhone touch-only builds do not register physical controller observers.
+    // Keep the virtual input bridge: touch controls use the game's controller protocol.
     g_on_mode = on_mode;
-    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
-    [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { attach(n.object); }];
-    [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
-        LOG("手柄：断开 %s", ((GCController *)n.object).vendorName.UTF8String ?: "?"); drop((__bridge const void *)n.object); }];
-    for (GCController *c in GCController.controllers) attach(c);
 }

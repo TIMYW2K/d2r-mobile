@@ -75,13 +75,13 @@ int main(void) {
  ingame=0; tick(); restored();
  // Another orientation/return cycle exercises repopulating the guard after restoration.
  ingame=1; portrait=0; tick(); restored(); portrait=1; tick(); shifted();
- static _Alignas(8) unsigned char warnings[160],hire[160],merc[160]; static uint64_t pets[1];
+ static _Alignas(8) unsigned char warnings[160],hire[160],merc[160]; static uint64_t pets[3];
  widget(warnings,"HUDWarnings",ptr(root)); *x(warnings)=100; *(uint64_t *)warnings=ptr(panel_vtable);
- widget(hire,"HireablesPanel",ptr(root)); *(uint64_t *)hire=ptr(panel_vtable); widget(merc,"Pet",ptr(hire)); *x(merc)=40; *(int32_t *)(merc+0x74)=60;
+ widget(hire,"HireablesPanel",ptr(root)); *(uint64_t *)hire=ptr(panel_vtable); widget(merc,"Icon0",ptr(hire)); *x(merc)=40; *(int32_t *)(merc+0x74)=60;
  pets[0]=ptr(merc); *(uint64_t *)(hire+0x58)=ptr(pets); *(uint64_t *)(hire+0x60)=1;
  root_children[1]=ptr(warnings); root_children[2]=ptr(hire); *(uint64_t *)(root+0x60)=3;
- tick(); CHECK(*x(warnings)==-107); CHECK(*x(merc)==172); CHECK(*(int32_t *)(merc+0x74)==-197);
- tick(); CHECK(*x(warnings)==-107); CHECK(*x(merc)==172); CHECK(*(int32_t *)(merc+0x74)==-197);
+ tick(); CHECK(*x(warnings)==-107); CHECK(*x(merc)==147); CHECK(*(int32_t *)(merc+0x74)==-204);
+ tick(); CHECK(*x(warnings)==-107); CHECK(*x(merc)==147); CHECK(*(int32_t *)(merc+0x74)==-204);
  portrait=0; tick(); CHECK(*x(warnings)==100); CHECK(*x(merc)==40); CHECK(*(int32_t *)(merc+0x74)==60);
  // 23.1 passed relayout=1 for the panels; HireablesPanel's hook rebuilt its portrait list from an already-destroyed
  // Template and crashed on the first portrait frame. Only the merc leaf widgets may be re-laid out.
@@ -93,6 +93,14 @@ int main(void) {
  CHECK(*(int32_t *)(warnings+0x74)<0 && *(int32_t *)(hire+0x74)<0);
  CHECK(panel_hooks==0);
  mv_restore(ptr(root),MV_LIFT); CHECK(panel_hooks==0);
+ // Visible portrait icons use a smaller pitch and return to original spacing in landscape.
+ static _Alignas(8) unsigned char merc1[160],merc2[160];
+ widget(merc1,"Icon1",ptr(hire)); widget(merc2,"Icon2",ptr(hire)); *x(merc1)=40; *x(merc2)=40;
+ pets[1]=ptr(merc1); pets[2]=ptr(merc2); *(uint64_t *)(hire+0x60)=3;
+ tick(); CHECK(*x(merc)==147); CHECK(*x(merc1)==120); CHECK(*x(merc2)==94);
+ tick(); CHECK(*x(merc1)==120); CHECK(*x(merc2)==94);
+ portrait=0; tick(); CHECK(*x(merc)==40 && *x(merc1)==40 && *x(merc2)==40);
+ portrait=1; tick(); CHECK(*x(merc1)==120 && *x(merc2)==94); CHECK(panel_hooks==0);
  // Exercise the production map publisher using the portrait band geometry
  // captured from the device, rather than a hand-written expected draw rect.
  static _Alignas(8) unsigned char map[0x1600];

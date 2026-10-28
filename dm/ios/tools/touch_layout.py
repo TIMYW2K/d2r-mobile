@@ -1550,7 +1550,7 @@ _CUSTOM_TITLE_H, _CUSTOM_LINE_H = 180, 180
 # Local change: the Custom page's 「中文 / English」 row is gone. Language is set entirely on the original
 # Options -> Sound page (its Text Language / Voice Language rows are un-hidden by the _drop_rows calls below), so
 # text and voice can differ, and nothing on the Custom page can touch the voice language any more.
-_CUSTOM_ALL = _CUSTOM_ROWS
+_CUSTOM_ALL = tuple(row for row in _CUSTOM_ROWS if row[0] != 'drop_light')
 _CUSTOM_TEST_ROWS = int(os.environ.get('DM_CUSTOM_TEST_ROWS', '0'))   # 测试（造现场）：末尾多摆这么多行假行，验更多行时的滚动；产品不设 | test (test setup): append this many dummy rows at the end, to verify scrolling with more rows; not set in the product
 # 「性能模式」（q3d）是单选的三项（流畅 / 画质 / 画质强制）、每项下面一行说明小字，占三行高（_CUSTOM_Q3D_H）；
 # 换组位置单选仍是两项、占两行高；其余各行一行高
@@ -1639,7 +1639,7 @@ def _custom_page(text):
            '            { "type": "TableWidget", "name": "OptionsTable", "fields": { "columns": [ "$OptionsTableColumn1", "$OptionsTableColumn2" ], "rowHeight": %d }, "children": [\n' % _CUSTOM_TITLE_H
            + title + '            ] },\n'
            + '            { "type": "Widget", "name": "TouchCustomRows", "fields": { "rect": { "x": 0, "y": 0, "width": 1500, "height": %d } }, "children": [\n' % _CUSTOM_H
-            + ''.join((_custom_q3d_row(i, k) if k in ('q3d', 'touch_swap_above') else _custom_toggle_row(i, k, l)) for i, (k, l) in enumerate(_CUSTOM_ALL) if i)   # 本地改动：不拼语言行与提示
+            + ''.join((_custom_q3d_row(i, k) if k in ('q3d', 'touch_swap_above') else _custom_toggle_row(i, k, l)) for i, (k, l) in enumerate(_CUSTOM_ALL))   # Render every visible row without reserving space for removed options
            + ''.join('        { "type": "TextBoxWidget", "name": "TouchCustomTest%d_Text", "fields": { "rect": { "x": 0, "y": %d, "width": 1000, "height": %d }, "text": "@KeyBindingTypeCustom", "style": "$StyleSettingsText" } },\n'
                      % (n, _CUSTOM_Y[len(_CUSTOM_ALL) + n], _CUSTOM_LINE_H) for n in range(_CUSTOM_TEST_ROWS)) +
            # 手柄模式的选中框（同符文之语清单 TouchRwSel）：框住十字键选中的那一行，宿主摆（dm_custom.c）；触屏模式一直在屏外（只把 x 挪出去、y 留在内容范围内：滚动区按子控件的范围算内容高度，y 放到 99999 会把可滚范围撑到十万）。和各行在同一个容器里，跟着滚

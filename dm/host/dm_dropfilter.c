@@ -27,17 +27,16 @@ static int code_in(uint32_t c, const char *const *l) { for (; *l; l++) if (!memc
 // （dm/ios/tools/drop_light.py：data/hd/items/<类别>/zswg/<档>__<模型名，/ 换 __>.json）。穿戴 / 背包 / 腰带不碰 ⇒ 身上手里不亮；
 // 外观只在建的那一刻取路径（新掉落在模式 5 建一次），所以开关切换后新掉落 / 重进区域的物品才按新设置。
 // 档位：一档 = 暗金（未鉴定也算：按品质，不靠 uniques.json）、高符文 23–33；二档 = 套装、戒指 / 项链 / 护身符、三把钥匙、四种精华、赦免之证。
-// 开关：「自定义」页 drop_light；DM_DROP_LIGHT=0 / 1 强制。DM_DROPF_LOG=1 时每次改指记一行。
+// 光柱常开；DM_DROPF_LOG=1 时每次改指记一行。
 // ---------- Light on high-value drops (second batch) ----------
 // Model path of items on the ground: all units get their appearance definition path via main+0xa14dc4(resource manager, unit, output string x8); items go through call site 0x8fa590 (shared by stored / worn / belt / socketed / on the ground),
 // the cut replaces that bl with svc #0x87, and here, after calling through unchanged, only for items in 'mode 3 on the ground / 5 dropping' the path is redirected by rule to the lit variant in the overlay
 // (dm/ios/tools/drop_light.py: data/hd/items/<category>/zswg/<tier>__<model name, / replaced by __>.json). Worn / inventory / belt are not touched => nothing lights up on the body or in hand;
 // the appearance takes its path only at the moment it is built (a new drop is built once in mode 5), so after the switch is toggled only new drops / items in a re-entered area follow the new setting.
 // Tiers: tier 1 = uniques (unidentified ones count too: by quality, not relying on uniques.json), high runes 23–33; tier 2 = sets, rings / amulets / charms, the three keys, the four essences, Token of Absolution.
-// Switch: drop_light on the 「自定义」(Custom) page; DM_DROP_LIGHT=0 / 1 forces it. With DM_DROPF_LOG=1 every redirect is logged as one line.
+// Beams are always enabled. With DM_DROPF_LOG=1 every redirect is logged as one line.
 static int light_tier(uint8_t *b, uint64_t u) {
-    static int force = -2; if (force == -2) { const char *e = getenv("DM_DROP_LIGHT"); force = e ? strcmp(e, "0") != 0 : -1; }
-    if (!(force >= 0 ? force : dm_custom_get("drop_light"))) return 0;
+    // High-value drop beams are always enabled, including for legacy saved settings.
     int (*is)(uint64_t, int) = (int (*)(uint64_t, int))(b + 0x574bc0);
     uint32_t code = ((uint32_t (*)(uint64_t))(b + 0x570260))(u);
     const uint8_t *d = (const uint8_t *)(uintptr_t)*(uint64_t *)(u + 0x10); uint32_t q = d ? *(const uint32_t *)d : 0;

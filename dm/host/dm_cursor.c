@@ -2614,12 +2614,16 @@ static void ui_safe_pump(module_t *m, uint64_t root, uint64_t fr) {
       int dy = port && sh > 0 ? dm_hud_merc_y_units(sh, ui_pt_units(20)) : 0;
       int ul = atomic_load(&g_safe_l) + dx, ulc = (int)((float)ul / DM_MERC_SCALE);
       uint64_t ch = p ? *(uint64_t *)(p + 0x58) : 0, n = p ? *(uint64_t *)(p + 0x60) : 0;
-      static float lg;
+      static float lg; int icon_slot = 0;
       for (uint64_t k = 0; ch && k < n && k < 40; k++) { uint64_t c = *(uint64_t *)(ch + 8 * k); if (!c) continue;
+          const char *icon_name = (const char *)*(uint64_t *)(c + 8);
+          int icon = icon_name && !strncmp(icon_name, "Icon", 4) && *(uint8_t *)(c + 0x50);
+          int gap = port && icon && sh > 0 ? dm_hud_px_to_units(DM_PORTRAIT_MERC_GAP_REDUCTION_PX * icon_slot, sh) : 0;
+          if (icon) ++icon_slot;
           if (*(float *)(c + 0x80) != DM_MERC_SCALE) { *(float *)(c + 0x80) = DM_MERC_SCALE;
               if (lg != DM_MERC_SCALE) { lg = DM_MERC_SCALE; LOG("佣兵头像：放大到 %.2f 倍（只缩放头像，名字字号不动）", (double)DM_MERC_SCALE); } }
           int32_t x0 = *(int32_t *)(c + 0x70);
-          mv_offset(MV_SAFE, c, 0, ulc, 1); mv_offset(MV_SAFE, c, 1, dy, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
+          mv_offset(MV_SAFE, c, 0, ulc - (int)((float)gap / DM_MERC_SCALE), 1); mv_offset(MV_SAFE, c, 1, dy, 1); if (*(int32_t *)(c + 0x70) != x0) { static int lg2; if (lg2++ < 6) LOG("安全区：头像 %d x %d → %d", (int)k, x0, *(int32_t *)(c + 0x70)); } } }
     uint64_t h = ui_panel(root, "HUDWarnings");
     if (h) { int32_t x0 = *(int32_t *)(h + 0x70); int ux=0, uy=0, uw=0, uh=0; dm_ui_rect(&ux,&uy,&uw,&uh);
         int dx = dm_uiscreen_portrait() && uh > 0 ? dm_hud_px_to_units(DM_PORTRAIT_AREA_LEFT_PX, uh) + ui_pt_units(11) : 0;

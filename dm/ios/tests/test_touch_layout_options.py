@@ -48,8 +48,14 @@ page_keys = [key for key, _ in layout._CUSTOM_ALL]
 # page's keys in the same order, and it may carry extra keys that are not on the custom page at the end (T18: show_fps is the
 # checkbox in the game settings page's User Interface section).
 assert keys[0] == 'lang_en', keys
-assert keys[1:1 + len(page_keys)] == page_keys, (keys, page_keys)
-assert keys[1 + len(page_keys):] == ['show_fps'], keys[1 + len(page_keys):]
+assert [key for key in keys if key not in ('lang_en', 'drop_light', 'show_fps')] == page_keys, (keys, page_keys)
+assert 'TouchCustom_drop_light' not in nodes
+assert nodes['TouchCustom_auto_mana_Text']['fields']['rect']['y'] == layout._CUSTOM_TITLE_H
+# Legacy saved switch and environment overrides must not disable beams.
+beam_source = (root / 'host/dm_dropfilter.c').read_text(encoding='utf-8')
+beam_body = beam_source.split('static int light_tier(', 1)[1].split('int (*is)', 1)[0]
+assert 'DM_DROP_LIGHT' not in beam_body and 'dm_custom_get' not in beam_body
+
 defaults = [int(x) for x in re.search(r'k_def\[NK\].*?=\s*\{(.*?)\}', host, re.S)[1].split(',')]
 assert len(defaults) == len(keys) and defaults[keys.index('touch_swap_above')] == 0
 assert 'TouchCustom_touch_swap_above_near' in host
