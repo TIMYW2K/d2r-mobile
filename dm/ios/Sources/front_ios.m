@@ -23,6 +23,7 @@ int dm_thermal_now(void) { return g_dm_thermal; }   // 最近的温控档位（0
 void dm_gamepad_start(void (*on_mode)(int pad)); void dm_gamepad_touched(void);   // dm_gamepad.m
 #include "hle.h"
 #import "DmTouchOverlay.h"
+#include "../../host/dm_loot_probe.h"
 #include "dm_touch_native_art.h"
 #include "dm_actions.h"
 #include <stdatomic.h>
@@ -1552,12 +1553,34 @@ static void touch_ui_message(const char *cat,const char *act,const char *arg) {
 // Called on the main thread: creates the fullscreen Metal view; the graphics backend gets its layer through front_metal_layer to present frames
 // ProMotion frame rate request: on iPhone, when the App calls nextDrawable / present itself, the system by default hands out drawables at 60 Hz (real device: adding only Info.plist's
 // CADisableMinimumFrameDurationOnPhone still gives 60 fps and a 16.6 ms drawable wait). Attach a declaration-only CADisplayLink (empty callback) requesting 80–120 Hz, and only then does the system switch to 120 Hz.
+static CADisplayLink *g_loot_probe_link;
+@interface DmLootProbeHint : NSObject
+- (void)tick:(CADisplayLink *)l;
+@end
+@implementation DmLootProbeHint
+- (void)tick:(CADisplayLink *)l {
+    (void)l;
+    uint64_t now_ns(void); uint64_t n=now_ns();
+    dm_loot_probe_tick(n);
+    static uint64_t last;
+    if (!last || n-last >= 10000000000ull) {
+        uint64_t frames=0,invalid=0,ticks=0,samples=0,labels=0;
+        dm_loot_probe_stats(&frames,&invalid,&ticks,&samples,&labels);
+        LOG("物品标签实验：游戏快照 %llu，拒绝 %llu，60Hz节拍 %llu，有效采样 %llu，可见标签 %llu；原版绘制保留",
+            (unsigned long long)frames,(unsigned long long)invalid,(unsigned long long)ticks,
+            (unsigned long long)samples,(unsigned long long)labels);
+        last=n;
+    }
+}
+@end
 @interface DmRateHint : NSObject
 - (void)tick:(CADisplayLink *)l;
 @end
 @implementation DmRateHint
 - (void)tick:(CADisplayLink *)l {
     extern int mtl_fps_target(void);
+    if (g_loot_probe_link) { int dm_uiscreen_ingame(void), dm_focus_now(void);
+        g_loot_probe_link.paused = !(dm_uiscreen_ingame() && dm_focus_now()); }
     { static int last = -1; int f = mtl_fps_target(); if (f != last) { last = f; l.preferredFrameRateRange = f == 30 ? CAFrameRateRangeMake(30, 30, 30) : CAFrameRateRangeMake(60, 60, 60); } }   // 省电模式（30 帧）：帧率提示一起降，ProMotion 屏才会真降刷新率 | Power-saving mode (30 fps): lower the frame rate hint as well; only a ProMotion screen actually lowers the refresh rate
     DmMetalView *v = g_touch_view;
     if (v) {
@@ -1657,6 +1680,10 @@ UIView *front_ios_view(CGRect frame) {
     g_rate_link = [CADisplayLink displayLinkWithTarget:[DmRateHint new] selector:@selector(tick:)];
     g_rate_link.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
     [g_rate_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    g_loot_probe_link = [CADisplayLink displayLinkWithTarget:[DmLootProbeHint new] selector:@selector(tick:)];
+    g_loot_probe_link.preferredFrameRateRange = CAFrameRateRangeMake(60,60,60);
+    g_loot_probe_link.paused = YES;
+    [g_loot_probe_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     g_layer = (CAMetalLayer *)v.layer;
     g_layer.device = MTLCreateSystemDefaultDevice();
     g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;

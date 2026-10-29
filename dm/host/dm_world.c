@@ -9,6 +9,8 @@
 #include "touch_mac.h"
 #include "dm_uiscreen.h"
 #include "dm_world.h"
+#include "dm_loot_probe.h"
+#include "dm_loot_capture.h"
 #include "hle.h"
 #include "dm.h"
 #include <string.h>
@@ -722,6 +724,24 @@ void dm_world_pump(void) {   // 取手柄处每帧调 | Called every frame at th
     DM_PROF(0, "w.test_seek", w_test_seek_step());
     w_test_xy_step();
     uint8_t *b = wb(); if (!b) return;
+    // Diagnostic experiment only: snapshot the previous completed label set on
+    // the game thread; original drawing and hit testing are not modified.
+    { static uint64_t last=UINT64_MAX; static int active;
+      uint64_t fr=dm_guest_frame(); int in=dm_uiscreen_ingame();
+      if (!in && active) { dm_loot_probe_reset(); active=0; }
+      if (in && fr!=last) {
+          uint64_t now_ns(void); int w=0,h=0; dm_screen_real(&w,&h);
+          uint64_t list=0,n=0; memcpy(&list,b+0x2f0fee0,8); memcpy(&n,b+0x2f0fee8,8);
+          uint32_t area=0; memcpy(&area,b+0x2d5c748,4);
+          uint32_t view=area*UINT32_C(2654435761) ^ (uint32_t)w*31u ^
+                        (uint32_t)h*131u ^ (unsigned)dm_uiscreen_portrait();
+          if (n<=DM_LOOT_MAX_LABELS)
+              dm_loot_probe_frame((const void *)(uintptr_t)list,(size_t)n*DM_LOOT_RECORD_SIZE,
+                                  (unsigned)n,view,(float)dm_ui_proj_dy(),now_ns());
+          else dm_loot_probe_reset();
+          active=1; last=fr;
+      }
+    }
     DM_PROF(0, "w.cam", w_cam_clear());
     if (g_it.active) w_interaction_poll(w_player(), dm_guest_frame());
     DM_PROF(0, "w.watch", w_watch_step(b));
