@@ -23,7 +23,9 @@ int dm_thermal_now(void) { return g_dm_thermal; }   // 最近的温控档位（0
 void dm_gamepad_start(void (*on_mode)(int pad)); void dm_gamepad_touched(void);   // dm_gamepad.m
 #include "hle.h"
 #import "DmTouchOverlay.h"
+#import "DmLootOverlay.h"
 #include "../../host/dm_loot_probe.h"
+#include "../../host/dm_loot_live.h"
 #include "dm_touch_native_art.h"
 #include "dm_actions.h"
 #include <stdatomic.h>
@@ -128,6 +130,8 @@ static BOOL touch_control_log_enabled(void) {
 - (void)restartCover:(int)mode;
 - (void)captureTouchLayer:(NSString *)path;
 - (void)refreshPortalBinding;
+- (void)lootFrame:(uint64_t)now;
+- (void)resetLootFrame;
 - (void)rotationChanged:(const char *)why;   // 转屏（180° 横屏翻转）：保持控件层可见并修复重画 | rotation (180-degree landscape flip): keep the control layer visible and repair/repaint it
 @end
 static __weak DmMetalView *g_touch_view;
@@ -389,6 +393,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     NSMutableSet<UITouch *> *_movieTouches; // Full-screen hold is owned until release/cancel.
     dm_tc_state _controls;
     DmTouchOverlay *_overlay;
+    DmLootOverlay *_loot;
     UIView *_info;   // 信息层：秘境任务条、小地图任务终点。不是触屏控件，手柄模式也要显示（只在前端页面藏），所以不挂在 _overlay 上 | info layer: the Rift objective bar and the minimap quest goal. These are not touch controls and must show in controller mode too (hidden only on front-end pages), so they are not attached to _overlay
     NSHashTable<UITouch *> *_swallow;   // 手柄模式下落下的手指：只用来切回触屏模式，整根（按下 / 移动 / 抬起）不交给手势层和界面点击 | Fingers that landed in controller mode: used only to switch back to touch mode; the whole touch (down / move / up) is not passed to the gesture layer or UI clicks
     BOOL _padMode, _feMode;   // 手柄模式 / 前端页面：两者任一成立就藏触屏控件层 | Controller mode / front-end page: the touch controls layer is hidden if either holds
@@ -422,6 +427,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     self.multipleTouchEnabled = YES;
     self.isAccessibilityElement=YES; self.accessibilityIdentifier=@"dm_touch_surface"; self.accessibilityLabel=SWT("dmA11ySurface");
     dm_tc_init(&_controls,f.size.width,f.size.height); _controls.mouse_click_mode=1;   // 功能页里非物品区的点按走界面鼠标点击 | Taps outside the item area in function pages go through UI mouse clicks apply_touch_overrides(&_controls);
+    _loot=[[DmLootOverlay alloc] initWithFrame:self.bounds]; [self addSubview:_loot];
     _overlay=[[DmTouchOverlay alloc] initWithFrame:self.bounds]; _overlay.controls=&_controls; _overlay.hidden=YES;   // 启动即前端页面：进局（读取画面撤下）才显示 | Front-end page right at launch: shown only after entering a run (loading screen removed)
     [self addSubview:_overlay]; _info=[[UIView alloc] initWithFrame:self.bounds]; _info.userInteractionEnabled=NO; _info.hidden=YES; [self addSubview:_info]; g_touch_view=self; dm_gamepad_start(pad_mode_changed);
     _rsCover=[[DmSwallowView alloc] initWithFrame:self.bounds]; _rsCover.backgroundColor=UIColor.blackColor; _rsCover.hidden=YES; _rsCover.userInteractionEnabled=YES;   // 开的时候挂到窗口上（restartCover） | Attached to the window when turned on (restartCover)
@@ -473,6 +479,12 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
     for (int i = 0; i < (int)(sizeof kRotRepairDelays / sizeof kRotRepairDelays[0]); i++)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kRotRepairDelays[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), repair);
 }
+- (void)lootFrame:(uint64_t)now {
+    CGRect r=world_rect(self);
+    if (r.size.width>=2 && r.size.height>=2) _loot.frame=r;
+    [_loot tick:now];
+}
+- (void)resetLootFrame { [_loot reset]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
     if (_verLabel) {   // 左下角，避开安全区 | bottom-left, clear of the safe area
@@ -1562,13 +1574,17 @@ static CADisplayLink *g_loot_probe_link;
     (void)l;
     uint64_t now_ns(void); uint64_t n=now_ns();
     dm_loot_probe_tick(n);
+    [g_touch_view lootFrame:n];
     static uint64_t last;
     if (!last || n-last >= 10000000000ull) {
         uint64_t frames=0,invalid=0,ticks=0,samples=0,labels=0;
+        uint64_t commits=0,eligible=0,seen=0,hidden=0;
         dm_loot_probe_stats(&frames,&invalid,&ticks,&samples,&labels);
-        LOG("物品标签实验：游戏快照 %llu，拒绝 %llu，60Hz节拍 %llu，有效采样 %llu，可见标签 %llu；原版绘制保留",
+        dm_loot_live_stats(&commits,&eligible,&seen,&hidden);
+        LOG("物品标签实验：游戏快照 %llu，拒绝 %llu，60Hz节拍 %llu，有效采样 %llu，标签 %llu，图层提交 %llu，支持 %llu，原版调用 %llu，替换 %llu",
             (unsigned long long)frames,(unsigned long long)invalid,(unsigned long long)ticks,
-            (unsigned long long)samples,(unsigned long long)labels);
+            (unsigned long long)samples,(unsigned long long)labels,(unsigned long long)commits,
+            (unsigned long long)eligible,(unsigned long long)seen,(unsigned long long)hidden);
         last=n;
     }
 }
@@ -1580,7 +1596,8 @@ static CADisplayLink *g_loot_probe_link;
 - (void)tick:(CADisplayLink *)l {
     extern int mtl_fps_target(void);
     if (g_loot_probe_link) { int dm_uiscreen_ingame(void), dm_focus_now(void);
-        g_loot_probe_link.paused = !(dm_uiscreen_ingame() && dm_focus_now()); }
+        g_loot_probe_link.paused = !(dm_uiscreen_ingame() && dm_focus_now());
+        if (g_loot_probe_link.paused) [g_touch_view resetLootFrame]; }
     { static int last = -1; int f = mtl_fps_target(); if (f != last) { last = f; l.preferredFrameRateRange = f == 30 ? CAFrameRateRangeMake(30, 30, 30) : CAFrameRateRangeMake(60, 60, 60); } }   // 省电模式（30 帧）：帧率提示一起降，ProMotion 屏才会真降刷新率 | Power-saving mode (30 fps): lower the frame rate hint as well; only a ProMotion screen actually lowers the refresh rate
     DmMetalView *v = g_touch_view;
     if (v) {

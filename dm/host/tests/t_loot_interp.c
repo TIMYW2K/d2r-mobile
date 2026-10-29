@@ -68,7 +68,10 @@ int main(void) {
     assert(dm_loot_snapshot_sample(&a,&b,116*MS,1,sampled,3,&n)); near(sampled[0].rect.x,62);
     b.viewport=2;
     assert(dm_loot_snapshot_sample(&a,&b,116*MS,0,sampled,3,&n)); near(sampled[1].rect.x,32);
-    b.viewport=1; n=99;
+    b.viewport=1;
+    b.labels[0].rect.x=400;
+    assert(dm_loot_snapshot_sample(&a,&b,116*MS,0,sampled,3,&n)); near(sampled[0].rect.x,400);
+    b.labels[0].rect.x=62; n=99;
     assert(!dm_loot_snapshot_sample(&a,&b,116*MS,0,sampled,2,&n) && n==99);
     b.labels[2].id=5; n=99;
     assert(!dm_loot_snapshot_sample(&a,&b,116*MS,0,sampled,3,&n) && n==99);

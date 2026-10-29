@@ -182,6 +182,13 @@ PRIVATE_AIM = RULE_RUN and PRIVATE_GATES
 if PRIVATE_AIM:
     cuts.append((0x2faf04, 'fde7fe97', 'c11000d4',
       'skill-aim-v1-private: skill ground direction call only; svc86 delegates original2b4ef8 then sampled-right/original rotation+grid; zero/nonplayer/non-skill retain original; busy/town/skill/server untouched', '仅宿主'))
+if RULE_RUN and PRIVATE_GATES:
+    # Experimental loot draw seam: rebuild/layout still runs normally. The host
+    # currently forwards this call unchanged until a separately validated
+    # replacement renderer has acknowledged the corresponding label.
+    cuts.append((0xc0187c, 'f5e7e097', 'e11100d4',
+                 'loot label draw: bl 0x43b850 -> svc 0x8f; native pass-through',
+                 '仅宿主'))
 if RULE_RUN:
     # 方向光阴影图边长（画质档位 1，0x168a520 填 +0x48 → 建 2 层数组 0x1697394）：2100 → 1024。授权「视觉无差别即可」；
     # mini 108 张 + 连续 16 帧：营地 / 野外 / 战斗各档到 1024 的 FLIP 与同设置重跑的噪声分不开、影子区相邻帧变化量 0.71 → 0.75；真机两张阴影合计约 0.7–1.4 ms / 帧。

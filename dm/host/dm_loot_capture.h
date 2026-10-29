@@ -61,7 +61,8 @@ static inline int dm_loot_capture(const void *records, size_t bytes,
 #define DM_LOOT_STYLE_BYTES 16u
 typedef struct {
     char text[DM_LOOT_INLINE_TEXT];
-    unsigned char style[DM_LOOT_STYLE_BYTES];
+    unsigned char style[DM_LOOT_STYLE_BYTES]; // background, still opaque
+    uint32_t color[4]; // observed four 0..255 components, record +0xac
 } dm_loot_owned_label;
 typedef struct {
     dm_loot_snapshot geometry;
@@ -112,6 +113,12 @@ static inline int dm_loot_capture_owned(const void *records, size_t bytes,
         const unsigned char *str=r+0x24;
         const unsigned char *end=memchr(str,0,DM_LOOT_INLINE_TEXT);
         if (!end || end==str || !dm_loot_utf8_valid(str,(size_t)(end-str))) return 0;
+        // The label drawer stores the four components returned by c741a0 at
+        // +0xac. Out-of-range values are unverified: fall back to native draw.
+        for (unsigned k=0;k<4;k++) {
+            uint32_t component; memcpy(&component,r+0xac+4*k,4);
+            if (component>255) return 0;
+        }
         unsigned slot=dm_loot_hash((uint32_t)id);
         while (used[slot]) {
             if (ids[slot] == (uint32_t)id) return 0;
@@ -133,6 +140,7 @@ static inline int dm_loot_capture_owned(const void *records, size_t bytes,
         memcpy(dst->labels[j].text,str,text_len+1);
         memset(dst->labels[j].text+text_len+1,0,DM_LOOT_INLINE_TEXT-text_len-1);
         memcpy(dst->labels[j].style,r+0x14,DM_LOOT_STYLE_BYTES);
+        memcpy(dst->labels[j].color,r+0xac,sizeof dst->labels[j].color);
     }
     return 1;
 }

@@ -10,6 +10,7 @@
 #include "dm_uiscreen.h"
 #include "dm_world.h"
 #include "dm_loot_probe.h"
+#include "dm_loot_live.h"
 #include "dm_loot_capture.h"
 #include "hle.h"
 #include "dm.h"
@@ -386,6 +387,16 @@ static uint64_t w_hit(uint8_t *b, float sx, float sy, float min, float *dist, in
     uint64_t pl = w_player(), scene = *(uint64_t *)(b + 0x2e2a698), best = 0; float bd = 1e9f, d; int brank = 2; *by_label = 0; if (!pl || !scene) return 0;
     int RWi = 0, RHi = 0; dm_screen_real(&RWi, &RHi); float RW = RWi > 0 ? RWi : 1, RH = RHi > 0 ? RHi : 1; int cam = w_cam_convert();   // 镜头实验开着：逐个候选换触点（见下） | camera experiment on: convert the touch point per candidate (see below)
     int persp = !cam && dm_cam_on();
+    // If an independently presented label contains this tap, resolve the same
+    // item ID on the game thread. Otherwise retain the native hit path.
+    { uint64_t now_ns(void); uint32_t loot_id=0;
+      if (dm_loot_live_hit(sx,sy,min,now_ns(),&loot_id)) {
+          uint64_t u=w_find(4,loot_id);
+          if (u && *(uint32_t *)(u+0xc)==3) {
+              *by_label=1; *dist=0; return u;
+          }
+      }
+    }
     static int dumps; int dump = getenv("DM_WORLD_DUMP") && dumps++ < 3;   // 诊断：前 3 次点按把全部候选及其屏幕矩形打出来 | diagnostics: for the first 3 taps print all candidates and their screen rectangles
     uint64_t L = (uint64_t)(uintptr_t)(b + 0x2f0fee0), rec = *(uint64_t *)L, n = *(uint64_t *)(L + 8);
     // 标签矩形是界面坐标（游戏投影出来的，已被减掉界面矩形的 y），点按是真实画面坐标：比的时候加回

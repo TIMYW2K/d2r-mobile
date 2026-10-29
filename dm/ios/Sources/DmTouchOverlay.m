@@ -44,6 +44,11 @@ static UIFont *dm_game_font(CGFloat size) {
 }
 
 UIFont *dm_game_font_ui(CGFloat size) { return dm_game_font(size); }   // 前端右下角版本号用游戏字体 | expose the game font
+// The experimental loot renderer must preserve the game font; otherwise use the native labels.
+UIFont *dm_loot_game_font(CGFloat size) {
+    UIFont *font = dm_game_font(size);
+    return [font.fontName isEqualToString:[UIFont systemFontOfSize:size].fontName] ? nil : font;
+}
 static void caption(NSString *s, CGRect rect, CGFloat size, CGFloat alpha) {
     NSMutableParagraphStyle *p = [NSMutableParagraphStyle new]; p.alignment = NSTextAlignmentCenter;
     UIFont *f = dm_game_font(size);

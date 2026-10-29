@@ -9,6 +9,7 @@ static int g_ready;
 static dm_loot_owned_snapshot g_stage; // producer only
 static dm_loot_pair g_pair;            // UI consumer only
 static dm_loot_owned_snapshot g_plan;  // UI consumer only
+static int g_plan_ready;
 static _Atomic uint64_t g_frames,g_invalid,g_ticks,g_samples,g_last_count;
 static void initialize(void) { g_ready=dm_loot_exchange_init(&g_exchange); }
 
@@ -32,10 +33,22 @@ void dm_loot_probe_tick(uint64_t ns) {
     pthread_once(&g_once,initialize);
     if (!g_ready) return;
     atomic_fetch_add_explicit(&g_ticks,1,memory_order_relaxed);
+    g_plan_ready=0;
     if (dm_loot_exchange_copy(&g_exchange,&g_pair,ns) &&
         dm_loot_pair_sample(&g_pair,ns,&g_plan) &&
-        dm_loot_exchange_pair_valid(&g_exchange,&g_pair))
+        dm_loot_exchange_pair_valid(&g_exchange,&g_pair)) {
+        g_plan_ready=1;
         atomic_fetch_add_explicit(&g_samples,1,memory_order_relaxed);
+    }
+}
+int dm_loot_probe_plan(dm_loot_owned_snapshot *out,uint64_t *epoch) {
+    if (!out || !epoch || !g_plan_ready ||
+        !dm_loot_exchange_pair_valid(&g_exchange,&g_pair)) return 0;
+    *out=g_plan; *epoch=g_pair.epoch; return 1;
+}
+int dm_loot_probe_epoch_valid(uint64_t epoch) {
+    pthread_once(&g_once,initialize);
+    return g_ready && epoch && epoch==atomic_load_explicit(&g_exchange.epoch,memory_order_acquire);
 }
 void dm_loot_probe_stats(uint64_t *frames,uint64_t *invalid,uint64_t *ticks,
                          uint64_t *samples,uint64_t *last_count) {

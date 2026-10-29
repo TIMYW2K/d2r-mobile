@@ -35,9 +35,12 @@ int main(void) {
     memset(a+0x24,0x5a,128);
     memcpy(a+0x24,name,sizeof name);
     a[0x14]=0x12; a[0x23]=0x34;
+    put(a,0xac,11); put(a,0xb0,22); put(a,0xb4,33); put(a,0xb8,255);
     assert(dm_loot_capture_owned(raw,sizeof raw,1,700,1,5,&owned));
     assert(owned.geometry.count==1 && owned.geometry.labels[0].id==42);
     assert(owned.labels[0].style[0]==0x12 && owned.labels[0].style[15]==0x34);
+    assert(owned.labels[0].color[0]==11 && owned.labels[0].color[1]==22 &&
+           owned.labels[0].color[2]==33 && owned.labels[0].color[3]==255);
     assert(!memcmp(owned.labels[0].text,a+0x24,sizeof name));
     for (size_t k=sizeof name;k<DM_LOOT_INLINE_TEXT;k++) assert(owned.labels[0].text[k]==0);
     memset(a+0x24,'x',128);
@@ -52,6 +55,9 @@ int main(void) {
     memset(a+0x24,0,128); a[0x24]=0xe4; a[0x25]=0xb8;
     assert(!dm_loot_capture_owned(raw,sizeof raw,1,800,1,5,&owned)); // incomplete
     assert(owned.geometry.time_ns==700);
+    put(a,0xac,256); memset(a+0x24,0,128); a[0x24]='X';
+    assert(!dm_loot_capture_owned(raw,sizeof raw,1,800,1,5,&owned));
+    assert(owned.geometry.time_ns==700); put(a,0xac,11);
     memset(a+0x24,0,128); a[0x24]=0xf4; a[0x25]=0x8f; a[0x26]=0xbf; a[0x27]=0xbf;
     assert(dm_loot_capture_owned(raw,sizeof raw,1,810,1,5,&owned)); // U+10FFFF
     memset(a+0x24,'A',127); a[0x24+127]=0;

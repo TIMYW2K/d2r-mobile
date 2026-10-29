@@ -1,11 +1,12 @@
 # Experimental 60 Hz loot labels
 
-Status: diagnostic build only. The game thread captures owned snapshots and
-an independent display link requests 60 Hz to exercise frame-plan sampling.
-This changes the display-link request while playing and may affect power use.
-It does not enable a new label renderer, suppress the original draw, or promise
-an actual 60 Hz display. The original path remains until an iPhone run validates
-the replacement, color/font fidelity, and pickup behavior.
+Status: experimental renderer, not yet validated on a device. The game thread
+captures owned snapshots and a separate display link requests 60 Hz. Simple,
+single-line labels can be drawn with the bundled game font; multiline and inline
+color-code labels stay native. Original drawing remains the fallback when the
+gate, frame, text, colors, location, scene, focus or presentation acknowledgment
+does not match. This request can affect power use and does not guarantee actual
+60 Hz presentation. Verify appearance, placement and pickup on an iPhone.
 
 For the current 3.3 image, the label-manager entry main+0xc017a0 calls
 main+0xc0189c to rebuild the item-label records. Each record has stride 0x148;
@@ -24,11 +25,12 @@ or font resources remain valid across frames.
 
 Run python -X utf8 dm/ios/tests/test_loot_draw_contract.py <IPA> before using
 these offsets. The check validates instructions, branch targets, and all
-direct BL references in the current image. It does not validate indirect
-calls, pointers, text encoding, color markup, the render command stream,
-reentrancy, or ABI behavior on a device.
+direct BL references in the current image. It does not validate indirect calls, pointers, text encoding, color markup,
+the render command stream, reentrancy, or ABI behavior on a device. The
+experimental rewrite routes the one draw call through svc 0x8f, which forwards
+to the native draw unless an eligible overlay frame was acknowledged.
 
-dm_loot_capture.h is a bounded test-only copy of raw records and geometry.
+dm_loot_capture.h makes a bounded copy of record text, colors and geometry.
 Opaque record bytes may contain pointers: copying them does not extend their
 lifetime and they must not be dereferenced on another thread. A real pipeline
 needs a validated owned representation or a GPU resource lifetime protocol,
@@ -42,10 +44,11 @@ The experimental dm_loot_exchange.c bridge holds owned current/previous
 snapshots behind a mutex. A nonblocking reader receives a copy and an epoch;
 scene or orientation invalidation changes the epoch, while stale snapshots are
 rejected. A sampled frame plan shares one rectangle set for display and hit
-testing. The epoch recheck is not a GPU presentation fence. A diagnostic-only
-probe is wired to the game-thread pump and iOS display link; it logs aggregate
-counts but draws nothing. A real implementation must define and test the
-native-draw suppression handshake separately.
+testing. UIKit acknowledges a completed draw on the next display-link tick;
+this is not a GPU presentation fence and must be checked on real devices.
+The game draw gate suppresses a native label only if its ID, text, colors,
+position, epoch and age match an eligible acknowledgment; otherwise it forwards
+the native call. Unknown or unsupported text stays native.
 
 The existing runtime world extrapolator requires a 60 Hz target and was disabled
 after real-device stutter/ghosting. It is not a tested 30-to-60 loot solution.

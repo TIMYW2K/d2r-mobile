@@ -54,7 +54,10 @@ SRC=\
 	dm_hud.c \
 	dm_i18n.c \
 	dm_kills.c \
+	dm_loot_draw.c \
 	dm_loot_exchange.c \
+	dm_loot_live.c \
+	dm_loot_present.c \
 	dm_loot_probe.c \
 	dm_lootfilter.c \
 	dm_namegen.c \

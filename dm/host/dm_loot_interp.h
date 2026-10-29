@@ -126,6 +126,9 @@ static inline int dm_loot_snapshot_sample(const dm_loot_snapshot *previous,
             h = (h + 1) & (DM_LOOT_HASH_CAP - 1);
         if (!prev_index[h]) continue; // newly visible: snap
         dm_loot_rect a = previous->labels[prev_index[h] - 1].rect, b = out[i].rect;
+        float dx=b.x-a.x, dy=b.y-a.y;
+        // A jump is more likely a teleport / relayout than smooth motion.
+        if (dx*dx+dy*dy > 96.0f*96.0f) continue;
         out[i].rect = (dm_loot_rect){a.x + alpha*(b.x-a.x), a.y + alpha*(b.y-a.y),
                                     b.w, b.h};
     }
