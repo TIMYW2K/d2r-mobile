@@ -278,3 +278,24 @@ $(B)/t_camera_pan: t_camera_pan.c ../dm_camera_pan.h | $(B)
 
 $(B)/t_movie_touch_state: t_movie_touch_state.c ../hle_movie.c ../dm_movie_decode.h ../../ios/Sources/dm_movie_touch_policy.h | $(B)
 	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_movie_touch_state.c -lm
+
+.PHONY: ios224-regression
+ios224-regression: $(B)/t_custom_portrait $(B)/t_ui_move $(B)/t_vault_icons $(B)/t_crash_hang
+	@d=$$(mktemp -d); $(B)/t_custom_portrait "$$d"; result=$$?; rmdir "$$d"; exit $$result
+	$(B)/t_ui_move
+	$(B)/t_vault_icons
+	$(B)/t_crash_hang
+	$(PY) ../../ios/tests/test_touch_layout_options.py
+	$(PY) ../../ios/tests/test_vault_tabs.py
+
+$(B)/t_custom_portrait: t_custom_portrait.c ../dm_custom.c ../dm_custom.h | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_custom_portrait.c -lm
+
+$(B)/t_ui_move: t_ui_move.c ../dm_cursor.c ../dm_cursor.h | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_ui_move.c -lm
+
+$(B)/t_vault_icons: t_vault_icons.c ../dm_vault_ui.c ../dm_vault.h | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_vault_icons.c -lm
+
+$(B)/t_crash_hang: t_crash_hang.c t_altstack_stub.c ../crash.c ../dm.h | $(B)
+	clang -O2 -I.. -o $@ t_crash_hang.c t_altstack_stub.c ../crash.c -lpthread

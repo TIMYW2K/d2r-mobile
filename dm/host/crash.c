@@ -13,6 +13,73 @@
 #include <mach/mach.h>
 #include <stdatomic.h>
 #include <time.h>
+#include <errno.h>
+
+// Write the essential crash record without stdio, malloc or loader locks.
+// Guest modules use the static module table; other Apple addresses stay raw
+// until the optional symbol dump, which has a bounded timeout.
+typedef struct { char b[512]; int n; } cw_t;
+static void cw_flush(cw_t *w) {
+    for (int o = 0; o < w->n; ) {
+        ssize_t k = write(2, w->b + o, (size_t)(w->n - o));
+        if (k > 0) o += (int)k;
+        else if (!(k < 0 && errno == EINTR)) break;
+    }
+    w->n = 0;
+}
+static void cw_s(cw_t *w, const char *s) { for (; *s; s++) { if (w->n == (int)sizeof w->b) cw_flush(w); w->b[w->n++] = *s; } }
+static void cw_hex(cw_t *w, uint64_t v) {
+    char t[19]; int i = 18; t[i] = 0;
+    do { t[--i] = "0123456789abcdef"[v & 15]; v >>= 4; } while (v);
+    t[--i] = 'x'; t[--i] = '0'; cw_s(w, t + i);
+}
+static void cw_dec(cw_t *w, long long v) {
+    char t[24]; int i = 23; t[i] = 0; unsigned long long u = v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v;
+    do { t[--i] = (char)('0' + u % 10); u /= 10; } while (u);
+    if (v < 0) t[--i] = '-';
+    cw_s(w, t + i);
+}
+#if !defined(__APPLE__)
+// 在 /proc/self/maps 里找含 a 的映射，写「库名+偏移」（偏移 = a − 映射起点 + 文件偏移，同 dladdr 退路给的库内偏移）；找不到返回 0
+// Find the mapping holding a in /proc/self/maps and write "library+offset" (offset = a - mapping start + file offset, the same in-library offset the
+// dladdr fallback gives); returns 0 when not found
+static uint64_t cw_hexval(const char **p) {
+    uint64_t v = 0;
+    for (;; (*p)++) {
+        char c = **p; int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+        if (d < 0) return v;
+        v = v << 4 | (uint64_t)d;
+    }
+}
+static int cw_map(cw_t *w, uint64_t a) {
+    int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC); if (fd < 0) return 0;
+    char buf[4096], line[512]; int ln = 0, found = 0; ssize_t k;
+    while (!found && (k = read(fd, buf, sizeof buf)) > 0) {
+        for (ssize_t i = 0; i < k && !found; i++) {
+            if (buf[i] != '\n') { if (ln < (int)sizeof line - 1) line[ln++] = buf[i]; continue; }
+            line[ln] = 0; ln = 0;
+            const char *p = line; uint64_t lo = cw_hexval(&p); if (*p++ != '-') continue; uint64_t hi = cw_hexval(&p);
+            if (a < lo || a >= hi) continue;
+            while (*p == ' ') p++; while (*p && *p != ' ') p++; while (*p == ' ') p++;
+            uint64_t fo = cw_hexval(&p);
+            const char *path = line, *q = line; for (; *q; q++) if (*q == '/' || *q == '[') { path = q; break; }
+            if (path == line) continue;
+            const char *base = path; for (q = path; *q; q++) if (*q == '/') base = q + 1;
+            cw_s(w, base); cw_s(w, "+"); cw_hex(w, a - lo + fo); found = 1;
+        }
+    }
+    close(fd);
+    return found;
+}
+#endif
+// 一个地址：「tag=」后接 客体模块+偏移 / 库名+偏移 / 原值
+// One address: after "tag=", guest module+offset / library+offset / the raw value
+static void cw_addr(cw_t *w, const char *tag, uint64_t a) {
+    cw_s(w, " "); if (*tag) { cw_s(w, tag); cw_s(w, "="); }
+    module_t *m = module_of((void *)a);
+    if (m) { cw_s(w, m->name); cw_s(w, "+"); cw_hex(w, a - (uint64_t)m->base); return; }
+    cw_hex(w, a);
+}
 
 static _Atomic uint64_t g_watch_last_ns;
 static _Atomic uint64_t g_watch_count;
@@ -129,6 +196,18 @@ void crash_set_wait_dump(void (*fn)(void)) { g_wait_dump = fn; }
 // 按需导出现场（不退出）：iOS 包没有无进展看门狗，冒烟判红时经 DM_LOG_PORT 发 dump 触发——各客体线程在等什么 + 图形侧等待点，和看门狗打的是同一份
 // Dump the current state on demand (without exiting): the iOS app has no no-progress watchdog, so when the smoke test fails it sends dump through DM_LOG_PORT to trigger this -- what each guest thread is waiting on + the graphics-side wait points, the same thing the watchdog prints
 void crash_dump_now(const char *why) { fprintf(stderr, "[dm] 现场导出（%s）：拍 %u / 阶段 %s\n", why, atomic_load(&g_watch_tick), g_watch_stage[atomic_load(&g_watch_stage_idx)]); if (g_dump_hook) g_dump_hook(); if (g_wait_dump) g_wait_dump(); }
+// 第二段（符号化与线程现场）的看门：它要 stdio、dladdr、分配内存，可能卡在崩溃线程自己持着的锁上；3 秒没走完就由这个闹钟直接退出进程。
+// 要赶在系统判「无响应」（5 秒）之前：卡住的分配器锁会连界面线程一起拖住，与其让玩家看到无响应框，不如带着第一段的现场退出
+// Watchdog for the second part (symbols and the thread dump): it needs stdio, dladdr and memory allocation, and may block on a lock the crashing thread
+// itself holds; if it has not finished within 3 s this alarm exits the process. It has to beat the system's "not responding" (5 s): a stuck allocator
+// lock drags the UI thread down with it, and exiting with the first part's record beats leaving the player in front of a "not responding" dialog
+static volatile sig_atomic_t g_crash_sig;
+static void crash_deadman(int sig) {
+    (void)sig;
+    static const char msg[] = "[dm] CRASH：现场导出 3 秒没走完（多半卡在分配器或 stdio 的锁上），直接退出 | the crash dump did not finish in 3 s (likely stuck on an allocator or stdio lock), exiting\n";
+    ssize_t k = write(2, msg, sizeof msg - 1); (void)k;
+    _exit(128 + g_crash_sig);
+}
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
     ucontext_t *uc = uc_;
     if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;
@@ -136,10 +215,32 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         int is_write = (int)((uc->uc_mcontext->__es.__esr >> 6) & 1);   // ESR 的 WnR 位 | The WnR bit of ESR
         for (int i = 0; i < g_nfault_hook; i++) if (g_fault_hook[i](si->si_addr, is_write, uc)) return;
     }
-    fprintf(stderr, "[dm] CRASH sig=%d", sig);
+    // 第一段：信号安全（见文件开头 cw_*），一定落得进日志
+    // First part: signal-safe (see cw_* at the top of the file), it always reaches the log
+    { cw_t w; w.n = 0;
+      cw_s(&w, "[dm] CRASH sig="); cw_dec(&w, sig);
+      cw_addr(&w, "addr", (uint64_t)si->si_addr); cw_addr(&w, "pc", uc->uc_mcontext->__ss.__pc); cw_addr(&w, "lr", uc->uc_mcontext->__ss.__lr);
+      cw_s(&w, " sp="); cw_hex(&w, uc->uc_mcontext->__ss.__sp); cw_s(&w, "\n");
+      for (int i = 0; i < 29; i++) { cw_s(&w, "x"); cw_dec(&w, i); cw_s(&w, "="); cw_hex(&w, uc->uc_mcontext->__ss.__x[i]); cw_s(&w, i % 6 == 5 ? "\n" : " "); }
+      cw_s(&w, "\n"); cw_flush(&w);
+      // 回溯另起一行、先把上面落盘：帧指针坏了的话读它会再出错（进程就此被杀），出错地址与寄存器已经写出去了
+      // The backtrace goes on its own line after the lines above are written out: reading a bad frame pointer can fault again (and the process is then
+      // killed), by which point the faulting address and the registers are already out
+      cw_s(&w, "[dm] bt（信号安全 | signal-safe）:");
+      uint64_t fp = uc->uc_mcontext->__ss.__fp;
+      for (int i = 0; i < 32 && fp && !(fp & 7); i++) {
+          uint64_t nfp = ((uint64_t *)fp)[0], ra = ((uint64_t *)fp)[1];
+          cw_addr(&w, "", ra);
+          if (nfp <= fp) break;
+          fp = nfp;
+      }
+      cw_s(&w, "\n"); cw_flush(&w); }
+    // 第二段：dladdr 符号名与各线程现场，3 秒闹钟看着（crash_deadman）
+    // Second part: dladdr symbol names and every thread's state, watched by a 3-second alarm (crash_deadman)
+    g_crash_sig = sig;
+    struct sigaction da = {.sa_handler = crash_deadman}; sigemptyset(&da.sa_mask); sigaction(SIGALRM, &da, 0); alarm(3);
+    fprintf(stderr, "[dm] CRASH 符号 | symbols:");
     off("addr", (uint64_t)si->si_addr); off("pc", uc->uc_mcontext->__ss.__pc); off("lr", uc->uc_mcontext->__ss.__lr);
-    fprintf(stderr, " sp=%#llx\n", uc->uc_mcontext->__ss.__sp);
-    for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%#llx%s", i, uc->uc_mcontext->__ss.__x[i], i % 6 == 5 ? "\n" : " ");
     fprintf(stderr, "\n");
     dm_backtrace(uc->uc_mcontext->__ss.__fp);
     if (g_dump_hook) g_dump_hook();

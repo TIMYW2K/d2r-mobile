@@ -170,3 +170,13 @@ tsv = (root / 'i18n/ui_text.tsv').read_text(encoding='utf-8')
 tab = (root / 'host/dm_i18n_tab.h').read_text(encoding='utf-8')
 assert 'dmCustomShowOrbTextBoth' not in tsv and 'dmCustomShowOrbTextBoth' not in tab   # 合并文案已删
 print('PASS touch layout options T36/T37/T42: two visible rows (Skill Ammo -> Frame Rate), 2-child row + root anchors, orb text force-on wiring, drag highlight, attack-title font')
+
+# Portrait toggle and three brightness choices must be reachable in the scroll area.
+for name in ('TouchCustom_allow_portrait', 'TouchCustom_bright', 'TouchCustom_bright_mid', 'TouchCustom_bright_full'):
+    fields = nodes[name]['fields']
+    assert fields['onClickMessage'] == 'PanelManager:ClosePanel:' + name
+    assert fields['rect']['y'] + fields['rect']['height'] <= nodes['TouchCustomRows']['fields']['rect']['height']
+assert nodes['TouchCustom_allow_portrait_Text']['fields']['text'] == '@dmCustomAllowPortrait'
+assert nodes['TouchCustom_bright_Text']['fields']['rect']['height'] == 540
+assert 'dm_padmode_page_keys(' not in host, 'touch settings must not auto-scroll for a controller'
+print('PASS portrait switch and brightness controls fit the generated page; touch-only scrolling')

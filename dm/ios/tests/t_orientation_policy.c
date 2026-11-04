@@ -17,6 +17,18 @@ int main(void) {
  stable(&s,1,6);assert(s.session && dm_orientation_target(&s)==1);
  dm_orientation_stop(&s);assert(!s.session && dm_orientation_target(&s)==0);
  dm_orientation_start(&s);stable(&s,1,7);assert(dm_orientation_target(&s)==0); // Old portrait choice cannot leak into next run.
+ // New setting: deny immediately, including during loading/resume; keep session.
+ dm_orientation_start(&s);stable(&s,0,10);stable(&s,1,11);
+ assert(dm_orientation_target_allowed(&s,1)==1);
+ assert(dm_orientation_target_allowed(&s,0)==0);
+ assert(dm_orientation_sample_allowed(&s,0,1,12));
+ assert(s.session && s.target==0 && s.baseline==-1);
+ for(int i=0;i<20;i++) {dm_orientation_sample_allowed(&s,0,i%2,13+i);assert(s.target==0);}
+ // Re-enable while held upright: no surprise jump; a new physical turn works.
+ dm_orientation_sample_allowed(&s,1,1,40);dm_orientation_sample_allowed(&s,1,1,40.3);
+ assert(s.target==0);stable(&s,0,41);stable(&s,1,42);assert(s.target==1);
+ dm_orientation_stop(&s);assert(dm_orientation_target_allowed(&s,1)==0);
+ dm_orientation_start(&s);dm_orientation_sample_allowed(&s,0,1,50);assert(s.target==0);
  dm_orientation_retry retry={-1,0,0};
  for(int i=0;i<6;i++) {assert(dm_orientation_retry_step(&retry,s.session,1,0,i*.5));assert(!dm_orientation_retry_step(&retry,1,1,0,i*.5+.1));}
  assert(!dm_orientation_retry_step(&retry,1,1,0,3));assert(dm_orientation_retry_step(&retry,1,1,0,4.5)); // Backoff, never permanent lock.

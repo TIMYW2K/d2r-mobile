@@ -1,13 +1,19 @@
-"""Apply the user-approved Simplified Chinese terminology edit."""
-import hashlib
+"""Apply reviewed Chinese text edits with per-entry source verification."""
+import hashlib, json, os
 from annot_strings import Strings
 
 def build(romfs, outdir, repl):
     strings = Strings(romfs, repl)
-    old = strings.get('item-modifiers.json', 'ModStr1h')
-    if old != '%+d 命中值' or hashlib.sha1(old.encode('utf-8')).hexdigest()[:8] != '338c0036':
-        raise SystemExit('cn_user_edits: ModStr1h original text does not match')
-    n = strings.set('item-modifiers.json', 'ModStr1h', lambda _: '%+d 准确率')
-    if n != 1:
-        raise SystemExit('cn_user_edits: expected exactly one ModStr1h')
-    return strings.write(outdir)
+    path = os.path.join(os.path.dirname(__file__), 'cn_user_edits.json')
+    with open(path, encoding='utf-8') as f:
+        edits = json.load(f)
+    for edit in edits:
+        name, key = edit['file'], edit['key']
+        original = strings.get(name, key)
+        if original is None or hashlib.sha1(original.encode('utf-8')).hexdigest() != edit['source_sha1']:
+            raise SystemExit('cn_user_edits: source mismatch: %s / %s' % (name, key))
+        if strings.set(name, key, lambda _: edit['value']) != 1:
+            raise SystemExit('cn_user_edits: expected unique key: %s / %s' % (name, key))
+    own_dir = os.path.join(outdir, "cn_user_edits")
+    os.makedirs(own_dir, exist_ok=True)
+    return strings.write(own_dir)

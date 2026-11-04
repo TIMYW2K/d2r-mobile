@@ -20,9 +20,9 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom", "metalfx", "cam", "show_fps" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS；show_fps 不在自定义页，排末尾、只走游戏设置页）。T18：省电模式（eco_fps）已删除，帧率只由温控决定 | order = the custom page's top-to-bottom rows (touch_layout.py _CUSTOM_ROWS; show_fps is not on the custom page, it is last and only lives on the game's settings page). T18: the power-saving mode (eco_fps) is gone; the frame rate is only capped by the thermal state
+static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom", "metalfx", "cam", "bright", "allow_portrait", "show_fps" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS；show_fps 不在自定义页，排末尾、只走游戏设置页）。T18：省电模式（eco_fps）已删除，帧率只由温控决定 | order = the custom page's top-to-bottom rows (touch_layout.py _CUSTOM_ROWS; show_fps is not on the custom page, it is last and only lives on the game's settings page). T18: the power-saving mode (eco_fps) is gone; the frame rate is only capped by the thermal state
 #define NK (int)(sizeof k_keys / sizeof *k_keys)   // 行数（解冲突时漏掉过，这里补回）
-static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0 };   // 缺省值：性能模式流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0、show_fps=0，其余开；zoom=1（允许双指缩放） | defaults: performance mode smoothness first (q3d=0), touch_swap_above=0 (left of portal), hdr=0, show_fps=0, the rest on; zoom=1 (pinch-to-zoom allowed)
+static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 2, 1, 0 };   // 缺省值：性能模式流畅优先（q3d=0）、touch_swap_above=0（传送门左侧）、hdr=0、show_fps=0，其余开；zoom=1（允许双指缩放） | defaults: performance mode smoothness first (q3d=0), touch_swap_above=0 (left of portal), hdr=0, show_fps=0, the rest on; zoom=1 (pinch-to-zoom allowed)
 // q3d（性能模式，自定义页）：0 = 流畅优先（60 帧，掉帧就自动降 3D 比例）、1 = 画质优先（60 帧，不自动降，过热仍会自动降档）、
 // 2 = 画质优先（强制）（60 帧固定、固定 3D 画质，忽略过热自动降档——永不 30 帧、永不降 3D 比例）。生效 = 调 hle_oe.c 的
 // dm_3d_quality_mode_set，读盘与点「应用」时当场调，下一帧控制器就按新档走；q3d==2 时 dm_fps_setting 恒 60、并立刻清掉已有温控降档。
@@ -38,7 +38,12 @@ static const int k_def[NK] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1
 #define K_TOUCH_SWAP 14
 #define K_SHOW_FPS (NK - 1)   // show_fps 排在键表末尾、只在游戏设置页有勾选框 | show_fps is last in the key table and only has a checkbox on the game's settings page
 #define K_PAGE_ROWS (NK - 1)  // 自定义页的行数 = 除 show_fps 外的全部键 | rows on the custom page = every key except show_fps
-#define K_CAM (NK - 2)
+#define K_CAM 18
+#define K_BRIGHT 19
+#define K_ALLOW_PORTRAIT 20
+#define BRIGHT_N 3
+static const char *const k_bright_box[] = { "TouchCustom_bright", "TouchCustom_bright_mid", "TouchCustom_bright_full" };
+static const char *const k_bright_name[] = { "original", "moderate", "brightened" };
 #define CAM_N 3
 static const char *const k_cam_box[CAM_N] = { "TouchCustom_cam", "TouchCustom_cam_ots", "TouchCustom_cam_fp" };
 static const char *const k_cam_name[CAM_N] = { "off", "over-the-shoulder", "first-person" };
@@ -83,7 +88,8 @@ static void load_once(void) {
     FILE *f = fopen(p, "r"); char ln[128];
     int lang = -1, merc = -1;
     // q3d 是 0/1/2：这一项按数字读（其余键仍是 0/1） | q3d is 0/1/2: this key is parsed as a number (the other keys stay 0/1)
-    while (f && fgets(ln, sizeof ln, f)) { char *eq = strchr(ln, '='); if (!eq) continue; *eq = 0; int i = key_index(ln); if (i >= 0) v[i] = (i == (int)K_Q3D || i == (int)K_CAM) ? atoi(eq + 1) : eq[1] != '0'; if (i == 0) lang = v[0]; if (!strcmp(ln, "merc_pot_v2")) merc = eq[1] != '0'; }
+    while (f && fgets(ln, sizeof ln, f)) { char *eq = strchr(ln, '='); if (!eq) continue; *eq = 0; int i = key_index(ln); if (i >= 0) v[i] = (i == (int)K_Q3D || i == (int)K_CAM || i == K_BRIGHT) ? atoi(eq + 1) : eq[1] != '0'; if (i == 0) lang = v[0]; if (!strcmp(ln, "merc_pot_v2")) merc = eq[1] != '0'; }
+    if (v[K_BRIGHT] < 0 || v[K_BRIGHT] >= BRIGHT_N) v[K_BRIGHT] = k_def[K_BRIGHT];
     if (v[K_CAM] < 0 || v[K_CAM] >= CAM_N) v[K_CAM] = 0;
     if (f) fclose(f);
     if (lang < 0) v[0] = !dm_lang_zh();   // 没写过：按当前实际语言显示 | Never written: display according to the current actual language
@@ -237,45 +243,10 @@ void dm_custom_ui_pump(unsigned long long root) {
         memset(seen, 0, sizeof seen); return; }
     load_once(); if (atomic_exchange(&g_repaint, 0)) memset(seen, 0, sizeof seen);
     if (atomic_load(&g_lang_explicit) < 0) atomic_store(&g_val[0], !dm_lang_zh());   // 语言那一格没点过应用：生效值 = 此刻实际在跑的语言（读盘时游戏还没设语言，那时取到的不准） | Apply never tapped for the language cell: effective value = the language actually running right now (when read from disk the game has not set the language yet, so the value fetched then is not accurate)
-    // 手柄模式：原版选项页的焦点只认表格里它自己的行，够不着我们的勾选框——十字键上下选行（原版手柄选中框 TouchCustomSel 框住这一行）、A 翻勾选（下面照「玩家点了」处理），其余键照旧归原版
-    // Controller mode: the original options page's focus only recognizes its own rows in the table and cannot reach our checkboxes. D-pad up/down selects a row
-    // (the original controller selection frame TouchCustomSel frames that row), A toggles the checkbox (handled below as "the player tapped it"), and all other
-    // buttons go to the original as before
-    { int dm_padmode_current(void); uint64_t dm_padmode_page_keys(uint64_t); static int sel; static dm_wref sel_sp; int pad = dm_padmode_current();
-      { if (dm_ui_modal_active(root)) pad = 0; }   // 原版「设定已更改，应用 / 放弃」确认框开着：键全还给它（实测：不让的话 A 落在我们这一行上、点不到「应用」） | The original "Settings changed, Apply / Discard" confirmation box is open: hand all keys back to it (measured: otherwise A lands on our row and "Apply" cannot be reached)
-      if (dm_wref_get(&sel_sp) != sp) { dm_wref_set(&sel_sp, sp); sel = 1; }
-      uint64_t dm = find_w(sp, "TouchCustomSel", 0), tw = 0, cw = 0; char nm[64];
-      if (pad) { uint64_t ev = dm_padmode_page_keys(DM_BTN_UP | DM_BTN_DOWN | DM_BTN_A);
-          if (ev & DM_BTN_DOWN) { if (sel + 1 < K_PAGE_ROWS) ++sel; if (sel == 3) ++sel; } else if (ev & DM_BTN_UP) { if (sel > 1) --sel; if (sel == 3) --sel; }
-          snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[sel]); cw = find_w(sp, nm, 0); snprintf(nm, sizeof nm, "TouchCustom_%s_Text", k_keys[sel]); tw = find_w(sp, nm, 0);
-          if ((ev & DM_BTN_A) && cw && dm_wref_get(&seen[sel]) == cw) {
-              if (sel == K_Q3D) { int p0 = atomic_load(&g_pend[sel]), cur = p0 >= 0 ? p0 : atomic_load(&g_val[sel]); int nx = (cur + 1) % 3;
-                  atomic_store(&g_pend[sel], nx);
-                  for (int q = 0; q < 3; q++) { uint64_t b = find_w(sp, q3d_box[q], 0); if (b) set_toggle(b, q == nx); }
-                  LOG("自定义设置：%s → %s（手柄 A 在三项间切换；点「应用」生效）", k_keys[sel], q3d_name(nx)); }
-              else if (sel == K_TOUCH_SWAP) { int p0 = atomic_load(&g_pend[sel]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[sel]); atomic_store(&g_pend[sel], !sh); set_toggle(cw, !sh); { uint64_t z = find_w(sp, rev_box(sel), 0); if (z) set_toggle(z, sh); }
-                  LOG("自定义设置：%s → %d（手柄 A 在两项间切换；点「应用」生效）",k_keys[sel],!sh); }
-              else if (sel == K_CAM) { int p0 = atomic_load(&g_pend[K_CAM]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[K_CAM]), to = (sh + 1) % CAM_N; atomic_store(&g_pend[K_CAM], to);   // 镜头视角三项：A 依次轮换 | camera view: A cycles through the three
-                  for (int k = 0; k < CAM_N; k++) { uint64_t z = find_w(sp, k_cam_box[k], 0); if (z) set_toggle(z, k == to); }
-                  LOG("自定义设置：镜头视角 → %s（手柄 A 在三项间轮换；点「应用」生效）", k_cam_name[to]); }
-              else if (sel == 0) { int p0 = atomic_load(&g_pend[0]), sh = p0 >= 0 ? p0 : atomic_load(&g_val[0]); atomic_store(&g_pend[0], !sh); set_toggle(cw, !sh); { uint64_t z = find_w(sp, "TouchCustom_lang_zh", 0); if (z) set_toggle(z, sh); }   // 语言行是单选的两项：两个框当场摆好（只改待定值的话，下面读框状态会把没跟上的框当成玩家点的） | The language row is a single choice between two items: both boxes are set on the spot (if only the pending value were changed, the code below that reads the box states would take the box that has not caught up as a player tap)
-                  LOG("自定义设置：语言 → %s（手柄 A 在两项间切换；点「应用」生效）", !sh ? "English" : "中文"); }
-              else set_toggle(cw, !TOGGLED(cw)); } }
-      if (dm) { int32_t *r = (int32_t *)(dm + 0x70), want[4] = { 99999, 0, r[2], r[3] };   /* 不用时只把 x 挪出屏：它在滚动区里，y 放远了会撑大可滚范围 | when unused only x is moved off screen: it is inside the scroll area, and a far-away y would enlarge the scrollable range */
-          if (dm_padmode_current() && tw && cw) { int32_t *t = (int32_t *)(tw + 0x70), *c = (int32_t *)(cw + 0x70); int top = t[1] < c[1] ? t[1] : c[1], bot = t[1] + t[3] > c[1] + c[3] ? t[1] + t[3] : c[1] + c[3];   // 框住整行：文字与勾选框两者的上下沿取并，再各放 10 单位（原先只按文字框的高度算，文字框比字矮，框成了横穿文字中线的一条） | Frame the whole row: take the union of the top and bottom edges of the text and the checkbox, then pad 10 units on each side (previously computed from the text box height only; the text box is shorter than the glyphs, so the frame became a strip cutting across the middle of the text)
-              want[0] = t[0] - 30; want[1] = top - 10; want[2] = c[0] + c[2] + 30 - want[0]; want[3] = bot - top + 20;
-              { static int lg; if (lg++ < 2) LOG("自定义设置：手柄选中框 文字框 %d,%d %dx%d 勾选框 %d,%d %dx%d → 框 %d,%d %dx%d", t[0], t[1], t[2], t[3], c[0], c[1], c[2], c[3], want[0], want[1], want[2], want[3]); } }
-          if (memcmp(r, want, sizeof want)) { memcpy(r, want, sizeof want); ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)dm + 0x10))(dm); } }
-      // 这页可以滚（各行在原版滚动区里，touch_layout.py _custom_page）：手柄选到列表框外的行时，让原版滚动区自己滚到位——发滚轮，每 4 帧一格，直到这一行整行在框内。
-      // 已滚的量 = 内层视图（行容器的父控件）矩形 y 的相反数；框高 = 滚动区（再上一级）的高。只读这两个数，不写原版控件
-      // This page can scroll (the rows are in the original scroll area, touch_layout.py _custom_page): when the controller selects a row outside the list box, let the original scroll area scroll into place by itself -- send wheel events, one notch every 4 frames, until the whole row is inside the box.
-      // Amount scrolled = the negative of the rect y of the inner view (the parent widget of the row container); box height = the height of the scroll area (one level further up). Only these two numbers are read; the original game's widgets are not written
-      if (pad && tw && cw) { uint64_t rw = find_w(sp, "TouchCustomRows", 0), view = rw ? *(uint64_t *)(rw + 0x30) : 0, sv = view ? *(uint64_t *)(view + 0x30) : 0; static uint64_t lf; uint64_t dm_guest_frame(void); uint64_t f = dm_guest_frame();
-          if (sv && f - lf >= 4) { int32_t *t = (int32_t *)(tw + 0x70), *c = (int32_t *)(cw + 0x70); int top = (t[1] < c[1] ? t[1] : c[1]) - 10, bot = (t[1] + t[3] > c[1] + c[3] ? t[1] + t[3] : c[1] + c[3]) + 10;
-              int off = -*(int32_t *)(view + 0x74), vh = *(int32_t *)(sv + 0x7c); if (vh <= 0) vh = 1260; void dm_ui_wheel_on(uint64_t, int); if (sel == 0) top = 0;   /* 选回第一行：一直滚到最顶，把标题行露出来 | selection back on the first row: scroll all the way to the top so that the header row is revealed */
-              if (top < off) { lf = f; dm_ui_wheel_on(sv, 1); } else if (bot > off + vh) { lf = f; dm_ui_wheel_on(sv, -1); } } } }
+    // Touch-only custom page: no controller selection or automatic scrolling.
+    radio_pump(sp, K_BRIGHT, k_bright_box, k_bright_name, BRIGHT_N, &seen[K_BRIGHT]);
     radio_pump(sp, K_CAM, k_cam_box, k_cam_name, CAM_N, &seen[K_CAM]);
-    for (int i = 0; i < NK; i++) { if (i == K_CAM) continue; char nm[48]; snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[i]);
+    for (int i = 0; i < NK; i++) { if (i == K_CAM || i == K_BRIGHT) continue; char nm[48]; snprintf(nm, sizeof nm, "TouchCustom_%s", k_keys[i]);
         uint64_t w = find_w(sp, nm, 0); if (!w || !*(uint8_t *)(w + 0x50)) continue;
         int pd0 = atomic_load(&g_pend[i]), want = pd0 >= 0 ? pd0 : atomic_load(&g_val[i]);
         if (i == K_Q3D) {   // 性能模式三选一：三框互斥 | performance mode, three-way radio: the three boxes are mutually exclusive

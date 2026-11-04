@@ -51,6 +51,7 @@ SRC=\
 	dm_drophaptic.c \
 	dm_elysium.c \
 	dm_freetp.c \
+	dm_respec.c \
 	dm_hud.c \
 	dm_i18n.c \
 	dm_kills.c \

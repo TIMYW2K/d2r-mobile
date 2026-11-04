@@ -30,3 +30,16 @@ static inline int dm_orientation_sample(dm_orientation_state *s,int posture,doub
     s->baseline=posture;s->target=posture;s->changes++;return 1;
 }
 static inline int dm_orientation_target(const dm_orientation_state *s) { return s->session?s->target:0; }
+
+// Disabling rotation clears portrait intent, but keeps the gameplay session.
+// Re-enabling samples a fresh baseline: stale posture must not force a rotation.
+static inline int dm_orientation_sample_allowed(dm_orientation_state *s,int allowed,int posture,double now) {
+    if (allowed) return dm_orientation_sample(s,posture,now);
+    int changed=s->target!=0;
+    s->target=0;s->baseline=-1;s->candidate=-1;s->since=now;
+    if (changed) s->changes++;
+    return changed;
+}
+static inline int dm_orientation_target_allowed(const dm_orientation_state *s,int allowed) {
+    return allowed ? dm_orientation_target(s) : 0;
+}

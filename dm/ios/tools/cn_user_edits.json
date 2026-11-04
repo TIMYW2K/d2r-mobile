@@ -1,0 +1,236 @@
+[
+  {
+    "file": "item-nameaffixes.json",
+    "key": "of Corpse Explosions",
+    "source_sha1": "0853b97d74397272cc6e3f10bfecab04d60b5f22",
+    "value": "尸爆之"
+  },
+  {
+    "file": "item-runes.json",
+    "key": "Runeword20",
+    "source_sha1": "cd300d1dd0231276df675dd54252297781c7a577",
+    "value": "死神"
+  },
+  {
+    "file": "item-runes.json",
+    "key": "Runeword30",
+    "source_sha1": "6b5574183e1a880c04901c579bf2526941ee7556",
+    "value": "强制"
+  },
+  {
+    "file": "item-runes.json",
+    "key": "r13",
+    "source_sha1": "4537b4db352b5bc2fa00e0fbaf94f6e7834b8bae",
+    "value": "夏符文"
+  },
+  {
+    "file": "item-runes.json",
+    "key": "r13L",
+    "source_sha1": "32d81edbae54a0583a83109083468ca284cc6e81",
+    "value": "夏"
+  },
+  {
+    "file": "item-runes.json",
+    "key": "r31",
+    "source_sha1": "ea369a19c826ae2a18d297cda5a744e85a749742",
+    "value": "乔符文"
+  },
+  {
+    "file": "item-runes.json",
+    "key": "r31L",
+    "source_sha1": "f113a9ac5da8fc2b7684d5fc2118e16e9ac5e262",
+    "value": "乔"
+  },
+  {
+    "file": "levels.json",
+    "key": "Blood Moor",
+    "source_sha1": "84c8c26d755e6d22937b7db4a721eaec792c5532",
+    "value": "鲜血荒地"
+  },
+  {
+    "file": "levels.json",
+    "key": "EnteringTheBloodMoor",
+    "source_sha1": "c50d1f8a400886e642e807c6f3dfc04e2c6e2952",
+    "value": "进入鲜血荒地"
+  },
+  {
+    "file": "levels.json",
+    "key": "EnteringTheFlayerDungeonLevel1",
+    "source_sha1": "3c4d40ef88ca2598bc373eaecd6cd3de005070f2",
+    "value": "进入剥皮地牢一层"
+  },
+  {
+    "file": "levels.json",
+    "key": "EnteringTheFlayerDungeonLevel2",
+    "source_sha1": "a9e55eaa0dea7a700953c0f7877fa4e889b1578a",
+    "value": "进入剥皮地牢二层"
+  },
+  {
+    "file": "levels.json",
+    "key": "EnteringTheFlayerDungeonLevel3",
+    "source_sha1": "c2465cc345a25bc9dcc5faf6d9cc6e9540f08cf1",
+    "value": "进入剥皮地牢三层"
+  },
+  {
+    "file": "levels.json",
+    "key": "EnteringTheFlayerJungle",
+    "source_sha1": "03e85e65cf9b3d0736d8798aca576cb44c5acbde",
+    "value": "进入剥皮丛林"
+  },
+  {
+    "file": "levels.json",
+    "key": "Flayer Dungeon",
+    "source_sha1": "6f7b1482f9f1878c97d21ca4606c9242dfedc3b7",
+    "value": "剥皮地牢"
+  },
+  {
+    "file": "levels.json",
+    "key": "Flayer Dungeon Level 1",
+    "source_sha1": "3b2dc08dc328926534a3112199f35ef09cbe3b66",
+    "value": "剥皮地牢一层"
+  },
+  {
+    "file": "levels.json",
+    "key": "Flayer Dungeon Level 2",
+    "source_sha1": "c8cd7a80829dcff4ca6a74aae5957ac5d2cd0112",
+    "value": "剥皮地牢二层"
+  },
+  {
+    "file": "levels.json",
+    "key": "Flayer Dungeon Level 3",
+    "source_sha1": "e181378fe71b21ba42fc5dc4910af9fe33ba0637",
+    "value": "剥皮地牢三层"
+  },
+  {
+    "file": "levels.json",
+    "key": "Flayer Jungle",
+    "source_sha1": "f1ddb0beaf538e0ddf0a191f3946681239e3cdc8",
+    "value": "剥皮丛林"
+  },
+  {
+    "file": "levels.json",
+    "key": "To The Blood Moor",
+    "source_sha1": "231581debb288fb492d26495d24c0926fa08b3bd",
+    "value": "前往鲜血荒地"
+  },
+  {
+    "file": "levels.json",
+    "key": "To The Flayer Dungeon Level 1",
+    "source_sha1": "e3282ede68452a926116b225499d2e43c4497748",
+    "value": "前往剥皮地牢一层"
+  },
+  {
+    "file": "levels.json",
+    "key": "To The Flayer Dungeon Level 2",
+    "source_sha1": "e7e4815682e0e038b1080d115376ff75a1f32141",
+    "value": "前往剥皮地牢二层"
+  },
+  {
+    "file": "levels.json",
+    "key": "To The Flayer Dungeon Level 3",
+    "source_sha1": "8a20f657e4f7f02026f613821ebc8463896c90cd",
+    "value": "前往剥皮地牢三层"
+  },
+  {
+    "file": "levels.json",
+    "key": "To The Flayer Jungle",
+    "source_sha1": "75fdb79230301f80a4c81bf76bb25b67d78a32f9",
+    "value": "前往剥皮丛林"
+  },
+  {
+    "file": "quests.json",
+    "key": "qstsa3q22",
+    "source_sha1": "f969973d77fa6a006b49f2fb8212d8d3d9c0a947",
+    "value": "在剥皮地牢中寻找卡林姆的智慧。"
+  },
+  {
+    "file": "quests.json",
+    "key": "qstsa3q31",
+    "source_sha1": "e7fa3b81f1494311f4db2b1c06146edde35d7828",
+    "value": "在剥皮丛林中寻找吉德宾。"
+  },
+  {
+    "file": "skills.json",
+    "key": "BloodGolem",
+    "source_sha1": "cc6d3c8b02b8792efd286134ab056f53af59c4bc",
+    "value": "鲜血傀儡"
+  },
+  {
+    "file": "skills.json",
+    "key": "Corexpdam",
+    "source_sha1": "a0c862405236d3fcbf635d3f6553ffbee1105294",
+    "value": "尸爆伤害: 残骸生命值的%d-%d%%"
+  },
+  {
+    "file": "skills.json",
+    "key": "skillan74",
+    "source_sha1": "7e797d1a1956d179534b548b7137bdf8706d61d7",
+    "value": "尸爆"
+  },
+  {
+    "file": "skills.json",
+    "key": "skillan85",
+    "source_sha1": "cc6d3c8b02b8792efd286134ab056f53af59c4bc",
+    "value": "鲜血傀儡"
+  },
+  {
+    "file": "skills.json",
+    "key": "skillname74",
+    "source_sha1": "7e797d1a1956d179534b548b7137bdf8706d61d7",
+    "value": "尸爆"
+  },
+  {
+    "file": "skills.json",
+    "key": "skillname85",
+    "source_sha1": "cc6d3c8b02b8792efd286134ab056f53af59c4bc",
+    "value": "鲜血傀儡"
+  },
+  {
+    "file": "vo.json",
+    "key": "A3Q1EarlyReturnMeshifAct3",
+    "source_sha1": "2da4f14cb81c33d392f5d8d25f026370a7cf085a",
+    "value": "库拉斯特曾是世界上最伟大的城市，但现在你已经很难将城市与周围的丛林区分开了。在被我同胞们的鲜血灌溉的泥土上，丛林正在疯狂生长。"
+  },
+  {
+    "file": "vo.json",
+    "key": "HratliActIntroGossip1",
+    "source_sha1": "360e663901c94b4110a51d28a0b4243b764ef400",
+    "value": "欢迎来到库拉斯特，旅行者。已经很少有人愿意来到这座古老的城市了。希望你带来了自己的理智，那东西在这里可是稀缺货。\n\n我叫赫拉铁力，是一名精通金属工艺的巫师。我很高兴能为你服务……最近一段时间的顾客可不怎么多。\n\n你也许看得出来，墨菲斯托的力量残害了这里的很多人。运河中流淌着鲜血，恶魔在大地上横行。\n\n丛林中的地狱之力占据了库拉斯特的大部分地方。唯一安全的只有这个小小的港口，一道魔法屏障将丛林中的邪恶挡在了外面……但我并不知道能坚持多久。\n\n情况更糟糕的是，萨卡兰姆之子也跟墨菲斯托沆瀣一气。萨卡兰姆将他们的兵力集中到了神殿之城——崔凡克，就在库拉斯特蛮荒丛林的最深处。\n\n是的……他们的狂热无与伦比。但我必须说这些所谓的“圣光战士”不过是幕后黑手手中的扭曲傀儡而已。"
+  },
+  {
+    "file": "vo.json",
+    "key": "HratliActIntroSorGossip1",
+    "source_sha1": "704253bd348eb777627b30473607c7efb71e46e1",
+    "value": "欢迎来到库拉斯特，年轻的巫师。已经很少有人愿意来到这座古老的城市了。希望你带来了自己的理智，那东西在这里可是稀缺货。\n\n我叫赫拉铁力，是一名精通金属工艺的巫师。我很高兴能为你服务……最近一段时间的顾客可不怎么多。\n\n虽然我自己的魔法只能用来制作附魔武器，但我相信你的魔法可以一举终结这可怕的邪恶力量。愿斯卡辛密教的众灵注视着、庇佑着你。\n\n你也许看得出来，墨菲斯托的力量残害了这里的很多人。运河中流淌着鲜血，恶魔在大地上横行。\n\n丛林中的地狱之力占据了库拉斯特的大部分地方。唯一安全的只有这个小小的港口，一道魔法屏障将丛林中的邪恶挡在了外面……但我并不知道能坚持多久。\n\n情况更糟糕的是，萨卡兰姆之子也跟墨菲斯托沆瀣一气。萨卡兰姆将他们的兵力集中到了神殿之城——崔凡克，就在库拉斯特蛮荒丛林的最深处。\n\n是的……他们的狂热无与伦比。但我必须说这些所谓的“圣光战士”不过是幕手黑手手中的扭曲傀儡而已。"
+  },
+  {
+    "file": "vo.json",
+    "key": "MalahGossip11",
+    "source_sha1": "c19ba33e35f2fbc92baaacebf79023e4c9bc5f38",
+    "value": "我祈祷着原野上覆盖的皑皑白雪，不再沾染族人的鲜血。也许那一天很快就会到来……也许永远不会了……\n\n噢……我的思绪又飘远了。我能帮上你什么忙吗？"
+  },
+  {
+    "file": "vo.json",
+    "key": "TyraelActIntroGossip1",
+    "source_sha1": "86ad89e558ffe9ef48e8ca7d93bb7a2834dd5370",
+    "value": "很高兴再次见到你，英雄。\n\n墨菲斯托的失败对于圣光而言是一个重大的胜利。我知道你终究会来到这里。混沌要塞是天堂的力量在烈焰地狱大门面前最后的堡垒。\n\n这个地方因为成千上万的圣光勇士的鲜血而变得神圣，他们很多都是凡人，就像你一样。如今对抗魔神的最终之战临近了……而你必须独自去面对。\n\n我被禁止直接向你提供援助，除了给你一点智慧。因为这是凡人取得胜利的时刻……属于你的时刻。\n\n愿圣光保佑你，愿天堂的光辉照耀你的道路……"
+  },
+  {
+    "file": "vo.json",
+    "key": "bar_act2_complete_summoner",
+    "source_sha1": "90b81a760a364a9d8389fb0072fa06d040aa7143",
+    "value": "哪怕沾上一丁点邪恶巫师的鲜血也让我无法忍受。"
+  },
+  {
+    "file": "vo.json",
+    "key": "countesstaunt1",
+    "source_sha1": "f29ad96a86913bae976f769f52e28ed94e498b6a",
+    "value": "来洗鲜血浴吗？"
+  },
+  {
+    "file": "vo.json",
+    "key": "countesstaunt2",
+    "source_sha1": "17451eb4bb7843c9b0a0a629cded5e32af672570",
+    "value": "你的鲜血会沸腾。"
+  }
+]

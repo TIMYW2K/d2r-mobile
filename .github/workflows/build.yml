@@ -43,9 +43,11 @@ jobs:
         run: |
           export PKG_CONFIG_PATH="$(brew --prefix ffmpeg)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           make -C dm/host/tests movie-real PY=python3 B=/tmp/dm-movie-sanitized MOVIE_TEST_FLAGS='-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer'
+      - name: Verify iOS 2.2.4 integration
+        run: make -C dm/host/tests ios224-regression PY=python3
   build:
     needs: movie-regression
-    uses: jiayx/d2r-mobile-build/.github/workflows/pack.yml@main
+    uses: ./.github/workflows/pack-ios26.yml
     with:
       prepared_input: ${{ inputs.prepared_input }}
       source_repository: ${{ inputs.source_repository }}

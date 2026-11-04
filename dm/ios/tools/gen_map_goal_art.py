@@ -15,7 +15,7 @@ Everything is taken from the original game's resources; no shape is drawn that t
   - Names = original strings (zhCN from data/local/lng/strings/*.json; for the English version label_<index>_en.png takes enUS); legacy translated names (the names the game shows when "Item notes and legacy translated names" is on in the Custom page) come from annot/oldnames.tsv
 Outputs (generated at build time, not kept in the repository): Gen/assets/NativeHUD/mapgoal/{sym_0..6.png, cross.png, label_<index>.png, label_<index>_old.png where the legacy name differs, mapgoal.json}.
 Usage: python3 dm/ios/tools/gen_map_goal_art.py <original RomFS (Update)>   (package reading and texture decoding go through romfs_art.py)"""
-import csv, json, os, struct, sys
+import csv, hashlib, json, os, struct, sys
 from PIL import Image, ImageDraw, ImageFont
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -65,8 +65,19 @@ def sprite_png(path):
     code, fw, w, h, frames = struct.unpack_from('<HHII4xH', b, 4); assert code == 0x3d, (path, code)
     return romfs_art.dxt5(b, w, h), fw, frames, w // frames
 
+def reviewed_edits():
+    with open(os.path.join(HERE, 'cn_user_edits.json'), encoding='utf-8') as f:
+        return {(e['file'].removesuffix('.json'), e['key']): e for e in json.load(f)}
+
 def strings(name):
-    return {r['Key']: r for r in json.loads(romfs_art.read(ROMFS, 'local/lng/strings/%s.json' % name).decode('utf-8-sig'))}
+    rows = {r['Key']: r for r in json.loads(romfs_art.read(ROMFS, 'local/lng/strings/%s.json' % name).decode('utf-8-sig'))}
+    for (f, key), edit in reviewed_edits().items():
+        if f != name: continue
+        row = rows.get(key)
+        if row is None or hashlib.sha1(row['zhCN'].encode('utf-8')).hexdigest() != edit['source_sha1']:
+            raise SystemExit('mapgoal: reviewed text source mismatch: %s / %s' % (name, key))
+        row['zhCN'] = edit['value']
+    return rows
 
 def label(text, col, font):
     d0 = ImageDraw.Draw(Image.new('RGBA', (1, 1))); w = int(d0.textlength(text, font=font)) + 2 * PAD_X; h = TEXT_PX + 2 * PAD_Y
@@ -104,15 +115,32 @@ def main():
     font = ImageFont.truetype(romfs_art.font(ROMFS, 'BlizzardGlobal-V5_81.ttf'), TEXT_PX)
     oldp = os.path.join(HERE, 'annot', 'oldnames.tsv')   # 旧译名对照表可以没有（公开仓库不带）：没有就都用现行名 | the old-name table may be absent (the public repository does not carry it): without it the current names are used throughout
     old = {(r[0], r[1]): r[3] for r in csv.reader(open(oldp, encoding='utf-8'), delimiter='\t') if len(r) >= 4} if os.path.isfile(oldp) else {}
+    old.update({k: e["value"] for k, e in reviewed_edits().items()})
     cache, man = {}, []
     for i, (f, key, col) in enumerate(LABELS):
         if f not in cache: cache[f] = strings(f)
         zh = cache[f][key]['zhCN']; zo = old.get((f, key), zh)
         label(zh, col, font).save(os.path.join(OUT, 'label_%d.png' % i))
-        if zo != zh: label(zo, col, font).save(os.path.join(OUT, 'label_%d_old.png' % i))   # 旧译名不同才出（前端没有 _old 就用 label_<序号>） | Only emitted when the old translated name differs (without _old the front end uses label_<index>)
+        label(zo, col, font).save(os.path.join(OUT, 'label_%d_old.png' % i))   # Always overwrite the legacy variant so cached artwork cannot retain an obsolete translation.
         en = cache[f][key]['enUS']; label(en, col, font).save(os.path.join(OUT, 'label_%d_en.png' % i))   # 英文版：原版 enUS 名字，游戏语言不是简中时前端用它 | English version: the original enUS name, used by the front end when the game language is not Simplified Chinese
         man.append({'id': i, 'file': f, 'key': key, 'zhCN': zh, 'old': zo, 'enUS': en, 'color': list(col)})
-    json.dump({'text_px': TEXT_PX, 'symbol_frames': 7, 'labels': man}, open(os.path.join(OUT, 'mapgoal.json'), 'w'), ensure_ascii=False, indent=1)
-    print('mapgoal：符号 7 帧、十字 1、朝向指针 1、名牌 %d（旧译名不同的 %d）→ %s' % (len(man), sum(m['old'] != m['zhCN'] for m in man), OUT))
+    # 出入口与传送点的名牌（宿主 dm_world.c 小地图出口名称）：出入口写它通向的区域名（levels.txt 的 LevelName → 原版字符串表 levels），
+    # 文件名 lvl_<区域号>.png；传送点写原版物件名（objects「Waypoint」）lvl_wp.png。各语言、旧译名的后缀同上面的名牌，物件白字
+    # Nameplates for entrances and waypoints (host dm_world.c minimap exit names): an entrance shows the name of the area it leads to (LevelName in levels.txt ->
+    # the original string table levels), file lvl_<level id>.png; a waypoint shows the original object name (objects "Waypoint") lvl_wp.png. Language and
+    # old-name suffixes as for the labels above, white object text
+    from annot_strings import excel
+    lvs = [('lvl_%s' % r['Id'], 'levels', r['LevelName']) for r in excel(ROMFS, 'levels.txt') if r.get('Id', '').isdigit() and r.get('LevelName')]
+    nl = 0
+    for name, f, key in lvs + [('lvl_wp', 'objects', 'Waypoint')]:
+        if f not in cache: cache[f] = strings(f)
+        row = cache[f].get(key)
+        if not row: continue
+        zh = row['zhCN']; zo = old.get((f, key), zh); nl += 1
+        label(zh, OBJ, font).save(os.path.join(OUT, name + '.png'))
+        label(zo, OBJ, font).save(os.path.join(OUT, name + '_old.png'))
+        for suf, col in (('en', 'enUS'),): label(row[col], OBJ, font).save(os.path.join(OUT, '%s_%s.png' % (name, suf)))
+    json.dump({'text_px': TEXT_PX, 'symbol_frames': 7, 'labels': man, 'exit_labels': nl}, open(os.path.join(OUT, 'mapgoal.json'), 'w'), ensure_ascii=False, indent=1)
+    print('mapgoal：符号 7 帧、十字 1、朝向指针 1、名牌 %d（旧译名不同的 %d）、出入口 / 传送点名牌 %d → %s' % (len(man), sum(m['old'] != m['zhCN'] for m in man), nl, OUT))
 
 if __name__ == '__main__': ROMFS = sys.argv[1]; main()

@@ -27,3 +27,6 @@ void dm_custom_on_uimsg(const char *cat, const char *act, const char *arg);   //
 void dm_custom_ui_pump(unsigned long long root);                               // 游戏主线程每帧：选项页开着时读各行勾选框（控件名 TouchCustom_<键>） | Game main thread, every frame: while the options page is open, read the checkbox of each row (widget name TouchCustom_<key>)
 
 void dm_custom_prepare_ui_message(unsigned long long root,const char *cat,const char *act);
+
+// allow_portrait: permit in-run portrait rotation (default 1); Apply persists, Discard does not.
+// bright: original / moderate / brightened = 0 / 1 / 2 (default 2).

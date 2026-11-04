@@ -389,4 +389,12 @@ static const struct { const char *k, *zh, *en; } k_dm_i18n[] = {
     { "dmCustomCamOtsHint", "右半屏上下拖动调整视角", "Drag up or down on the right half to tilt" },
     { "dmCustomCamFp", "第一人称（实验）", "First person (experimental)" },
     { "dmCustomCamFpHint", "右半屏拖动转身和抬头", "Drag on the right half to turn and look" },
+    { "dmCustomBright", "暗处加亮", "Brighten dark places" },
+    { "dmCustomBrightOff", "原版亮度", "Original brightness" },
+    { "dmCustomBrightOffHint", "地下城与夜里和原版一样暗", "Dungeons and nights as dark as the original" },
+    { "dmCustomBrightMid", "暗处适度加亮", "Brighten dark places a little" },
+    { "dmCustomBrightMidHint", "地下城与夜里最多亮 2 倍", "Dungeons and nights up to 2x brighter" },
+    { "dmCustomBrightFull", "暗处加亮（缺省）", "Brighten dark places (default)" },
+    { "dmCustomBrightFullHint", "地下城与夜里最多亮 4 倍", "Dungeons and nights up to 4x brighter" },
+    { "dmCustomAllowPortrait", "允许竖屏（局内转屏）", "Allow portrait in game" },
 };

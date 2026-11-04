@@ -389,3 +389,11 @@ dmCustomCamOts	越肩视角（实验）	Over-the-shoulder (experimental)	镜头�
 dmCustomCamOtsHint	右半屏上下拖动调整视角	Drag up or down on the right half to tilt	越肩下面的说明小字
 dmCustomCamFp	第一人称（实验）	First person (experimental)	镜头单选第三项（cam=2）
 dmCustomCamFpHint	右半屏拖动转身和抬头	Drag on the right half to turn and look	第一人称下面的说明小字
+dmCustomBright	暗处加亮	Brighten dark places	自定义页暗处加亮单选的标题（dm_custom.c 键 bright，#149）
+dmCustomBrightOff	原版亮度	Original brightness	暗处加亮第一项（bright=0）
+dmCustomBrightOffHint	地下城与夜里和原版一样暗	Dungeons and nights as dark as the original	原版亮度下面的说明小字
+dmCustomBrightMid	暗处适度加亮	Brighten dark places a little	暗处加亮第二项（bright=1）
+dmCustomBrightMidHint	地下城与夜里最多亮 2 倍	Dungeons and nights up to 2x brighter	适度加亮下面的说明小字
+dmCustomBrightFull	暗处加亮（缺省）	Brighten dark places (default)	暗处加亮第三项（缺省，bright=2）
+dmCustomBrightFullHint	地下城与夜里最多亮 4 倍	Dungeons and nights up to 4x brighter	加亮下面的说明小字
+dmCustomAllowPortrait	允许竖屏（局内转屏）	Allow portrait in game	关闭并应用后保持横屏；默认开启
