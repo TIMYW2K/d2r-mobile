@@ -294,8 +294,10 @@ $(B)/t_custom_portrait: t_custom_portrait.c ../dm_custom.c ../dm_custom.h | $(B)
 $(B)/t_ui_move: t_ui_move.c ../dm_cursor.c ../dm_cursor.h | $(B)
 	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_ui_move.c -lm
 
-$(B)/t_vault_icons: t_vault_icons.c ../dm_vault_ui.c ../dm_vault_tab.h | $(B)
-	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_vault_icons.c -lm
+# dm_vault_tab.h is generated from the player's RomFS, so CI has no copy; stub/ carries a
+# synthetic fixture that is only used when the real table is absent (see stub/dm_vault_tab.h).
+$(B)/t_vault_icons: t_vault_icons.c ../dm_vault_ui.c stub/dm_vault_tab.h | $(B)
+	clang -O2 -Wno-unused-function -Wl,-dead_strip -I.. -Istub -o $@ t_vault_icons.c -lm
 
 $(B)/t_crash_hang: t_crash_hang.c t_altstack_stub.c ../crash.c ../dm.h | $(B)
 	clang -O2 -I.. -o $@ t_crash_hang.c t_altstack_stub.c ../crash.c -lpthread

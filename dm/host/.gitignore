@@ -4,3 +4,5 @@ dm_hud_exp.h
 dm_bright_levels.inc
 *.h.tmp
 *.inc.tmp
+# test fixture: synthetic table used only when the generated one is absent
+!tests/stub/dm_vault_tab.h
