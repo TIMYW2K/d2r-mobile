@@ -6,10 +6,11 @@
 // such parameters are always declared as int/unsigned and truncated by ourselves. Variadic arguments go on the stack on Apple and in registers on Switch ⇒ variadic functions cannot use C's "..." directly.
 #pragma once
 #include "dm.h"
+#include "dm_sect.h"
 typedef struct { const char *name; void *fn; } hle_ent;
 #define HLE(mangled, ret, cname, ...)                                                             \
     static ret cname(__VA_ARGS__);                                                                \
-    __attribute__((used, section("__DATA,swhle"))) static const hle_ent hle_ent_##cname = {mangled, (void *)cname}; \
+    DM_SECT(swhle) static const hle_ent hle_ent_##cname = {mangled, (void *)cname}; \
     static ret cname(__VA_ARGS__)
 
 typedef uint32_t Result;   // nn::Result：w0，0 = 成功 | nn::Result: w0, 0 = success
@@ -39,7 +40,7 @@ void guest_clock_freeze_for(int reason, int on);   // 按原因冻结（1 后台
 typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
 #define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
     static ret cname(__VA_ARGS__);                                                                \
-    __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
+    DM_SECT(swforce) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
     static ret cname(__VA_ARGS__)
 
 // 运行模式（0 掌机 / 1 主机）：hle_oe.c 持有，hid 的手柄样式跟它走；前端可在运行中切换
@@ -76,6 +77,8 @@ uint64_t dm_audio_render_calls(void);   // 声卡回调累计次数（静音接�
 //   0x8c   秘境里存档的当前幕（人在秘境图里把 w9 换成 4 = 第五幕，写 x9；x8 恒 0） dm_rift.c      0x6fa9d0（分支门：x8≠0 跳 0x6fa9d4，否则执行原指令回 0x6fa9d4）
 //   0x8d   佣兵加装备位（佣兵 + 秘境 ≥10 层 + 腰带 / 鞋 / 手套 / 戒指 / 项链时把 w0 换成 1，写 x0；x8 恒 0） dm_rift.c      0x64a34c（分支门：x8≠0 跳 0x64a350，否则执行原指令回 0x64a350）
 //   0x8e   佣兵加装备位的客户端校验（秘境 ≥10 层 + 物品是腰带 / 鞋 / 手套 / 戒指 / 项链时把 w1 换成物品自己的类型号，写 x1；x8 恒 0） dm_rift.c      0x3beb58（分支门：x8≠0 跳 0x3beb5c，否则执行原指令回 0x3beb5c）
+//   0x8f   原版画面往 3D 镜头前方挪（转调原 0x1628978，再把镜头位置与偏移加上挪动量） dm_cam.c      0x89ccc8（bl 0x1628978 调用点；镜头每帧更新 0x89c370 里）
+//   0x90   提示条追加容量保护（最多 8 个内嵌文字控件） dm_padmode.c    0xaa9f88（bl 0xaaa1f8 调用点；满时优先撤宿主可选提示）
 // ---------- Host call number registry (a cut replaces a game-internal function entry with `svc #number; ret`, and the rewriter turns it into a host gate) ----------
 // Horizon's SVC numbers only go up to 0x7F; 0x80 onward is reserved for host calls. New ones must be registered here and numbers must not repeat; dispatch is in hle_svc.c → svc_host_call.
 //   No.    Purpose                                      File            Cut (main offset)

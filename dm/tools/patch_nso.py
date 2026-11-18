@@ -50,6 +50,9 @@ PATCH_OFF = (len(IMG) + 0xFFFF) & ~0xFFFF
 # Networking cuts (excluded scope: Battle.net / online play): taken from a community offline fix (LFS Mod Offline Fix for v2228224, which differs from the official 94012 main in only these 7 words).
 # Measured: the system service layer (nifm offline / DNS black hole / account service) cannot get around it: the game itself sends Battle.net requests directly and allows offline play according to the "last online" time.
 CUTS = {'db0507f36b84200ac05f75d76ed5026f': [
+    # 提示条固定只有 8 个 subText。所有原版/宿主新增条目在重排前过统一容量门；同键换字仍走原路径。
+    # The legend has eight inline subText widgets. Bound every append before reflow; same-key updates retain their original path.
+    (0xaa9f88, '9c000094', '011200d4', '提示条追加 bl 0xaaa1f8 → svc #0x90：总数最多 8 条，优先撤宿主可选提示给原版操作留位，防第 9 个内嵌文字控件越界（dm_padmode.c）', '仅宿主'),
     # （放进所有产物共用的基础改写）：游戏显存分配器预算 260 MB → 512 MB
     # (Placed in the base rewrite shared by all build outputs): game video memory allocator budget 260 MB → 512 MB
     (0x8524c4, '0808a2d2', '0800a4d2', '显存分配器初始化配置：mov x8,#0x10400000（260 MB）→ mov x8,#0x20000000（512 MB），随后 movk #0xa0,lsl48 与 str [sp,#0x238] 不变；'
@@ -172,7 +175,11 @@ RULE_BUILD = 'db0507f36b84200ac05f75d76ed5026f'
 RULE_RUN = RULESET == 'touch-run-v4' and NAME == 'main'
 if RULE_RUN:
     import hashlib
-    assert BUILD_ID == RULE_BUILD, f'Run规则构建号不符 {BUILD_ID}'
+    # 改写规则按这一版程序的构建号登记、逐处核原字节：别的版本一条规则都对不上，做出来的包会停在联网验证。直说哪一版、要哪一版，不出这个包
+    # The rewrite rules are registered by this build's build ID and check the original bytes at every site: no rule fits any other version, and a package made from it would stop at the online check. Say which version this is and which one is needed, and do not make the package
+    if BUILD_ID != RULE_BUILD:
+        sys.exit(f'这一版游戏程序（构建号 {BUILD_ID}）D2R Mobile 还没适配：现在只支持 1.0.34.0（构建号 {RULE_BUILD}）。'
+                 f' | This game program (build ID {BUILD_ID}) is not supported by D2R Mobile yet: only 1.0.34.0 (build ID {RULE_BUILD}) is.')
     RULE_ORIG_SHA = hashlib.sha256(IMG).hexdigest()
 cuts = list(CUTS.get(BUILD_ID, []))
 # 触屏版规则域默认同时带宿主私有门；规则闸门可显式关闭，保留同一出包入口和规则域。
@@ -219,6 +226,24 @@ if RULE_RUN:
     # the controller version's tooltip expands against the icon's lower right, which on a touchscreen covers exactly the few skills around the finger. The bfxil x1,x8,#0,#32 at 0xc35fb0 is a no-op that copies the low half of x1 back into x1 (x8 = x1),
     # and is replaced with movk x1,#3000: the x coordinate is put off screen, and the tooltip entry's own clamp-back (0xb0d560, by TooltipsPanel's screenEdgePadding) snaps it to the right safe-area edge; the y coordinate is untouched
     cuts.append((0xc35fb0, struct.pack('<I', 0xB3407D01).hex(), struct.pack('<I', 0xF2800000 | 3000 << 5 | 1).hex(), '技能说明框横坐标给到屏幕外，由原回夹贴右边（不盖技能树）', '仅宿主'))
+    # 镜头缩放下限 1.0 → 0.5：手柄镜头每帧更新（约 0x89c370）从设置单例（main+0x2d129d0，取用器 0x2acecc）+0x1348 读 cameraZoomSetting，夹在 [1.0, 2.25]
+    # （0x89c444 fcmp s0,s12 比 1.0、小于就用 0x89c428 存下的 1.0）。越肩 / 第一人称镜头开着时宿主把它写小（dm_world.c w_cam_zoom），原版正交画面放大、
+    # 游戏载入与画的范围跟着变大，透视画面远处不露黑块。改成和 0.5 比（s8 在 0x89c404 已是 0.5、到这里没改过）、小于就用 0.5；缺省 1.2 不受影响
+    # Camera zoom floor 1.0 -> 0.5: the controller camera's per-frame update (about 0x89c370) reads cameraZoomSetting from the settings singleton (main+0x2d129d0,
+    # getter 0x2acecc) +0x1348 and clamps it to [1.0, 2.25] (0x89c444 fcmp s0,s12 compares with 1.0, and below it uses the 1.0 stored at 0x89c428). With the
+    # over-the-shoulder / first-person camera on, the host writes a smaller value (dm_world.c w_cam_zoom): the original orthographic picture grows and the area
+    # the game loads and draws grows with it, so the far perspective picture shows no black patches. Compare with 0.5 instead (s8 is already 0.5 from 0x89c404
+    # and unchanged up to here) and use 0.5 below it; the default 1.2 is unaffected
+    cuts.append((0x89c444, struct.pack('<I', 0x1E2C2000).hex(), struct.pack('<I', 0x1E282000).hex(), '镜头缩放下限比较：fcmp s0,s12（1.0）→ fcmp s0,s8（0.5）', '仅宿主'))
+    cuts.append((0x89c428, struct.pack('<I', 0x52A7F008).hex(), struct.pack('<I', 0x52A7E008).hex(), '镜头缩放下限值：mov w8,#0x3f800000（1.0）→ #0x3f000000（0.5）', '仅宿主'))
+    # 原版画面往 3D 镜头前方挪：同一个镜头更新里，镜头位置（x20 +0x100..+0x108 = 人物 + 偏移 x19 +0xc..+0x14）写好之后紧接着调 0x1628978 取第二个镜头
+    # （0x89ccc8），这个调用点换成 svc #0x8f：宿主原样代调，镜头开着时再把位置和偏移加上挪动量（dm_cam.c svc_cam_ahead，hle.h SVC_HOST_CAM_AHEAD）。
+    # 调用点上调用方本来就不指望临时寄存器留着，宿主的 C 代码保住 x19–x28 / d8–d15
+    # Move the original picture ahead of the 3D camera: in the same camera update, right after the camera position is written (x20 +0x100..+0x108 =
+    # character + offset x19 +0xc..+0x14), 0x1628978 is called to get the second camera (0x89ccc8); this call site becomes svc #0x8f: the host forwards the
+    # call as is and, with the camera on, adds the shift to the position and the offset (dm_cam.c svc_cam_ahead, hle.h SVC_HOST_CAM_AHEAD). At a call site
+    # the caller does not expect scratch registers to survive anyway, and the host's C code keeps x19-x28 / d8-d15
+    cuts.append((0x89ccc8, struct.pack('<I', 0x94362F2C).hex(), struct.pack('<I', 0xD40011E1).hex(), '镜头更新取第二个镜头调用点 bl 0x1628978 → svc #0x8f：宿主原样代调，镜头开着时把原版画面往 3D 镜头前方挪（hle.h SVC_HOST_CAM_AHEAD）', '仅宿主'))
 if RULE_RUN and PRIVATE_GATES:
     # 只登记精力资格/移动选择/走跑偏好；不改方向、真实幅度、合法mode与零轴分支。
     # 两个成本/选择器通用点的type0防护在下方原生小跳板，非player保原行为。
@@ -288,6 +313,39 @@ def LDRX(t, n, imm12=0): return 0xF9400000 | (imm12 << 10) | (n << 5) | t
 def LDRW(t, n, imm12=0): return 0xB9400000 | (imm12 << 10) | (n << 5) | t
 def STRX(t, n, imm12=0): return 0xF9000000 | (imm12 << 10) | (n << 5) | t
 def MRS_TPIDRRO(t): return 0xD53BD060 | t
+def MRS_TPIDR(t): return 0xD53BD040 | t
+# 线程槽基址：苹果 = tpidrro_el0（pthread TSD 数组，槽 = 基址 + 键号 × 8）；
+# 安卓（DM_TARGET=android）= bionic 的 pthread 键表：tpidr_el0 指向 TCB，TCB[-1]（TLS_SLOT_BIONIC_TLS）是 bionic_tls，
+# 键页里放「键表偏移 + 键号 × 16 + 8」（装载器实测后写入）；其余补丁代码两边逐字相同，只多一条 ldur。
+# 鸿蒙（DM_TARGET=ohos）= musl：tpidr_el0 − 272 处是 struct pthread 的 tsd 指针，槽 = tsd + 键号 × 8（真机实测，装载器复核）。
+# Thread slot base: Apple = tpidrro_el0 (the pthread TSD array, slot = base + key number × 8);
+# Android (DM_TARGET=android) = bionic's pthread key table: tpidr_el0 points to the TCB, TCB[-1] (TLS_SLOT_BIONIC_TLS) is bionic_tls,
+# the key page holds "key table offset + key number × 16 + 8" (measured and written by the loader); the rest of the patch code is word-for-word the same on both, with just one more ldur.
+# HarmonyOS (DM_TARGET=ohos) = musl: tpidr_el0 - 272 holds struct pthread's tsd pointer, slot = tsd + key number × 8 (measured on device, re-checked by the loader).
+TARGET = os.environ.get('DM_TARGET', 'apple')
+assert TARGET in ('apple', 'android', 'ohos'), f'DM_TARGET 只能是 apple / android / ohos：{TARGET}'
+OHOS_TSD_OFF = 272
+def emit_tp(t):
+    if TARGET == 'android': emit(MRS_TPIDR(t)); emit(LDUR(t, t, -8))
+    elif TARGET == 'ohos': emit(MRS_TPIDR(t)); emit(SUBI(t, t, OHOS_TSD_OFF)); emit(LDRX(t, t))   # −272 超出 ldur 的 ±256 | −272 is outside ldur's ±256
+    else: emit(MRS_TPIDRRO(t))
+# 安卓的改写块不把寄存器暂存在 sp 下方：Linux / 安卓的 AAPCS64 没有红区，处理函数没设 SA_ONSTACK 的信号（libcore 34、heapprofd 36、
+# ART 38 等）在线程栈上建信号帧，正好盖掉 sp-8 / sp-16。所以先下移 sp 再存（[sp, #-16]!），恢复时连 sp 一起收回（[sp], #16）；
+# 用到 sp 的原指令把偏移加上这 16 字节，写回 sp 的原指令另排栈位（见 sp_frame）。编不出来的个别站点保持旧排法，计入 below_sp。
+# 苹果目标不变（arm64 苹果 ABI 有 128 字节红区）。
+# Android rewrite blocks do not stash registers below sp: Linux / Android AAPCS64 has no red zone, and a signal whose handler lacks
+# SA_ONSTACK (libcore 34, heapprofd 36, ART 38 and others) builds its frame on the thread stack, right over sp-8 / sp-16. So sp moves
+# down first ([sp, #-16]!) and comes back with the restore ([sp], #16); an original instruction that uses sp gets those 16 bytes added
+# to its offset, and one that writes sp back gets its own stack layout (see sp_frame). The odd site that cannot be encoded keeps the
+# old layout and is counted as below_sp. The Apple target is unchanged (Apple's arm64 ABI has a 128-byte red zone).
+NOREDZONE = TARGET == 'android'   # 鸿蒙（ohos）暂沿用旧排法：现有鸿蒙改写产物都按它生成并实测过；musl 同样没有红区，改用新排法需重出产物再实测 | HarmonyOS (ohos) keeps the old layout for now: every HarmonyOS module so far was generated and tested with it; musl has no red zone either, so switching needs regenerated modules and a new device test
+def STR_PRE(t, n, off): return 0xF8000C00 | ((off & 0x1FF) << 12) | (n << 5) | t
+def LDR_POST(t, n, off): return 0xF8400400 | ((off & 0x1FF) << 12) | (n << 5) | t
+def stash(S, T, nrz=None):
+    emit(STP_PRE(S, T, 31, -16) if (NOREDZONE if nrz is None else nrz) else STP(S, T, 31, -16))
+def unstash(S, T, nrz=None):
+    emit(LDP_POST(S, T, 31, 16) if (NOREDZONE if nrz is None else nrz) else LDP(S, T, 31, -16))
+def uses_sp(ins): return re.search(r'\bw?sp\b', ins.op_str) is not None
 def ADRP(dd, pc, target):
     imm = ((target & ~0xFFF) - (pc & ~0xFFF)) >> 12; assert -(1 << 20) <= imm < (1 << 20)
     return 0x90000000 | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5) | dd
@@ -341,13 +399,99 @@ def sp_delta(ins):
     assert not re.match(r'(sp|wsp),', ins.op_str), f'writes sp: {ins.address:x} {ins.op_str}'
     return 0
 
+# 安卓：sp 先下移 F 字节后，原指令（x18 已换成 S 的字 w）要照原样访问同一地址、把 sp 写回到原值，得怎么写。返回 (F, 指令字列表)，
+# 块尾 ldp xS, xT, [sp], #(F + dlt) 一并把 sp 调到原指令执行后的值；编不出来返回 None（该站点保持旧排法）。
+# 不碰 sp：F = 16，原样。用到 sp 但不写回：偏移 +16（无符号偏移 ldr/str 各位宽、非缩放 ldur/stur、成对有符号偏移 ldp/stp、
+# add xd, sp, #imm，lsl #12 的那种后面补一条 add xd, xd, #16）；原访存落在 sp 下方的会和暂存区重叠，不改。
+# 成对前 / 后变址：改成有符号偏移形，F 取到暂存区落在原访存之下。
+# Android: how the original instruction (word w, x18 already replaced with S) must be written so that, after sp has moved down F bytes,
+# it accesses the same address as before and sp is written back to the original's value. Returns (F, list of words); the block's
+# closing ldp xS, xT, [sp], #(F + dlt) also brings sp to its value after the original instruction. None when it cannot be encoded
+# (the site keeps the old layout).
+# sp not used: F = 16, unchanged. sp used without write-back: offset + 16 (unsigned-offset ldr/str of every width, unscaled ldur/stur,
+# signed-offset ldp/stp pairs, add xd, sp, #imm; the lsl #12 form gets an extra add xd, xd, #16); an original access below sp would
+# overlap the stash and is left alone. Pre- / post-index pairs: rewritten in the signed-offset form, with F large enough that the
+# stash lies below the original access.
+SPOP = r'\[sp(?:, #-?(?:0x)?[0-9a-f]+)?\](?:!|, #-?(?:0x)?[0-9a-f]+)?|sp(?:, #(?:0x)?[0-9a-f]+(?:, lsl #12)?)?$'
+def sp_frame(ins, w, dlt):
+    if not uses_sp(ins): return 16, [w]
+    F, rn = 16, (w >> 5) & 31
+    # 反汇编核对：助记符相同（mov xd, sp 变成 add），除 sp 那一项外操作数逐字相同，新偏移确实是 off。
+    # Checked by disassembly: the same mnemonic (mov xd, sp becomes add), operands identical apart from the sp one, and the new offset is off.
+    def same(nw, off):
+        d, o = dis(nw, ins.address), dis(w, ins.address)
+        if d.mnemonic != o.mnemonic and (o.mnemonic, d.mnemonic) != ('mov', 'add'): return False
+        return re.sub(SPOP, 'SP', d.op_str) == re.sub(SPOP, 'SP', o.op_str) and (f'#{off:#x}]' in d.op_str or d.op_str.endswith(f'sp, #{off:#x}'))
+    if (w >> 27) & 7 == 0b101 and not (w >> 26) & 1 and rn == 31:
+        opc, mode, L = w >> 30, (w >> 23) & 7, (w >> 22) & 1
+        if opc == 3 or (opc == 1 and not L): return None
+        sc = 8 if opc == 2 else 4
+        imm = (((w >> 15) & 0x7F) ^ 0x40) - 0x40
+        if mode == 2:
+            a = imm * sc
+            if a < 0: return None
+        elif mode in (1, 3):
+            a = dlt if mode == 3 else 0
+            while a < 16 - F: F += 16
+        else: return None
+        off = a + F
+        if off % sc or (F + dlt) % 8 or not -512 <= F + dlt <= 504: return None
+        if mode == 2 and off // sc > 63:
+            # 偏移 +16 后超出成对指令的范围（32 位对 252、64 位对 504）：拆成两条无符号偏移的单寄存器 ldr / str（ldpsw → ldrsw）。
+            # Offset + 16 is out of the pair's range (252 for 32-bit pairs, 504 for 64-bit ones): split it into two unsigned-offset
+            # single-register ldr / str (ldpsw -> ldrsw).
+            o = dis(w, ins.address); regs = o.op_str.split(', [')[0].split(', ')
+            size, opc = (3 if opc == 2 else 2), ((2 if opc == 1 else 1) if L else 0)
+            out = []
+            for k, rt in enumerate((w & 31, (w >> 10) & 31)):
+                nw = 0x39000000 | (size << 30) | (opc << 22) | (((off + k * sc) // sc) << 10) | (31 << 5) | rt
+                d = dis(nw, ins.address)
+                if not d.mnemonic.startswith(('ldr', 'str')) or d.op_str != f'{regs[k]}, [sp, #{off + k * sc:#x}]': return None
+                out.append(nw)
+            return F, out
+        if not -64 <= off // sc <= 63: return None
+        nw = (w & ~(0x7F << 15) & ~(7 << 23)) | (((off // sc) & 0x7F) << 15) | (2 << 23)
+        return (F, [nw]) if same(nw, off) else None
+    if dlt: return None
+    if (w >> 27) & 7 == 0b111 and not (w >> 26) & 1 and rn == 31:
+        size, sc = w >> 30, 1 << (w >> 30)
+        if (w >> 24) & 3 == 1:
+            if size == 3 and (w >> 22) & 3 == 2: return None
+            off = ((w >> 10) & 0xFFF) * sc + F
+            if off // sc > 0xFFF: return None
+            nw = (w & ~(0xFFF << 10)) | ((off // sc) << 10)
+            return (F, [nw]) if same(nw, off) else None
+        if (w >> 24) & 3 == 0 and not (w >> 21) & 1 and (w >> 10) & 3 == 0:
+            off = ((((w >> 12) & 0x1FF) ^ 0x100) - 0x100) + F
+            if not F <= off <= 255: return None
+            nw = (w & ~(0x1FF << 12)) | ((off & 0x1FF) << 12)
+            return (F, [nw]) if same(nw, off) else None
+        return None
+    if w & 0xFF800000 == 0x91000000 and rn == 31 and (w & 31) != 31:
+        if (w >> 22) & 1: return F, [w, ADDI(w & 31, w & 31, F)]
+        off = ((w >> 10) & 0xFFF) + F
+        if off > 0xFFF: return None
+        nw = (w & ~(0xFFF << 10)) | (off << 10)
+        return (F, [nw]) if same(nw, off) else None
+    return None
+
 def site_plain(ins):
     S, T = pick(regs_in(ins))
     dlt = sp_delta(ins)
+    fr = sp_frame(ins, subst(ins, S), dlt) if NOREDZONE else None
+    if fr:
+        F, words = fr
+        start = here()
+        emit(STP_PRE(S, T, 31, -F)); emit_tp(T); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
+        for x in words: emit(x)
+        emit(STRX(S, T))
+        emit(LDP_POST(S, T, 31, F + dlt)); emit(B(here(), ins.address + 4))
+        return start
+    if NOREDZONE: stat('below_sp')
     save = -16 if dlt == 0 else -112          # 改 sp 的指令会写到 sp 下方，暂存放到保留区深处 | Instructions that modify sp write below sp, so the scratch save is placed deep in the reserved area
     assert dlt == 0 or dlt >= -96, f'sp delta {dlt} at {ins.address:x}'
     start = here()
-    emit(STP(S, T, 31, save)); emit(MRS_TPIDRRO(T)); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
+    emit(STP(S, T, 31, save)); emit_tp(T); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
     emit(subst(ins, S))
     emit(STRX(S, T))                 # 一律写回：capstone 会漏报写入（adds w18 实例） | Always write back: capstone can miss reporting a write (the adds w18 instance)
     emit(LDP(S, T, 31, save - dlt)); emit(B(here(), ins.address + 4))
@@ -358,34 +502,35 @@ def site_cond(ins):
     S, T = pick(regs_in(ins))
     tgt = ins.operands[-1].imm
     start = here()
-    emit(STP(S, T, 31, -16)); emit(MRS_TPIDRRO(T)); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
+    stash(S, T); emit_tp(T); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
     m = ins.mnemonic
     taken = here() + 4 * 3
     off = (taken - here()) >> 2
     nw = ((w & 0xFF000000) | ((off & 0x7FFFF) << 5) | S) if m in ('cbz', 'cbnz') else ((w & 0xFFF80000) | ((off & 0x3FFF) << 5) | S)
     pc = here(); emit(nw)
     dd = dis(nw, pc); assert dd.mnemonic == m and dd.operands[-1].imm == taken
-    emit(LDP(S, T, 31, -16)); emit(B(here(), ins.address + 4))
+    unstash(S, T); emit(B(here(), ins.address + 4))
     assert here() == taken
-    emit(LDP(S, T, 31, -16)); emit(B(here(), tgt))
+    unstash(S, T); emit(B(here(), tgt))
     return start
 
 def site_pcrel(ins):
     tgt = ins.operands[1].imm
     S, T = pick(set())
     start = here()
-    emit(STP(S, T, 31, -16)); emit(MRS_TPIDRRO(T)); emit_slot_addr(T, S, 'K18')   # S 先作键页偏移暂存，下一条再装目标值 | S first serves as a temporary for the key page offset; the next instruction then loads the target value
+    stash(S, T); emit_tp(T); emit_slot_addr(T, S, 'K18')   # S 先作键页偏移暂存，下一条再装目标值 | S first serves as a temporary for the key page offset; the next instruction then loads the target value
     pc = here(); emit(ADRP(S, pc, tgt))
     if ins.mnemonic == 'adr': emit(ADDI(S, S, tgt & 0xFFF))
     emit(STRX(S, T))
-    emit(LDP(S, T, 31, -16)); emit(B(here(), ins.address + 4))
+    unstash(S, T); emit(B(here(), ins.address + 4))
     return start
 
 def site_br(ins, base, count):
     """跳转表 br x18：目标 = base + 4i。x16 暂存红区 → 等距落地垫 → 恢复 x16 → 原目标。 | Jump table br x18: target = base + 4i. Stash x16 in the red zone → equally spaced landing pads → restore x16 → original target."""
     start = here()
-    emit(STUR(16, 31, -16)); emit(STUR(17, 31, -24))   # x16 / x17 是函数内可存活的临时寄存器，借用前存红区 | x16 / x17 are temporary registers that can stay live within a function; save them to the red zone before borrowing
-    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'K18'); emit(LDRX(16, 16)); emit(LDUR(17, 31, -24))
+    if NOREDZONE: emit(STP_PRE(16, 17, 31, -16))
+    else: emit(STUR(16, 31, -16)); emit(STUR(17, 31, -24))   # x16 / x17 是函数内可存活的临时寄存器，借用前存红区 | x16 / x17 are temporary registers that can stay live within a function; save them to the red zone before borrowing
+    emit_tp(16); emit_slot_addr(16, 17, 'K18'); emit(LDRX(16, 16)); emit(LDRX(17, 31, 1) if NOREDZONE else LDUR(17, 31, -24))
     padbase = start + 4 * 24
     delta = padbase - base
     op = ADDI if delta >= 0 else SUBI; dl = abs(delta)
@@ -399,7 +544,7 @@ def site_br(ins, base, count):
     tails = padbase + 4 * count
     for i in range(count): emit(B(here(), tails + 8 * i))
     for i in range(count):
-        emit(0xF85F0000 | (31 << 5) | 16)      # ldur x16,[sp,#-16]
+        emit(LDR_POST(16, 31, 16) if NOREDZONE else 0xF85F0000 | (31 << 5) | 16)      # ldr x16,[sp],#16 | ldur x16,[sp,#-16]
         emit(B(here(), base + 4 * i))
     return start
 
@@ -408,7 +553,7 @@ def site_sysreg_read(ins, kind):
     N = ins.bytes[0] & 31
     tmp = 16 if N != 16 else 17
     start = here()
-    emit(STUR(tmp, 31, -16)); emit(MRS_TPIDRRO(N)); emit_slot_addr(N, tmp, kind); emit(LDRX(N, N)); emit(LDUR(tmp, 31, -16))   # tmp 存红区借用 | tmp is saved by borrowing the red zone
+    emit(STR_PRE(tmp, 31, -16) if NOREDZONE else STUR(tmp, 31, -16)); emit_tp(N); emit_slot_addr(N, tmp, kind); emit(LDRX(N, N)); emit(LDR_POST(tmp, 31, 16) if NOREDZONE else LDUR(tmp, 31, -16))   # tmp 存红区借用 | tmp is saved by borrowing the red zone
     emit(B(here(), ins.address + 4))
     return start
 
@@ -416,9 +561,13 @@ def site_tpidr_write(ins):
     N = struct.unpack('<I', ins.bytes)[0] & 31
     (T,) = pick({N}, 1)
     start = here()
-    emit(0xF81F0000 | (31 << 5) | T)           # stur xT,[sp,#-16]
     tmp = next(x for x in (16, 17) if x not in (N, T))
-    emit(STUR(tmp, 31, -24)); emit(MRS_TPIDRRO(T)); emit_slot_addr(T, tmp, 'KTLS'); emit(STRX(N, T)); emit(LDUR(tmp, 31, -24))
+    if NOREDZONE:
+        emit(STP_PRE(T, tmp, 31, -16)); emit_tp(T); emit_slot_addr(T, tmp, 'KTLS'); emit(STRX(N, T)); emit(LDP_POST(T, tmp, 31, 16))
+        emit(B(here(), ins.address + 4))
+        return start
+    emit(0xF81F0000 | (31 << 5) | T)           # stur xT,[sp,#-16]
+    emit(STUR(tmp, 31, -24)); emit_tp(T); emit_slot_addr(T, tmp, 'KTLS'); emit(STRX(N, T)); emit(LDUR(tmp, 31, -24))
     emit(0xF85F0000 | (31 << 5) | T)           # ldur xT,[sp,#-16]
     emit(B(here(), ins.address + 4))
     return start
@@ -432,7 +581,7 @@ def emit_gate_call():
         Fetching the slot through the key page needs a second register to be borrowed; x29 is borrowed and then immediately restored from the stack: the x29 saved by _dm_gate must be the guest's original value --
         the host identifies the caller by [x29+8] (skill binding observation gate 6, private aiming gate svc86), and the crash backtrace also walks the x29 chain
         (since r24 plan C it was borrowed and not returned, the x29 the host got was the slot offset from the key page, and skill icons fell back to placeholder text)."""
-    emit(MRS_TPIDRRO(30)); emit_slot_addr(30, 29, 'KGATE'); emit(LDRX(30, 30)); emit(LDRX(29, 31))
+    emit_tp(30); emit_slot_addr(30, 29, 'KGATE'); emit(LDRX(30, 30)); emit(LDRX(29, 31))
 
 def site_gate(ins, kind, arg):
     """svc / mrs cntpct_el0 → 宿主门。门地址取自线程槽 KGATE；门按返回点（本块 ldp 的地址）查 gates.tsv。 | svc / mrs cntpct_el0 → host gate. The gate address is taken from thread slot KGATE; the gate looks up gates.tsv by return point (the address of this block's ldp)."""
@@ -485,9 +634,13 @@ def site_window(seg):
     used = set()
     for x in seg: used |= regs_in(x)
     S, T = pick(used)
+    # 窗口里的原指令用到 sp 的（本映像没有），保持旧排法。
+    # A window whose original instructions use sp (none in this image) keeps the old layout.
+    nrz = NOREDZONE and not any(uses_sp(x) for x in seg)
+    if NOREDZONE and not nrz: stat('below_sp')
     lo, hi = seg[0].address, seg[-1].address + 4
     start = here()
-    emit(STP(S, T, 31, -16)); emit(MRS_TPIDRRO(T)); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
+    stash(S, T, nrz); emit_tp(T); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
     copy0 = here(); n = len(seg)
     exits = copy0 + 4 * n
     ex_targets = []; words = []
@@ -516,7 +669,7 @@ def site_window(seg):
     # (one operation done twice / a lock-free list popped more than once). The game has 6 such windows (main 0x1848eb8 / 0x1848f28 / 0x1848f84, sdk 0x2ea0fc / 0x2ea4cc / 0x2ea644);
     # windows whose only branch is a cbnz back into the window are not affected. The equivalence check used to never draw the "compare equal" direction at random, so it stayed green (equiv.py now forces both directions of window branches).
     for t in [hi] + ex_targets:
-        emit(STRX(S, T)); emit(LDP(S, T, 31, -16)); emit(B(here(), t)); emit(NOP)
+        emit(STRX(S, T)); unstash(S, T, nrz); emit(B(here(), t)); emit(NOP)
     return start, lo, hi
 
 # ---- 函数边界（eh_frame_hdr）----
@@ -852,7 +1005,7 @@ for oa, wa, ob_, wb, r, key, why in params:
         assert r not in regs_in(ins), f'参数位中间用到 x{r}：{o:#x} {ins.mnemonic} {ins.op_str}'
     start = here()
     tmp = 16 if r != 16 else 17
-    emit(STUR(tmp, 31, -16)); emit(MRS_TPIDRRO(r)); emit_slot_addr(r, tmp, key); emit(LDRX(r, r)); emit(LDUR(tmp, 31, -16)); emit(B(here(), oa + 4))
+    emit(STR_PRE(tmp, 31, -16) if NOREDZONE else STUR(tmp, 31, -16)); emit_tp(r); emit_slot_addr(r, tmp, key); emit(LDRX(r, r)); emit(LDR_POST(tmp, 31, 16) if NOREDZONE else LDUR(tmp, 31, -16)); emit(B(here(), oa + 4))
     struct.pack_into('<I', IMG, oa, B(oa, start)); struct.pack_into('<I', IMG, ob_, NOP); stat('param')
 
 # 既有三块原生规则跳板均只使用后继覆盖的死临时w8，不改w0/stat返回、sp或NZCV。
@@ -913,6 +1066,7 @@ if RULE_RUN:
 elif os.path.exists(P('rules.tsv')):
     os.unlink(P('rules.tsv'))  # 重出native时清本模块旧规则登记，不让旧manifest混入原资源域 | When rebuilding native, clear this module's old rule registration so the old manifest does not leak into the original-resource domain
 with open(P('fixups.tsv'), 'w') as f:
+    f.write(f'# TARGET\t{ {"apple": 0, "android": 1, "ohos": 2}[TARGET]:#x}\n')   # 0 = 苹果，1 = 安卓，2 = 鸿蒙；装载器核对与自己相符 | 0 = Apple, 1 = Android, 2 = HarmonyOS; the loader checks it matches itself
     f.write(f'# PATCH_OFF\t{PATCH_OFF:#x}\n# KEY_PAGE_OFF\t{KEY_PAGE_OFF:#x}\n# KEY_PAGE_SIZE\t0x4000\n# TEXT_END\t{TEXT_END:#x}\n# RO_OFF\t{RO_OFF:#x}\n# DATA_OFF\t{DATA_OFF:#x}\n')
     if RULE_RUN and NAME == 'main': f.write(f'# KEY_ZOOM_SLOT\t{ZOOM_PAGE_SLOT:#x}\n')
     for k in KEY_INDEX: f.write(f'# KEY_{k}_IDX\t{KEY_INDEX[k]}\n')

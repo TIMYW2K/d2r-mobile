@@ -41,11 +41,11 @@ else:
 
 # ---- 2 ----
 PADMODE = {'host/dm_cursor.c': 9, 'host/dm_custom.c': 2, 'host/dm_kills.c': 2, 'host/dm_rift_ui.c': 4, 'host/dm_runeword.c': 3, 'host/dm_vault_ui.c': 1, 'host/dm_update.c': 2, 'host/hle_tact.c': 1}
-AUTOKEY = {'host/dm_cursor.c': 38, 'host/dm_rift_ui.c': 8, 'host/hle_hid.c': 2, 'ios/Sources/front_ios.m': 4}
+AUTOKEY = {'host/dm_cursor.c': 39, 'host/dm_rift_ui.c': 8, 'host/hle_hid.c': 2, 'ios/Sources/front_ios.m': 4}
 def count(pat, skip_defs):
     out = {}
     for f in sorted(glob.glob(os.path.join(root, 'host', '*.c')) + glob.glob(os.path.join(root, 'ios', 'Sources', '*.m')) + glob.glob(os.path.join(root, 'ios', 'Sources', '*.c'))):
-        rel = os.path.relpath(f, root); s = strip_comments(open(f, encoding='utf-8').read()); n = 0
+        rel = os.path.relpath(f, root).replace(os.sep, "/"); s = strip_comments(open(f, encoding='utf-8').read()); n = 0
         for mm in re.finditer(pat, s):
             ls = s.rfind('\n', 0, mm.start()) + 1; head = s[ls:mm.start()]
             if skip_defs and re.search(r'(^|\s)(static\s+)?(void|int|uint64_t)\s+$', head): continue   # 函数定义 / 声明本身不算调用 | A function definition / declaration itself does not count as a call

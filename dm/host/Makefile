@@ -61,12 +61,14 @@ SRC=\
 	dm_loot_present.c \
 	dm_loot_probe.c \
 	dm_lootfilter.c \
+	dm_movie_decode.c \
 	dm_namegen.c \
 	dm_padmode.c \
 	dm_pages.c \
 	dm_potpick.c \
 	dm_pouch.c \
 	dm_cloudmerge.c \
+	dm_respec.c \
 	dm_rift.c \
 	dm_rift_ui.c \
 	dm_runeword.c \
@@ -87,6 +89,7 @@ SRC=\
 	touch_mac.c \
 	../ios/Sources/cloud_ios.m \
 	../ios/Sources/dm_gamepad.m \
+	../ios/Sources/dm_rift_hud.m \
 	../ios/Sources/dm_touch_controls.c \
 	$(sort $(wildcard hle_*.c))
 # NVN 空设备 + nn::vi（dm/gfx/）
@@ -101,7 +104,7 @@ LIBDEFLATE=../third_party/libdeflate/lib/deflate_decompress.c ../third_party/lib
 .DEFAULT_GOAL := dmhost   # 下面先写了表头生成规则，缺省目标要明说（否则 make 只生成表头、不编宿主） | The header generation rules are written first below, so the default goal must be stated explicitly (otherwise make only generates the headers and does not build the host)
 print-macos-min:
 	@echo $(MACOS_MIN)
-# 老接口版（图形后端不用 Metal 4，见 gfx/nvn/nvn_mtl.m 的 DM_NVN_M3）：最低系统单独一个数；包名另起，存档与日志目录跟着包名走、不与正式包共用
+# 旧接口版（图形后端不用 Metal 4，见 gfx/nvn/nvn_mtl.m 的 DM_NVN_M3）：最低系统单独一个数；包名另起，存档与日志目录跟着包名走、不与正式包共用
 # Older-API build (graphics backend without Metal 4, see DM_NVN_M3 in gfx/nvn/nvn_mtl.m): its minimum system is a separate number; the package gets its own name, and the save and log directory follows the package name instead of being shared with the regular package
 MACOS_MIN_M3 ?= 15.0
 CFLAGS_M3=$(subst -mmacosx-version-min=$(MACOS_MIN),-mmacosx-version-min=$(MACOS_MIN_M3),$(CFLAGS)) -DDM_NVN_M3=1 -DAPP_NAME='"D2R Mobile M3"'

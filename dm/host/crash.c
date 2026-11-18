@@ -4,6 +4,7 @@
 // Crash state: prints the faulting address, pc, lr (converted to module-relative offsets) and the registers; dispatches page fault hooks.
 // Only signal handling itself lives here: diagnostic features (probes / UI messages / sampling) are in diag.c, and this file does not depend on them (the graphics unit tests link only this file).
 #include "dm.h"
+#include "dm_uctx.h"
 #include <signal.h>
 #include <dlfcn.h>
 #include <sys/ucontext.h>
@@ -145,9 +146,13 @@ void crash_off(const char *tag, uint64_t a) {   // diag.c 也用 | Also used by 
 #define off crash_off
 
     module_t *m = module_of((void *)a);
-    Dl_info di;
+    Dl_info di = {0};
     if (m) fprintf(stderr, " %s%s%s+%#llx", tag, *tag ? "=" : "", m->name, a - (uint64_t)m->base);
     else if (dladdr((void *)a, &di) && di.dli_sname) fprintf(stderr, " %s%s%s+%#lx", tag, *tag ? "=" : "", di.dli_sname, (unsigned long)(a - (uint64_t)di.dli_saddr));
+    // 没有符号的库（例如高通驱动的 libllvm-qgl.so）：打库名 + 库内偏移，不同手机之间能直接比（#153、#166）
+    // A library without symbols (Qualcomm's libllvm-qgl.so for one): print the library name and the offset in it, comparable
+    // across phones (#153, #166)
+    else if (di.dli_fname && di.dli_fbase) { const char *n = strrchr(di.dli_fname, '/'); fprintf(stderr, " %s%s%s+%#llx", tag, *tag ? "=" : "", n ? n + 1 : di.dli_fname, (unsigned long long)(a - (uint64_t)di.dli_fbase)); }
     else fprintf(stderr, " %s%s%#llx", tag, *tag ? "=" : "", a);
 }
 // 帧指针回溯：x29 链 [fp]=上一帧 fp、[fp+8]=返回地址；只走 8 字节对齐、单调上升的帧
@@ -212,7 +217,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     ucontext_t *uc = uc_;
     if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;
     if (sig == SIGSEGV || sig == SIGBUS) {
-        int is_write = (int)((uc->uc_mcontext->__es.__esr >> 6) & 1);   // ESR 的 WnR 位 | The WnR bit of ESR
+        int is_write = (int)((UC_ESR(uc) >> 6) & 1);   // ESR 的 WnR 位 | The WnR bit of ESR
         for (int i = 0; i < g_nfault_hook; i++) if (g_fault_hook[i](si->si_addr, is_write, uc)) return;
     }
     // 第一段：信号安全（见文件开头 cw_*），一定落得进日志
@@ -242,7 +247,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     fprintf(stderr, "[dm] CRASH 符号 | symbols:");
     off("addr", (uint64_t)si->si_addr); off("pc", uc->uc_mcontext->__ss.__pc); off("lr", uc->uc_mcontext->__ss.__lr);
     fprintf(stderr, "\n");
-    dm_backtrace(uc->uc_mcontext->__ss.__fp);
+    dm_backtrace(UC_FP(uc));
     if (g_dump_hook) g_dump_hook();
     _exit(128 + sig);
 }

@@ -181,7 +181,7 @@ static void update_aim(dm_tc_state *s) {
     float radius = 60 * scale_for(&s->layout);
     if (s->aim_slot == DM_TC_NONE || radius <= 0) return;
     const dm_tc_finger *f = &s->finger[s->aim_slot];
-    if (f->target != DM_TC_MAIN && hypotf(f->x-f->aim_origin_x, f->y-f->aim_origin_y) <= 10 * scale_for(&s->layout)) return;   /* 技能钮：拖动不过 10 点 = 点按，不给方向，原版自动选目标 | Skill button: a drag of no more than 10 points = tap, no direction given, the original game auto-targets */
+    if (hypotf(f->x-f->aim_origin_x, f->y-f->aim_origin_y) <= 10 * scale_for(&s->layout)) return;   /* 主钮与技能钮同一死区：拖动不过 10 点 = 不给方向，原版自动选目标；长按连射时手指的小抖动不再改射击方向（公开 issue #92） | The main button and skill buttons share one dead zone: a drag under 10 points gives no direction and the game auto-targets; small finger jitter while holding to attack no longer changes the shooting direction (public issue #92) */
     float dx = (f->x-f->aim_origin_x)/radius;
     float dy = (f->aim_origin_y-f->y)/radius;
     s->rx = (int32_t)lroundf(fmaxf(-1, fminf(1, dx))*DM_STICK_MAX);
@@ -217,6 +217,11 @@ static void update(dm_tc_state *s) {
         }
     }
     s->buttons |= s->pulse_button;
+    /* 雇佣名单上按住不动（dm_tc_tick 置了 pointer_long）：按住 X 到松手；手指一拖起滚动就放开 | Held still on the hire list (dm_tc_tick set pointer_long): hold X until release; let go as soon as the finger starts a scroll */
+    if (s->navigation_mode && s->pointer_merc && s->pointer_slot >= 0 && s->pointer_slot < DM_TC_MAX_TOUCH) {
+        const dm_tc_finger *pf = &s->finger[s->pointer_slot];
+        if (pf->active && pf->pointer_long && !pf->ui_drag) s->buttons |= DM_BTN_X;
+    }
     /* 第二套技能：ZL 是原版的换组修饰键。只在用技能的那一刻带上——手指按着主钮 / 技能钮、或技能脉冲在发（含等着发）时；
        其余时候不按：一直按着会让十字（+）、腰带、回城都变成「ZL + 键」的组合（Ⅱ 态下十字开不了面板）。
        ZL 先下、主钮的键晚 DM_TC_ZL_LEAD_S 再下（同一帧按下游戏只认主键 = 放成第一组的技能）。
@@ -317,6 +322,8 @@ void dm_tc_pointer_item(dm_tc_state *s, int kind) {
     s->pointer_slow_button = kind == 12;   /* 12 仍按普通按钮处理，只放宽松手时限 | Kind 12 remains an ordinary button, with only its release deadline relaxed */
     if (kind == 7) { s->pointer_shop = 1; kind = 1; }
     s->pointer_lock = kind == 10; if (kind == 10) kind = 1;
+    /* 12 = 雇佣名单的一行：点按照面板内其它控件，只有按住不同（见 dm_tc_tick） | 12 = a row of the hire list: a tap follows other widgets inside the panel, only holding differs (see dm_tc_tick) */
+    s->pointer_merc = kind == 12; if (kind == 12) kind = 0;
     s->pointer_stack = kind == 8; if (kind == 8) kind = 1;   /* 8 = 高级仓库的成叠格：照物品区，只有双击不同 | 8 = stacked cell of the advanced stash: follows the item area, only double tap differs */   /* 7 = 商人货架上的货：别的都照物品区，只有起拖不同 | 7 = goods on the vendor shelf: everything else follows the item area, only drag start differs */
     s->pointer_item = (kind >= 1 && kind <= 3) || kind == 6 || kind == 11 ? kind : 0;   /* 11 = 这一下不点（底下是被盖住的按钮），但可以起滚动手势（设置页列表里的文字 / 空处） | 11 = this tap does not click (a covered button is underneath), but it may start a scroll gesture (text / empty space in the settings page list) */
     if (s->mouse_click_mode && s->pointer_slot >= 0 && s->pointer_slot < DM_TC_MAX_TOUCH && s->finger[s->pointer_slot].active && !s->finger[s->pointer_slot].pointer_dragged) {
@@ -745,6 +752,15 @@ void dm_tc_tick(dm_tc_state *s, double now_s) {
     if (s->pointer_slot < 0 || s->pointer_slot >= DM_TC_MAX_TOUCH) return;
     dm_tc_finger *f = &s->finger[s->pointer_slot];
     if (!f->active || f->pointer_dragged || f->pointer_long) return;
+    /* 雇佣名单的一行（#216）：原版只认手柄「按住 X 显示佣兵技能」，触屏点或按技能图标都不出说明。按住不动满长按时长 = 按住 X（见 update），
+       pointer_long 让松手不算点按（不选中、不雇）；焦点由宿主在按住 0.4 秒时用方向键挪到这一行（dm_cursor.c ui_hire_focus_pump），X 显示的就是这一行的技能
+       A row of the hire list (#216): the original game only knows the controller's "Hold X to Show Mercenary Skills", and a touch tap or hold on a skill icon shows nothing. Holding still for the long-press time = hold X (see update);
+       pointer_long keeps the release from counting as a tap (no select, no hire); the host moves the focus to this row with the D-pad once it has been held 0.4 s (dm_cursor.c ui_hire_focus_pump), so X shows this row's skills */
+    if (s->pointer_merc) {
+        if (!f->ui_drag && now_s - f->start_time_s >= DM_TC_POINTER_HOLD_S &&
+            hypotf(f->x-f->aim_origin_x, f->y-f->aim_origin_y) <= DM_TC_POINTER_MOVE_PT * scale_for(&s->layout)) { f->pointer_long = 1; update(s); }
+        return;
+    }
     if (s->mouse_click_mode && s->pointer_item != 1) return;
     if (now_s - f->start_time_s >= DM_TC_POINTER_HOLD_S &&
         hypotf(f->x-f->aim_origin_x, f->y-f->aim_origin_y) <= DM_TC_POINTER_MOVE_PT * scale_for(&s->layout)) {

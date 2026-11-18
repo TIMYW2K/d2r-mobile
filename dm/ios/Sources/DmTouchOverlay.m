@@ -74,6 +74,7 @@ static dm_ta_glyph shown_glyph(const dm_tg_snapshot *n, uint64_t button, uint64_
     UIImage *_circle, *_socketV[6], *_socket, *_map, *_menu, *_portalCapsule, *_nativeAtlases[DM_TA_ATLASES], *_silAtlases[DM_TA_ATLASES];   // _sil：同帧位的银色剪影图集（gen_hud_v4.py） | _sil: silver silhouette atlas at the same frame positions (gen_hud_v4.py)
     NSMutableDictionary<NSString *,UIImage *> *_glyphFrames, *_buttonFrames;
     dm_ta_glyph _nativeVisualGlyphs[5];
+    CALayer *_joyBase, *_joyThumb; uint64_t _sig;
 }
 - (instancetype)initWithFrame:(CGRect)f {
     if (!(self = [super initWithFrame:f])) return nil;
@@ -160,14 +161,46 @@ static dm_ta_glyph shown_glyph(const dm_tg_snapshot *n, uint64_t button, uint64_
     }];
     [image drawInRect:rect];
 }
-- (void)drawJoystickPart:(CGRect)rect base:(BOOL)base active:(BOOL)active {
-    NSString *key=[NSString stringWithFormat:@"stick:%d:%d",base,active];
-    UIImage *image=[self controlArt:key size:rect.size draw:^(CGContextRef c){
-        if(base) dm_joystick_base_draw(c,(CGRect){CGPointZero,rect.size},active);
-        else dm_joystick_thumb_draw(c,(CGRect){CGPointZero,rect.size},active);
+- (UIImage *)joystickArt:(CGSize)size base:(BOOL)base active:(BOOL)active {
+    return [self controlArt:[NSString stringWithFormat:@"stick:%d:%d",base,active] size:size draw:^(CGContextRef c){
+        if(base) dm_joystick_base_draw(c,(CGRect){CGPointZero,size},active);
+        else dm_joystick_thumb_draw(c,(CGRect){CGPointZero,size},active);
     }];
-    [image drawInRect:rect];
 }
+// 摇杆在自己的两个图层上：手指移动只挪图层，不再整屏 CG 重画（Time Profiler：主线程 CPU 贴图占大头）。死亡 / 面板开着（摇杆起不来）不显示
+// The joystick lives on its own two layers: a finger move only moves them instead of a full-screen CG redraw (Time Profiler: CPU image blits dominated the main thread). Hidden on death / with a panel open (the stick cannot start)
+- (void)syncJoystick {
+    const dm_tc_state *s=self.controls; if(!s) return; const dm_tc_layout *l=&s->layout; CGFloat k=l->joy_radius/60;
+    if(!_joyBase) { _joyBase=[CALayer layer]; _joyThumb=[CALayer layer]; [self.layer addSublayer:_joyBase]; [self.layer addSublayer:_joyThumb]; }
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    BOOL show=k>0 && !(self.hud.valid && self.hud.dead) && !s->navigation_mode; _joyBase.hidden=_joyThumb.hidden=!show;
+    if(show) { BOOL moving=s->joy_slot>=0; CGFloat r=l->joy_radius;
+        CGPoint o=moving?CGPointMake(s->joy_origin_x,s->joy_origin_y):CGPointMake(l->joy_x,l->joy_y);
+        CGRect base=CGRectMake(o.x-r,o.y-r,r*2,r*2), thumb=CGRectMake(o.x+s->lx/32767.0*r-23*k,o.y-s->ly/32767.0*r-23*k,46*k,46*k);
+        _joyBase.contents=(id)[self joystickArt:base.size base:YES active:moving].CGImage; _joyBase.frame=base;
+        _joyThumb.contents=(id)[self joystickArt:thumb.size base:NO active:moving].CGImage; _joyThumb.frame=thumb; }
+    [CATransaction commit];
+}
+// drawRect 读到的控件状态：按住哪些钮、取消地图、难度条、技能组、导航、可见目标。变了才整屏重画
+// The control state drawRect reads: held buttons, map cancel, difficulty strip, skill set, navigation, visible targets. Redraw the full screen only when it changes
+static uint64_t visual_sig(const dm_tc_state *s) {
+    uint64_t g=0; for(int i=0;i<DM_TC_COUNT;i++) g|=(uint64_t)button_held(s,i)<<i;
+    return g | (uint64_t)button_held(s,DM_TC_SWAP)<<20 | (uint64_t)(s->map_cancel_active!=0)<<21 | (uint64_t)(s->diff_open!=0)<<22 | (uint64_t)(s->skill_set!=0)<<23
+        | (uint64_t)(s->navigation_mode!=0)<<24 | (uint64_t)((s->buttons&DM_BTN_PLUS)!=0)<<25 | (uint64_t)s->enabled_targets<<32;
+}
+- (void)controlsChanged { if(!self.controls) return; [self syncJoystick]; if(visual_sig(self.controls)!=_sig) [self setNeedsDisplay]; }
+// 底栏数字（生命 / 法力 / 经验 / 腰带 / 点数）变了只重画底栏那一条（效果图像素 x 700–2070、y ≥ 1090，见 ui.json）；在局 / 死亡 / 人数档变了整屏
+// Bottom bar numbers (life / mana / exp / belt / points) changing redraws only the bar band (mockup pixels x 700–2070, y >= 1090, see ui.json); in-run / death / players change redraws the full screen
+- (void)setHud:(dm_hud_info)h {
+    dm_hud_info o=_hud; _hud=h;
+    if(o.valid!=h.valid || o.dead!=h.dead || o.players!=h.players) { [self setNeedsDisplay]; return; }
+    CGFloat W=self.bounds.size.width, H=self.bounds.size.height, u=H/1320.0;
+    [self setNeedsDisplayInRect:CGRectMake((700-1434)*u+W/2,1090*u,1370*u,H-1090*u)];
+}
+// 藏着（手柄模式）时不做整屏 CG 重画，重新露出来时画一次 | Hidden (controller mode): skip the full-screen CG redraw; draw once when shown again
+- (void)setNeedsDisplay { if(!self.hidden) [super setNeedsDisplay]; }
+- (void)setNeedsDisplayInRect:(CGRect)r { if(!self.hidden) [super setNeedsDisplayInRect:r]; }
+- (void)setHidden:(BOOL)h { BOOL was=self.hidden; [super setHidden:h]; if(was && !h) [super setNeedsDisplay]; }
 - (void)setNavigationMode:(BOOL)n { _navigationMode = n; [self setNeedsDisplay]; }
 // ---- 底部 UI v4：UIKit 部分（经验条、「Lv · %」、角标、难度数字与 1–8 选择条），素材与几何由 tools/gen_hud_v4.py 生成（App 内 hud_v4_ui/）----
 // 几何单位 = 2868×1320 效果图像素：点 = (像素 − 1434) × 屏高/1320 + 屏宽/2（x），像素 × 屏高/1320（y）——与原生 HUD 同样按屏高缩放、以屏幕中线居中
@@ -471,6 +504,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
     }
 
     const dm_tc_state *s = self.controls; if (!s) return;
+    [self syncJoystick]; _sig=visual_sig(s);
     const dm_tc_layout *l = &s->layout;
     CGFloat k = l->joy_radius / 60;
     if (k <= 0) return;
@@ -486,6 +520,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                                                       // 原先只在游戏态跳过：只开着 NPC 对话菜单时（导航态 3，十字可点）这一格被画成圆底 + 写死的中文「功能」，英文界面也写中文。回城（技能弧上方圆钮）照技能钮画
                                                       // Previously skipped only in the gameplay state: with only the NPC dialog menu open (navigation state 3, cross tappable) this cell was drawn as a round base plus the hardcoded Chinese "功能" (Functions), even in the English UI. Town Portal (the round button above the skill arc) is drawn like a skill button
         const dm_tc_target *t = &l->target[i]; CGRect b = CGRectMake(t->x-t->r,t->y-t->r,t->r*2,t->r*2);
+        if (!CGRectIntersectsRect(CGRectInset(b,-t->r*.5,-t->r*.5),rect)) continue;   // 只重画底栏那条时（setHud）不碰它外面的钮（外扩半径一半盖住光晕 / 角标） | when only the bar band is redrawn (setHud), skip buttons outside it (inflated by half a radius for glow / badges)
         BOOL held=button_held(s,i);
         CGFloat opacity = held ? .6 : .28;
         if(!self.navigationMode && i==DM_TC_MAP && s->map_cancel_active) {
@@ -535,7 +570,7 @@ static void v4text(NSString *str, NSDictionary *glyphs, CGFloat x, CGFloat basel
                 if(bd && u>0) v4text([NSString stringWithFormat:@"%d",ssCharges<0?0:ssCharges],bd[@"glyphs"],(t->x+t->r*.66-W/2)/u+1434,(t->y+t->r*.42-oy)/u,1,W,u,oy); }   // 角标跟着技能钮（视图点）走，字大小仍按界面带换算；横屏 oy = 0、u = 视图高/1320，逐字不变 | The badge follows the skill button (view points); glyph size still scales by the UI band. In landscape oy = 0 and u = view height/1320, unchanged
             if(bare) continue;
             NSString *ln=i==DM_TC_MAIN?@"lbl_main.png":[NSString stringWithFormat:@"lbl_f%d.png",i-DM_TC_SKILL1+1+(s->skill_set?4:0)];
-            UIImage *lbl=[UIImage imageWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:[@"hud_v4_ui" stringByAppendingPathComponent:ln]]];
+            UIImage *lbl=v4img(ln);
             if(lbl) { CGFloat lh=t->r*(i==DM_TC_MAIN?.30:.36), lw_=lbl.size.width*lh/lbl.size.height;
                 [lbl drawInRect:CGRectMake(t->x-lw_/2,t->y+t->r*.50-lh/2,lw_,lh)]; }
             continue;

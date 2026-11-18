@@ -187,6 +187,22 @@ static _Atomic uint64_t g_exact_xy = UINT64_MAX;   // 最近一次命中落在�
 static _Atomic int g_sn_new;   // 新一次按下（dm_ui_item_query 置）：上一次的吸附 / 停靠作废。只按「请求点没变」续用会跨触摸残留——同一落点再按，光标还在停靠点，长按判成空格去整理背包 | A new press (set by dm_ui_item_query): the previous snap / parking is invalidated. Reusing it only on 'the request point has not changed' would leave residue across touches -- pressing the same landing point again, the cursor is still at the parking point, and the long-press is classified as an empty cell and sorts the inventory
 static int sn_on; static _Atomic uint64_t g_snap;   // 就近吸附中；g_snap = 吸附记录（请求点 x | y<<16 | 落点 x<<32 | y<<48），长按据此分「贴着物品边」与「落在空格中间」 | Nearest snap in effect; g_snap = snap record (request point x | y<<16 | landing point x<<32 | y<<48); long-press uses it to tell 'next to an item's edge' from 'in the middle of an empty cell'
 static _Atomic int g_free_pub;
+// 真鼠标悬停复用原版焦点重算；不能套触屏的「胖手指」吸附，否则空格旁也会冒出邻格说明。
+// Real mouse hover reuses the game's focus refresh, bypassing touch's fat-finger snap so empty cells do not show a neighbor's tooltip.
+int dm_ui_mouse_hover_now(float nx, float ny) {
+    module_t *m = main_module();
+    uint64_t waiting = atomic_load(&g_a_wait);
+    if (!m || dm_hud_held() || dm_cursor_pending() || (waiting && now_ns() - waiting < 300000000ull) || !free_cursor_page(m)) return 0;
+    int w = *(int32_t *)(m->base + 0x211da38), h = *(int32_t *)(m->base + 0x211da3c);
+    if (w <= 0 || h <= 0) return 0;
+    int x, y;
+    if (!(nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1)) { x = w * 2 / 100; y = h / 2; }
+    else { x = (int)(nx * w); y = (int)(ny * h); if (x >= w) x = w - 1; if (y >= h) y = h - 1; }
+    { int dm_vault_ui_blocks(int, int); if ((dm_ui_panel_state() & DM_PS_VAULT) && dm_vault_ui_blocks(x, y)) return 0; }
+    int ok = dm_ui_hover_now(x, y);
+    if (getenv("DM_TEST_HOVER_LOG")) { dm_cursor_item_info ci = {0}; int found = dm_cursor_item(&ci); LOG("鼠标悬停刷新：(%d,%d) → %d 物品 %s id %u", x, y, ok, found ? ci.code : "-", ci.id); }
+    return ok;
+}
 int dm_ui_free_cursor(void) { return atomic_load(&g_free_pub); }   // 当前页有没有自由光标（物品栏 / 技能树 / 属性页这类） | Whether the current page has a free cursor (pages such as inventory / skill tree / attributes)
 void dm_cursor_apply(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     cursor_apply(buttons, lx, ly);
@@ -513,10 +529,14 @@ int dm_fe_bliss(void) { return atomic_load(&g_fe_bliss); }
 // 删除角色弹窗：原版要「长按『是』」，长按按手柄 A 的按住时长算（鼠标按住 4 秒只在抬起时出一次 Confirm、不删）。手指按在「是」上期间按住 A，松手放开
 // Delete-character popup: the original game requires 'long-press 「是」(Yes)', and the long-press is measured by how long controller A is held (holding the mouse for 4 seconds only produces one Confirm on release and does not delete). Hold A while the finger is pressed on 「是」(Yes), and release it when the finger lifts
 static _Atomic int g_fe_del_open, g_del_q, g_del_hold;   // 模式页 / 确认框开着；模式页上点了牌子以外 → 返回 | Mode page / confirmation box open; on the mode page a tap landed outside the plaques -> back
+// 雇佣名单按住那一行：按下时记下行号与时刻，到点（ui_hire_focus_pump）再挪焦点；这期间成了点按或滚动就作废（见 hire_row）
+// The hire-list row being held: the row index and time are recorded at the press, and the focus is moved when due (ui_hire_focus_pump); voided if it turns into a tap or a scroll in the meantime (see hire_row)
+static _Atomic uint64_t g_hire_arm, g_hire_arm_ns;
 int dm_restart_busy(void);   // 一键重开进行中（定义在下面）：界面触点一律丢掉 | One-key restart in progress (defined below): all UI touch points are dropped
 void dm_ui_touch(int phase, float nx, float ny) { if (phase != 3 && dm_restart_busy()) return;   // phase：0 按下 1 移动 2 抬起 3 作废（按下后改成了滚动：这次不点）；nx / ny = 出图画面归一化坐标 [0,1] | phase: 0 down, 1 move, 2 up, 3 cancelled (turned into a scroll after the press: no click this time); nx / ny = coordinates normalized to the rendered picture [0,1]
     if (phase == 3) { atomic_store(&g_ut_phase, 0); atomic_store(&g_del_q, 0); atomic_store(&g_del_hold, 0); return; }
     if (phase != 1) DM_LAT("ui_touch %d", phase);
+    if (phase == 0) atomic_store(&g_hire_arm, 0);
     nx = nx < 0 ? 0 : nx > 1 ? 1 : nx; ny = ny < 0 ? 0 : ny > 1 ? 1 : ny;
     atomic_store(&g_ut_xy, ((uint64_t)(uint32_t)(nx * 65535 + .5f) << 16) | (uint32_t)(ny * 65535 + .5f));
     // 「选择游戏模式」页只有标准 / 专家两块牌子（布局 y 899–1259 / 2160，覆盖层已挪走天梯行与键位提示）：点牌子那一行以外 = 返回职业选择
@@ -695,9 +715,13 @@ static int bd_skill_walk(uint64_t w, uint64_t xy, int dep) {
     return 0;
 }
 // 属性页的四个「+」（CharacterStatsPanel > LevelUpInfo > Strength / Dex / Vitality / EnergyPointButton）：点一下游戏当场加 1 点、不可撤销。
-// 「先选中、再确认」：技能图标与这四个「+」的点按只移光标（选中、出说明），加点由手机层的确认按钮触发。第 62 位 = 命中的是属性「+」。
+// 「先选中、再确认」：技能图标与这四个「+」点一下只移光标（选中、出说明），再点同一个才加点（属性当场加 1，技能稍后由 dm_skill_add_selected 加）；
+// 按住「+」不放 = 连续加点。前端各自接（Android touch_android.c、iOS front_ios.m）；面板态的五个圆钮缺省不出（DM_TOUCH_NAV_PAD），没有单独的确认钮。第 62 位 = 命中的是属性「+」。
 // The four "+" on the attributes page (CharacterStatsPanel > LevelUpInfo > Strength / Dex / Vitality / EnergyPointButton): one tap and the game adds 1 point on the spot, irreversibly.
-// "Select first, then confirm": taps on skill icons and these four "+" only move the cursor (select, show the tooltip), and spending the point is triggered by the phone layer's confirm button. Bit 62 = the hit is an attribute "+".
+// "Select first, then confirm": one tap on a skill icon or one of these four "+" only moves the cursor (select, show the tooltip), and tapping the same one again
+// spends the point (attributes add 1 on the spot, skills shortly after through dm_skill_add_selected); holding a "+" spends continuously. Each front end wires
+// this (Android touch_android.c, iOS front_ios.m); the five round buttons of the panel state are off by default (DM_TOUCH_NAV_PAD), so there is no separate
+// confirm button. Bit 62 = the hit is an attribute "+".
 static _Atomic uint32_t g_bd_hit_id;   // 最近一次命中的加点类按钮是哪一个（g_bd_hit_ref = 它的控件，主线程写） | Which point-allocation button was hit most recently (g_bd_hit_ref = its widget, written by the main thread)
 uint32_t dm_ui_hit_id(void) { return atomic_load(&g_bd_hit_id); }
 static int bd_stat_walk(uint64_t w, uint64_t xy, int dep) {
@@ -1142,14 +1166,22 @@ static int ui_classify(module_t *m, uint64_t root, int x, int y, char *hit, size
     // a tap goes to dm_vault_ui_tap (cells / our own widgets / the rest swallowed), a drag goes to dm_vault_ui_drag (the vault page is handled as an independent page). While a dropdown's expanded option panel is open dm_vault_ui_over answers 0 and judging proceeds as usual
     if (dm_ui_panel_state() & DM_PS_VAULT) { int dm_vault_ui_over(int, int); if (dm_vault_ui_over(x, y)) { g_inside_owner = ""; atomic_store(&g_bd_hit, 0); snprintf(hit, hn, "编年史页"); return 0; } }
     // 设置页盖在暂停菜单上，暂停菜单的按钮却还收点击（游戏的分发不看谁在上面）：点在暂停菜单按钮上、又不在设置页的可点控件上 = 被盖住，不点（同「压着被上层面板盖住的按钮」）。
+    // 编年史（暂停菜单的「编年史」打开，暂停菜单还在底下）同理：首领页的头像、各页的底板与空处都不是可点控件，点下去游戏照样交给底下的暂停菜单按钮
+    // （#216：点首领页的头像打开了设置页）。编年史自己的页签、列表行、积分牌的勾选框 / 幕 / 下拉都是可点控件，照常
+    // The Chronicle (opened by the pause menu's 「编年史」(Chronicle), with the pause menu still underneath) is the same: the Bosses page's portraits and every page's backing and empty space are not
+    // clickable widgets, and the game hands such a tap to the pause menu button underneath (#216: tapping a boss portrait opened the settings page). The Chronicle's own tabs, list rows and the
+    // kill board's checkboxes / acts / dropdown are clickable widgets and work as usual
     // 原先设置页开着时把暂停菜单整层设成不可见、关了写回——那是写原版控件，违反不写原版控件的规则，改成这里只在命中时挡
     // The settings page covers the pause menu, yet the pause menu's buttons still receive clicks (the game's dispatch does not look at who is on top): on a pause menu button and not on a clickable widget of the settings page = covered, do not click (same as "on a button covered by an upper panel").
     // Previously, while the settings page was open the whole pause menu layer was set invisible and written back on close - that is writing to the original game's widgets, violating the no-writes-to-original-widgets rule; changed to blocking here only on a hit
     { uint64_t st = ui_panel(root, "SettingsPanel"), xy = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32);
       uint64_t cp = ui_panel(root, "VideoOptionsPanel");   // 自定义页（借的视频页）与设置页并列、不是它的子控件：这一页上的勾选框也算「设置页自己可点的控件」（语言行的「中文」那格正落在暂停菜单按钮的位置上） | The Custom page (the borrowed video page) sits beside the settings page and is not its child: checkboxes on this page also count as "controls of the settings page itself that can be tapped" (the 「中文」 box of the language row lands exactly where the pause menu button is)
-      if (st && *(uint8_t *)(st + 0x50) && !click_walk(st, xy, 1, (uint64_t)m->base) && !(cp && *(uint8_t *)(cp + 0x50) && click_walk(cp, xy, 1, (uint64_t)m->base))) {   // 设置页自己可点的控件照常；点在它的底板 / 列表空处时，游戏会把这一下交给底下的暂停菜单按钮 | The settings page's own clickable widgets work as usual; when the tap is on its backing / empty list space, the game would hand this tap to the pause menu button underneath
+      uint64_t ch = ui_panel(root, "ChroniclePanel");
+      int over_set = st && *(uint8_t *)(st + 0x50) && !click_walk(st, xy, 1, (uint64_t)m->base) && !(cp && *(uint8_t *)(cp + 0x50) && click_walk(cp, xy, 1, (uint64_t)m->base));
+      int over_chr = !over_set && ch && *(uint8_t *)(ch + 0x50) && !click_walk(ch, xy, 1, (uint64_t)m->base);
+      if (over_set || over_chr) {   // 设置页自己可点的控件照常；点在它的底板 / 列表空处时，游戏会把这一下交给底下的暂停菜单按钮 | The settings page's own clickable widgets work as usual; when the tap is on its backing / empty list space, the game would hand this tap to the pause menu button underneath
           static const char *const pl[] = { "PauseLayoutGarden", "PauseLayout" };
-          for (int i = 0; i < 2; i++) { uint64_t pw = ui_panel(root, pl[i]); if (pw && *(uint8_t *)(pw + 0x50) && click_walk(pw, xy, 1, (uint64_t)m->base)) { snprintf(hit, hn, "设置页盖着的暂停菜单按钮（不点，可滚）"); return 11; }   /* 11：这一下不点下去，但从这里起手上下拖照常滚设置页的列表（自定义页各行的文字不是可点控件，玩家多半就在文字上滑） | 11: this tap is not pressed down, but a vertical drag starting here still scrolls the settings page list as usual (the text of the rows on the Custom page is not a clickable widget, and players mostly swipe right on the text) */ } } }
+          for (int i = 0; i < 2; i++) { uint64_t pw = ui_panel(root, pl[i]); if (pw && *(uint8_t *)(pw + 0x50) && click_walk(pw, xy, 1, (uint64_t)m->base)) { snprintf(hit, hn, over_set ? "设置页盖着的暂停菜单按钮（不点，可滚）" : "编年史盖着的暂停菜单按钮（不点，可滚）"); return 11; }   /* 11：这一下不点下去，但从这里起手上下拖照常滚设置页的列表（自定义页各行的文字不是可点控件，玩家多半就在文字上滑） | 11: this tap is not pressed down, but a vertical drag starting here still scrolls the settings page list as usual (the text of the rows on the Custom page is not a clickable widget, and players mostly swipe right on the text) */ } } }
     const char *mn = ""; uint64_t mp = modal_top(m, root, &mn);
     if (mp) { uint64_t xy = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32), fn = *(uint64_t *)(*(uint64_t *)mp + 0x48);
         // 「在框里」：框自己有边界且点在里面，或点中它的某个可见叶子 / 可点控件（确认框的「应用 / 放弃」按钮只有后一种认得到——
@@ -1260,6 +1292,53 @@ static int imbue_locked(module_t *m, uint64_t root) {
     dm_hud_info hi; dm_hud_get(&hi); if (!hi.valid || !hi.holding) return 0;
     return !(dm_wref_get(&g_slot) && *(uint64_t *)dm_wref_get(&g_slot) == (uint64_t)m->base + 0x20898e8);
 }
+// 雇佣名单（#216）：原版只在手柄模式下「按住 X 显示佣兵技能」，触屏点或按住技能图标都不出说明。按在名单的某一行上答 12：
+// 手势层照「面板内其它控件」处理（点按 = 鼠标点击：点一行 = 选中它，点已选中的那一行 = 雇），只有按住不动满长按时长 = 按住 X 到松手（dm_touch_controls.c），那一下松手不算点按。
+// X 显示的是焦点所在那一行的技能，所以按住时先把焦点挪到按着的那一行（见下）。只许游戏主线程调
+// Hire list (#216): the original game shows the mercenary skills only in controller mode, while X is held ("Hold X to Show Mercenary Skills"); a touch tap or hold on a skill icon shows nothing. A press on a row of the list answers 12:
+// the gesture layer handles it like "other widget inside the panel" (tap = mouse click: tapping a row selects it, tapping the selected row hires), except that holding still for the long-press time = hold X until release (dm_touch_controls.c), and that release does not count as a tap.
+// X shows the skills of the focused row, so on a hold the focus is first moved to the row being held (see below). Game main thread only
+// 焦点不跟悬停走（Redmi 实测：手指按着第 4 行、只发 MouseMove，焦点和 X 显示的技能都还是第 1 行的；点一下焦点才过去，而点已选中的那一行就是雇）。
+// 所以记下按着的是第几行，按住满 0.4 秒还没成点按 / 滚动时用方向键把焦点挪过去（ui_hire_focus_pump）。这里只读控件、写原子量，不发任何界面消息：
+// 安卓在 dm_android_touch_step 里持着触屏锁调 dm_ui_item_at_now，界面消息会经订阅者 dm_android_touch_uimsg 回头再拿同一把锁，自锁死（Redmi 实测：游戏线程停住、5 秒后系统报「无响应」）
+// The focus does not follow the hover (measured on the Redmi: with the finger on row 4 and only a MouseMove sent, the focus and the skills X showed were still row 1's; a tap moves the focus, but a tap on the row that already has it hires).
+// So the row being held is recorded, and once held for 0.4 s without becoming a tap / scroll the D-pad moves the focus there (ui_hire_focus_pump). This only reads widgets and writes atomics, and sends no UI message:
+// Android calls dm_ui_item_at_now inside dm_android_touch_step while holding the touch lock, and a UI message comes back through the subscriber dm_android_touch_uimsg, which takes the same lock again: a self-deadlock (measured on the Redmi: the game thread stopped and the system reported "not responding" 5 s later)
+static int hire_row(uint64_t root, int x, int y) {
+    module_t *m = main_module(); uint64_t hp = m ? ui_panel(root, "HireMenuPanel") : 0, lc = hp && *(uint8_t *)(hp + 0x50) ? ui_find(hp, "ListContainer", 0) : 0; if (!lc || !*(uint8_t *)(lc + 0x50)) return 0;
+    uint64_t xy = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32);
+    // 行在列表控件的 Container 里（ListWidget：虚表 main+0x20b8df0，+0xd0 = Container，+0x140 = 选中下标；同对话菜单 npc_menu_sel）
+    // The rows are in the list widget's Container (ListWidget: vtable main+0x20b8df0, +0xd0 = Container, +0x140 = selected index; same as the dialog menu, npc_menu_sel)
+    uint64_t ct = *(uint64_t *)lc == (uint64_t)m->base + 0x20b8df0 ? *(uint64_t *)(lc + 0xd0) : 0, rc = ct ? *(uint64_t *)(ct + 0x58) : 0, rn = ct ? *(uint64_t *)(ct + 0x60) : 0;
+    for (uint64_t i = 0; rc && rn <= 64 && i < rn; i++) { uint64_t it = *(uint64_t *)(rc + 8 * i);
+        if (!it || !*(uint8_t *)(it + 0x50) || !(((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)it + 0x48))(it, xy) & 1)) continue;
+        atomic_store(&g_hire_arm_ns, now_ns()); atomic_store(&g_hire_arm, (1ull << 63) | i);
+        static int lg; if (lg++ < 40) LOG("界面命中：(%d,%d) 雇佣名单第 %d 行（焦点在第 %d 行）→ 点按 = 选中 / 再点 = 雇，按住 = 挪焦点 + 按住 X 看佣兵技能", x, y, (int)i, *(int32_t *)(lc + 0x140));
+        return 1; }
+    // 行认不出（结构对不上）：名单里按住照样按住 X，只是看的是焦点那一行
+    // Rows not recognized (structure mismatch): holding on the list still holds X, it just shows the focused row
+    uint64_t ch = *(uint64_t *)(lc + 0x58), n = *(uint64_t *)(lc + 0x60);
+    for (uint64_t i = 0; ch && n <= 256 && i < n; i++) { uint64_t w = *(uint64_t *)(ch + 8 * i); const char *nm = w && *(uint64_t *)(w + 8) ? (const char *)*(uint64_t *)(w + 8) : "";
+        if (!w || !*(uint8_t *)(w + 0x50) || !strcmp(nm, "Selection") || !(((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x48))(w, xy) & 1)) continue;
+        static int lg; if (lg++ < 40) LOG("【红】界面命中：(%d,%d) 雇佣名单里（%s），认不出是第几行：按住只看焦点那一行的技能", x, y, nm);
+        return 1; }
+    return 0;
+}
+// 按住雇佣名单的一行满 0.4 秒（过了点按的 0.35 秒；手势层 0.5 秒起按住 X）：焦点不在这一行就按方向键挪过去（g_tab_*，每 8 帧一下，不带确认键），X 显示的就是这一行的技能。
+// 方向键只挪焦点、不雇，也正是手柄玩家的走法
+// A hire-list row held for 0.4 s (past the 0.35 s of a tap; the gesture layer holds X from 0.5 s): if the focus is not on this row, the D-pad moves it there (g_tab_*, one press per 8 frames, no confirm key), so X shows this row's skills.
+// The D-pad only moves the focus and never hires, which is also exactly how a controller player does it
+static void ui_hire_focus_pump(void) {
+    uint64_t a = atomic_load(&g_hire_arm); if (!a || now_ns() - atomic_load(&g_hire_arm_ns) < 400000000ull) return;
+    atomic_store(&g_hire_arm, 0);
+    module_t *m = main_module(); uint64_t root = 0; if (m) memcpy(&root, m->base + 0x2f05458, 8);
+    uint64_t hp = root ? ui_panel(root, "HireMenuPanel") : 0, lc = hp && *(uint8_t *)(hp + 0x50) ? ui_find(hp, "ListContainer", 0) : 0;
+    if (!lc || *(uint64_t *)lc != (uint64_t)m->base + 0x20b8df0) return;
+    int want = (int)(a & 0xffff), sel = *(int32_t *)(lc + 0x140), d = want - sel;
+    if (sel < 0 || !d || atomic_load(&g_tab_left)) { if (d) LOG("雇佣名单：按住第 %d 行，焦点在第 %d 行，这次不挪（%s）", want, sel, sel < 0 ? "没有焦点" : "方向键还在按"); return; }
+    atomic_store(&g_tab_top, 0); atomic_store(&g_tab_then, 0); atomic_store(&g_tab_mask, d > 0 ? DM_BTN_DOWN : DM_BTN_UP); atomic_store(&g_tab_left, d > 0 ? d : -d);
+    LOG("雇佣名单：按住第 %d 行，焦点在第 %d 行 → 方向键 %+d 行，随后手势层按住 X 看技能", want, sel, d);
+}
 int dm_ui_item_at_now(float nx, float ny) {   // 只许游戏主线程调（Mac 宿主触点脚本在取手柄处跑） | Callable only from the game main thread (the Mac host touch point script runs where the controller is polled)
     module_t *m = main_module(); if (!m) return 0; uint64_t root = 0; memcpy(&root, m->base + 0x2f05458, 8);
     int32_t w = *(int32_t *)(m->base + 0x211da38), h = *(int32_t *)(m->base + 0x211da3c); if (!root || w <= 0 || h <= 0) return 0;
@@ -1268,6 +1347,7 @@ int dm_ui_item_at_now(float nx, float ny) {   // 只许游戏主线程调（Mac 
     char hit[40]; g_cls_out = UI_OUT(nx, ny); int r = ui_classify(m, root, (int)(nx * w), (int)(ny * h), hit, sizeof hit);
     if (r == 9) return 6;
     if (r == 1 && imbue_locked(m, root)) return 10;
+    if (r == 0 && hire_row(root, (int)(nx * w), (int)(ny * h))) return 12;
     return r == 1 && g_slot_panel && !strcmp(g_slot_panel, "VendorPanelLayout") && dm_shop_open() ? 7 : r;
 }
 // 拖放落点怎么处理（物品画在手指上方约 40 点处，玩家有的对着物品放、有的对着手指放——手指对准武器槽松手，抬起点落在槽外的背景上，被当成拖出面板丢到了地上）：
@@ -1551,7 +1631,17 @@ static void ui_long_pump(void) {   // 主线程：按游戏自己的悬停对象
             for (uint64_t w = dm_wref_get(&g_slot); w && strlen(chain) < 120; w = *(uint64_t *)(w + 0x30)) { const char *n = *(uint64_t *)(w + 8) ? (const char *)*(uint64_t *)(w + 8) : "?"; strlcat(chain, n, sizeof chain); strlcat(chain, "<", sizeof chain);
                 if (page == 0 && (strcasestr(n, "stash") || strcasestr(n, "bank")) && strcmp(n, "BankExpansionLayout") && strcmp(n, "BankOriginalLayout")) page = 4;
                 if (page == 0 && strcasestr(n, "cube")) page = 3; } }
-        if (page >= 0) { void dm_inv_sort(int); dm_inv_sort(page); }
+        // 命中的是物品格控件（虚表 main+0x2089ab8）就照原版手柄「按住排序」取格子自己的属主与页（共享仓库各页的属主不是玩家）；
+        // 认不出控件类时照旧按页号、属主取玩家
+        // When the hit widget is an item grid (vtable main+0x2089ab8), take the grid's own owner and page as the original controller's
+        // "hold to sort" does (the shared stash pages are not owned by the player); when the widget class is not recognized, fall back
+        // to the page number with the player as owner
+        uint64_t gw = dm_wref_get(&g_slot);
+        if (page >= 0 && gw && g_iw_base && *(uint64_t *)gw - g_iw_base == 0x2089ab8) {
+            uint32_t oid = *(uint32_t *)(gw + 0x5c4), oty = *(uint32_t *)(gw + 0x5c8); int pg = *(uint8_t *)(gw + 0x630);
+            void dm_inv_sort_grid(uint32_t, uint32_t, int); dm_inv_sort_grid(oid, oty, pg);
+            LOG("界面长按：物品格自己的属主 %u 类型 %u 页 %d（原先按页 %d、属主玩家）", oid, oty, pg, page);
+        } else if (page >= 0) { void dm_inv_sort(int); dm_inv_sort(page); }
         LOG("界面长按：空格（控件链 %s，面板 %s）→ %s", chain[0] ? chain : (nm ? nm : "?"), pn ? pn : "?", page < 0 ? "不动" : page == 0 ? "整理背包" : page == 3 ? "整理方块" : "整理储藏箱");
         return; }
     if (ci.container == DM_ITEM_AT_STASH && ci.stack > 0) { void dm_stash_take(int); dm_stash_take(3); LOG("界面长按：高级仓库里的一叠 %s（%d 件）→ 取 3 件到背包", ci.code, ci.stack); return; }   // 原版手柄「按住 = 移动 3 个」，件数不变 | The original controller's "hold = move 3"; the count is unchanged
@@ -1622,9 +1712,10 @@ static void ui_item_pump(uint64_t root, int width, int height) {
     // Locked cells show the unlock hint as usual; with an item held in hand it is not blocked (placing goes through the release drop point path). Result 6 = the gesture layer does not tap
     if (r == 1 && dm_wref_get(&g_slot) && !strncmp(hit, "slot_", 5) && *(uint32_t *)(dm_wref_get(&g_slot) + 0x5c8) == 1) { dm_hud_info hh; dm_hud_get(&hh); int dm_rift_merc_slot_empty(int);
         if (!(hh.valid && hh.holding) && (merc_lock_hit(hit) || dm_rift_merc_slot_empty(*(int32_t *)(dm_wref_get(&g_slot) + 0x5d8)))) { r = 6; snprintf(hit + strlen(hit), sizeof hit - strlen(hit), "（佣兵空格）"); } }
+    if (r == 0 && hire_row(root, x, y)) r = 12;
     atomic_store(&g_iq_res, r); atomic_store(&g_iq_done, seq);
     if (r == 1) merc_lock_hit(hit);
-    if (hit_log_ok(hit)) { LOG("界面命中：(%d,%d) → %s%s", x, y, r == 1 ? "物品区 " : r == 10 ? "物品区（单件槽占用，不动）" : r == 8 ? "成叠格 " : r == 7 ? "货架 " : r == 2 ? "" : r == 3 ? "面板外" : r == 6 ? "" : "面板内控件", hit); }
+    if (hit_log_ok(hit)) { LOG("界面命中：(%d,%d) → %s%s", x, y, r == 1 ? "物品区 " : r == 10 ? "物品区（单件槽占用，不动）" : r == 8 ? "成叠格 " : r == 7 ? "货架 " : r == 2 ? "" : r == 3 ? "面板外" : r == 6 ? "" : r == 12 ? "雇佣名单的一行" : "面板内控件", hit); }
 }
 // 本地改动：单击常驻说明框（改的是本函数下面的两处）。原版说明框是即时式的 —— 悬停着的控件每帧重新提交、
 // 画完就清；而本函数原来只在「按住 / 有待发事件」时每帧补发 MouseMove，抬手后就不再发，说明框于是一闪而过。
@@ -1675,6 +1766,7 @@ static void ui_ptr_pump(module_t *m, uint64_t root, int width, int height) {
 static _Atomic int g_dg_kind; static _Atomic uint64_t g_dg_o, g_dg_c; static _Atomic unsigned g_dg_seq; static _Atomic uint32_t g_dg_tol;
 static uint64_t dg_pack(float nx, float ny) { nx = nx < 0 ? 0 : nx > 1 ? 1 : nx; ny = ny < 0 ? 0 : ny > 1 ? 1 : ny; return ((uint64_t)(uint32_t)(nx * 65535 + .5f) << 16) | (uint32_t)(ny * 65535 + .5f); }
 void dm_ui_drag_begin(int kind, float ox, float oy, float tol_ny) {
+    atomic_store(&g_hire_arm, 0);
     uint64_t o = dg_pack(ox, oy); atomic_store(&g_dg_o, o); atomic_store(&g_dg_c, o); atomic_store(&g_dg_tol, (uint32_t)((tol_ny < 0 ? 0 : tol_ny > 0.5f ? 0.5f : tol_ny) * 65535));
     atomic_store(&g_dg_kind, kind == 2 ? 2 : 1); atomic_fetch_add(&g_dg_seq, 1);
 }
@@ -1736,18 +1828,27 @@ static uint64_t ui_find(uint64_t w, const char *name, int dep);
 // ---------- 技能绑定的触摸流程 ----------
 // 原版手柄流程：技能树（SkillsTreePanel）里光标停在一个技能上按 Y → 弹「重新绑定技能」框（ButtonBindingModal，两排六格 A B Y X R ZR，第二排 = 按住 ZL 的那组）；
 // 在框里「直接按要绑的那个键」就绑上并关框（不是移光标选格：按方向键没反应，按 A 即绑到 A 位）。
-// 触摸流程把顺序反过来——先定位（点空技能位的十字 / 长按技能钮），再选技能：
-//   1 开技能树：按 +（功能页）后看 SkillsTreePanel 开没开，没开就按 R 翻页，直到它开（最多 8 次）；
-//   2 等玩家点技能：前端把这期间的点按改成「手柄光标走到触点 + 按 Y」；看到 ButtonBindingModal 开了进下一步；玩家自己关了技能树 = 取消；
-//   3 框开稳后按目标键（第二组带 ZL），等框关；再按 B 关功能页回到游戏。
+// 触摸有两个入口（Android touch_android.c、iOS front_ios.m 各自接，做法相同）：
+//   甲 先选位：点空技能位的十字（dm_ui_bind_begin），宿主替玩家走下面三步：
+//     1 开技能树：按 +（功能页）后看 SkillsTreePanel 开没开，没开就按 R 翻页，直到它开（最多 8 次）；
+//     2 等玩家点技能：前端把这期间的点按改成「手柄光标走到触点 + 按 Y」；看到 ButtonBindingModal 开了进下一步；玩家自己关了技能树 = 取消；
+//     3 框开稳后按目标键（第二组带 ZL），等框关；再按 B 关功能页回到游戏。
+//   乙 先选技能（已有技能的键只能这样换）：技能树里按住一个技能图标不动满 0.5 秒，前端把光标移到图标上按 Y，游戏弹自己的绑定框；
+//     玩家点框里的格子 = 替玩家按那一格的键（ui_bind_modal_tap），绑完不关功能页（g_bd_stay）。
+// 按住局内的技能钮不是换绑，是持续施放（早先的「长按技能钮换绑」已去掉）。
 // 面板开没开看控件树（名字 + 可见位），每 6 帧看一次；每步有帧数上限，超时放弃并打日志。
 // ---------- Touch flow for skill binding ----------
 // The original game's controller flow: in the skill tree (SkillsTreePanel), with the cursor on a skill, press Y → the 「重新绑定技能」(Press button to rebind skill) box pops up (ButtonBindingModal, two rows of six cells A B Y X R ZR, second row = the set with ZL held);
 // in the box, "directly pressing the key to bind" binds it and closes the box (it is not moving a cursor to pick a cell: the D-pad does nothing, and pressing A binds to the A slot).
-// The touch flow reverses the order - pick the slot first (tap the cross on an empty skill slot / long-press a skill button), then pick the skill:
-//   1 Open the skill tree: after pressing + (function page), check whether SkillsTreePanel is open; if not, press R to flip pages until it is (at most 8 times);
-//   2 Wait for the player to tap a skill: the front end turns taps during this time into "move the controller cursor to the touch point + press Y"; once ButtonBindingModal is seen open, go to the next step; the player closing the skill tree themselves = cancel;
-//   3 Once the box has opened and settled, press the target key (with ZL for the second set) and wait for the box to close; then press B to close the function page and return to the game.
+// Touch has two entry points (each front end wires them, the same way: Android touch_android.c, iOS front_ios.m):
+//   A, slot first: tap the cross on an empty skill slot (dm_ui_bind_begin), and the host walks these three steps for the player:
+//     1 Open the skill tree: after pressing + (function page), check whether SkillsTreePanel is open; if not, press R to flip pages until it is (at most 8 times);
+//     2 Wait for the player to tap a skill: the front end turns taps during this time into "move the controller cursor to the touch point + press Y"; once ButtonBindingModal is seen open, go to the next step; the player closing the skill tree themselves = cancel;
+//     3 Once the box has opened and settled, press the target key (with ZL for the second set) and wait for the box to close; then press B to close the function page and return to the game.
+//   B, skill first (the only way to rebind a key that already has a skill): in the skill tree, hold a skill icon still for 0.5 s; the front end moves the
+//     cursor onto the icon and presses Y, and the game pops its own binding box; tapping a cell in it presses that cell's key for the player
+//     (ui_bind_modal_tap), and the function page stays open afterwards (g_bd_stay).
+// Holding an in-game skill button does not rebind, it casts continuously (the earlier "long-press a skill button to rebind" was removed).
 // Whether a panel is open is read from the widget tree (name + visible flag), checked every 6 frames; each step has a frame limit, and on timeout it gives up and logs.
 static _Atomic uint64_t g_bd_key; static _Atomic int g_bd_state;   // 0 无 1 开技能树 5 找页 2 等点技能 3 框里按键 4 关面板 | 0 none 1 open skill tree 5 find page 2 wait for skill tap 3 press key in box 4 close panel
 static _Atomic int g_bd_stay;
@@ -2019,16 +2120,24 @@ static void ui_bind_pump(uint64_t root, uint64_t fr) {
 // 「透视地图尺寸」是配置变量 AutoMapMode（对象 main+0x2d479e8，值在 +0xC：0 全屏 / 1 微缩放左 / 2 微缩放右；注册处 main+0x30d2a8），注册时带变更回调 main+0x40f780(int 档)：
 //   [main+0x2d5e8f0] = 档 == 1（放左）；[main+0x2d5c748] = 档 != 0（是否微缩）；变了就调 main+0x411540 重排地图、把卷动量 [0x2d5e910 / 914] 清零。
 // 只改配置值不调回调，画面不变。这里直接调回调：切全屏传 0，切回传配置值（玩家在选项页选的放左 / 放右）；配置对象本身不动，所以不落盘、下一局照玩家的设置来。
+// 触屏模式记住玩家要不要全屏地图（g_map_want）：每局开头与玩家在选项页改档时取「配置是不是全屏档」，点右上角小地图那一块跟着改（点空处不再改：点地面走路会误触，#186）；
+// 开面板时让成小地图（g_map_hold，前端报面板态），关掉面板、换区域后游戏按配置重建了地图，都按 g_map_want 再切回去。
+// 配置是全屏档（0）时小地图按「微缩放右」（2）显示，配置值不改写——玩家选的全屏照存照用（线上：选全屏无效、开装备栏 / 换图就回小地图）。
 // 手柄上没有切这一档的键（地图键 − 只管开 / 关）。
 // ---------- Fullscreen map ↔ top-right minimap: switched at runtime, not persisted (from reading the disassembly) ----------
 // 「透视地图尺寸」(Automap Size) is the config variable AutoMapMode (object main+0x2d479e8, value at +0xC: 0 fullscreen / 1 mini on the left / 2 mini on the right; registered at main+0x30d2a8), registered with a change callback main+0x40f780(int mode):
 //   [main+0x2d5e8f0] = mode == 1 (on the left); [main+0x2d5c748] = mode != 0 (mini or not); on a change it calls main+0x411540 to re-layout the map and zeroes the scroll values [0x2d5e910 / 914].
 // Changing only the config value without calling the callback leaves the picture unchanged. Here the callback is called directly: pass 0 to switch to fullscreen, pass the config value to switch back (left / right as the player chose on the options page); the config object itself is untouched, so nothing is persisted and the next run follows the player's setting.
+// In touch mode, remember whether the player wants the full-screen map (g_map_want): at the start of each run and whenever the player changes the setting on the options page it follows
+// "is the config the full-screen setting", and tapping the top-right minimap block changes it (tapping empty space no longer does: walking by tapping hit it, #186); while a panel is open the map steps aside to the minimap (g_map_hold, the front end reports panel state),
+// and after the panel closes, or after an area change in which the game rebuilt the map from the config, it is switched back to g_map_want.
+// With the config on full screen (0) the minimap is shown as "minimap right" (2) and the config value is not rewritten: the player's full-screen choice is kept and used (player report: choosing full screen had no effect, and opening the inventory / changing area went back to the minimap).
 // The controller has no key for switching this mode (the map key − only opens / closes).
 static _Atomic int g_map_req = -1, g_map_full_now, g_map_hold;
 static dm_map_intent g_map_intent = {-1,-1};
 void dm_ui_map_hold(int on) { atomic_store(&g_map_hold, !!on); }
 void dm_ui_map_full(int on) { atomic_store(&g_map_req, on != 0); }
+void dm_ui_map_hold(int on) { atomic_store(&g_map_hold, on != 0); }
 int dm_ui_map_is_full(void) { return atomic_load(&g_map_full_now); }
 // 真全屏局内，全屏地图的线条要盖在世界上：游戏把地图中心放在「屏幕高的一半」（它读到的是我们写的 16:9 界面高），画出来在 界面矩形 y + 界面高 ÷ 2；
 // 世界的中心在真实画面高的一半，两者差 界面矩形 y −（真实高 − 界面高）÷ 2（贴底时 = 留边高度的一半，地图标记比人低约 128 点）。
@@ -2899,6 +3008,7 @@ int dm_ui_panel_resident(const char *name) {
 // Returns the stack reading: number of open non-resident panels; -1 when only the NPC dialog menu / speech box is open. The log text "[hud] 面板栈 ..." is kept as is (regression scripts match on it)
 enum { HUD_STACK_MAX = 64 };
 static struct { char name[64]; int open; } g_hud_stack[HUD_STACK_MAX];
+__attribute__((weak)) void dm_platform_menu_ready(void) {}   // 空的弱定义（不是弱声明）：苹果链接器要求弱引用链接时有定义；Vulkan 后端 / 鸿蒙平台层给强定义 | empty weak definitions (not declarations): Apple's linker needs a weak reference to resolve; the Vulkan backend / HarmonyOS platform give the strong ones
 static void hud_stack_update(const char *act, const char *arg) {
     // 读取画面撤下：清掉此刻在游戏面板树里已经看不见的记录（防只开不关的漏配），屏上还在的照记——
     // 通关页是读取画面撤下前 0.5 秒开的（OpenExclusivePanel EndScreenPanelExpansion → UnloadPanel LoadScreenPanel），原先整栈清零把它也清了：
@@ -2942,7 +3052,7 @@ static void hud_stack_update(const char *act, const char *arg) {
         // no panel left on screen, yet the front end stays in panel mode (no stick, no skill buttons, every tap is "outside the panel"). Across 809 logs only 4 panels ever reached a count of 2 or more
         // (main menu links, character select page, naming candidate bar, hire list), and none of them was a real two-layer stack needing two closes. The dm_tc_navigation path was already an idempotent bitmap, so the two paths now agree
         if(open && g_hud_stack[slot].open>0) { fprintf(stderr,"[hud] 面板栈 %s %s：已经开着，不重复计\n",act,arg); return; }
-        g_hud_stack[slot].open=open?1:0;
+        g_hud_stack[slot].open=open?1:0; if(open && !strcmp(arg,"MainMenuButtonRibbon")) dm_platform_menu_ready();   // 主菜单出来：平台结束启动加速 | main menu shown: the platform ends its start-up boost
         fprintf(stderr,"[hud] 面板栈 %s %s → %d\n",act,arg,g_hud_stack[slot].open);
     }
 }
@@ -3116,7 +3226,7 @@ static void ui_panel_state_pump(uint64_t root) {   // 游戏主线程，每帧 |
 //     手柄模式与切换事务进行中不跑；在途的请求由切换清理作废（dm_ui_cache_mode_leave）。
 //   两种模式都跑：ui_target_pump（鉴定目标，含手柄按住 A）、ui_item_pump（命中查询，宿主自己也问）、ui_ptr_pump（指针事件，宿主合成的点击也走）、
 //     ui_safe_pump / ui_lift_pump / ui_note_dock_pump / ui_trove_tabs_pump / ui_minimap_pump / ui_map_pump / ui_map_geom_pump / ui_map_center（屏幕几何，与输入方式无关）、ui_boss_pct_pump、ui_npcdlg_pump、
-//     ui_widestash_pump、mv_audit_pump、ui_pages_pump（含手柄 L / R 翻页）、ui_watch_pump、ui_panel_heal、ui_panel_state_pump、rs_pump（一键重开，在前端泵里调）
+//     ui_widestash_pump、mv_audit_pump、ui_pages_pump（含手柄 L / R 翻页）、ui_watch_pump、ui_panel_heal、ui_panel_state_pump、rs_pump（一键重开，在前端泵里调）、ui_hire_focus_pump（雇佣名单按住挪焦点，在每帧那一行之后单独调；只有触屏按住才记下行号，手柄模式下没有记录、不动）
 // 物品说明框停靠（观测门 OBS_TOOLTIP，挂在说明框面板的「提交一条说明」函数入口 main+0xb0d560(面板, 文字, 目标矩形左上 x2, 目标矩形宽高 x3, 样式, 文字 2)）。
 // 说明框是即时式的：悬停着的控件每帧重新提交、画完就清，宿主在自己的时机读面板里的记录数一直是 0，所以只能在提交那一刻改输入。
 // 原版把框摆在目标矩形（被点的那一格）正下 / 正上方：长说明（暗金、符文之语，十几行）盖住腰带、戒指、背包中间几列和「存放」钮，要点被盖住的格子得先点别处。
@@ -3133,7 +3243,7 @@ static void ui_panel_state_pump(uint64_t root) {   // 游戏主线程，每帧 |
 //     Not run in gamepad mode or while a switch transaction is in progress; requests in flight are cancelled by the switch cleanup (dm_ui_cache_mode_leave).
 //   Run in both modes: ui_target_pump (identify target, including holding A on the gamepad), ui_item_pump (hit queries, the host asks too), ui_ptr_pump (pointer events, host-synthesized clicks go through it as well),
 //     ui_safe_pump / ui_lift_pump / ui_note_dock_pump / ui_trove_tabs_pump / ui_minimap_pump / ui_map_pump / ui_map_geom_pump / ui_map_center (screen geometry, independent of input method), ui_boss_pct_pump, ui_npcdlg_pump,
-//     ui_widestash_pump, mv_audit_pump, ui_pages_pump (including L / R page turning on the gamepad), ui_watch_pump, ui_panel_heal, ui_panel_state_pump, rs_pump (one-tap restart, called from the front end pump)
+//     ui_widestash_pump, mv_audit_pump, ui_pages_pump (including L / R page turning on the gamepad), ui_watch_pump, ui_panel_heal, ui_panel_state_pump, rs_pump (one-tap restart, called from the front end pump), ui_hire_focus_pump (moves the focus for a held hire-list row, called on its own after the per-frame line; only a touch hold records a row, so in controller mode there is nothing to do)
 // Item description box docking (observation gate OBS_TOOLTIP, on the entry of the description panel's "submit one description" function main+0xb0d560(panel, text, target rect top-left x2, target rect size x3, style, text 2)).
 // The description box is immediate-mode: the hovered widget resubmits it every frame and it is cleared after drawing, so when the host reads the panel at its own time the record count is always 0; the input can only be changed at the moment of submission.
 // The original places the box directly below / above the target rect (the slot that was tapped): long descriptions (uniques, runewords, a dozen lines) cover the belt, rings, the middle columns of the inventory and the Stash button, and you have to tap elsewhere before you can tap a covered slot.
@@ -4702,6 +4812,8 @@ void dm_ui_on_uimsg(const char *cat, const char *act, const char *arg) {
           ld = !strcmp(cat, "PanelManager") && arg && !strcmp(arg, "LoadScreenPanel") && !strcmp(act, "OpenPanel");
       if (ex || ld) { module_t *pm = main_module(); uint64_t root = 0; if (pm) memcpy(&root, pm->base + 0x2f05458, 8); if (ex) g_nd_hold = 1;   // 提示框停靠：停靠条件结束，当场写回原值 | notice docking: the docking condition ended, write the original value back on the spot
           note_dock_restore(root, ex ? (act[0] == 'E' ? "保存并退出" : "回到前端") : "读取画面（切场景）"); } }
+    if (!strcmp(cat, "ProgressionMessage") && !strcmp(act, "PlayVideo")) atomic_store(&g_map_movie, 1);   // 过场开播 / 播完（含按键跳过）、出局：见 ui_map_pump | Cutscene starts / ends (skipping included), leaving the run: see ui_map_pump
+    else if ((!strcmp(cat, "Cinematics") && !strcmp(act, "MovieComplete")) || (!strcmp(cat, "FrontEndNavigation") && !strcmp(act, "ToFrontEnd"))) atomic_store(&g_map_movie, 0);
     if (!strcmp(cat, "QuestLogPanelMessage") && !strcmp(act, "DialogueFinished")) atomic_store(&g_speech_end, dm_guest_frame());
     // 任务日志（#198，见 g_qt_arm）
     // Quest log (#198, see g_qt_arm)

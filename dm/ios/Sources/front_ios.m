@@ -692,7 +692,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
         _overlay.nativeMapping.secondary_group,_overlay.nativeMapping.group_seen,_overlay.nativeMapping.identity_scope);
         _touchPublishedEventSeq=_touchEventSeq;
     }
-    [_overlay setNeedsDisplay];
+    [_overlay controlsChanged];
 }
 - (void)cancelControlsFrom:(const char *)source {
     if (strcmp(source, "pinch_began") != 0) _pinching = NO;
@@ -830,9 +830,9 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 // Conversion: world cell (x, y) on the map is at player point + ((Δx−Δy)×1.6, (Δx+Δy)×0.8) × pixels per cell; the player point on the fullscreen map = the on-screen position of the player's feet, on the minimap = the center of the minimap frame.
 // Not drawn while a panel is open (navigation mode) -- the top-right minimap is collapsed then too. Layers have no implicit animation; positions update every frame as the player walks.
 - (UIImage *)mgImage:(NSString *)name {
-    UIImage *im=_mgImg[name]; if(im) return im; if(!_mgImg) _mgImg=[NSMutableDictionary dictionary];
-    im=[UIImage imageWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:[@"mapgoal/" stringByAppendingString:name]]];
-    if(im) _mgImg[name]=im; return im;
+    id hit=_mgImg[name]; if(hit) return hit==NSNull.null ? nil : hit; if(!_mgImg) _mgImg=[NSMutableDictionary dictionary];
+    UIImage *im=[UIImage imageWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:[@"mapgoal/" stringByAppendingString:name]]];
+    _mgImg[name]=im ?: NSNull.null; return im;
 }
 - (void)mapGoalSync {
     static int old=-1; if(old<0) { int dm_uiscreen_ingame(void);
@@ -841,6 +841,10 @@ int dm_custom_get(const char *key); old=dm_custom_get("item_notes")!=0; }   // �
     dm_map_goal_view v; float cell=0; int mode=dm_ui_map_geom(&cell), n=dm_map_goals(&v); int rw=0,rh=0; dm_screen_real(&rw,&rh);
     CGRect wr=world_rect(self); float mm[4]; BOOL haveMini=dm_ui_minimap_rect(mm);
     BOOL show=mode && n>0 && !_navigation && !_info.hidden && rw>0 && cell>0 && (mode==2 || haveMini);
+    // 输入和上一帧一样就不动图层（显示链接 120 Hz，终点 / 玩家格按逻辑拍才变） | Same inputs as last frame: leave the layers alone (display link runs at 120 Hz, goals / player cell change per logic tick)
+    { static struct { dm_map_goal_view v; float cell, mm[4]; int mode, rw, rh, show, lg; CGRect wr; CGSize z; } last, cur; memset(&cur,0,sizeof cur);
+      cur.v=v; cur.cell=cell; if(haveMini) memcpy(cur.mm,mm,sizeof mm); cur.mode=mode; cur.rw=rw; cur.rh=rh; cur.show=show; cur.lg=dm_lang_group(); cur.wr=wr; cur.z=self.bounds.size;
+      if(_mgLabel[0] && !memcmp(&cur,&last,sizeof cur)) return; last=cur; }
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     CGSize z=self.bounds.size; CGRect band=ui_rect_view(self); CGFloat k=wr.size.width/rw, c=cell*k, H=band.size.height, lh=H*0.0236, sh=H*0.085*(mode==1?0.6:1);   // 名牌高（原版名牌字高约屏高 1/53）、符号高（的大小） | Nameplate height (the original game's nameplate glyph height is about 1/53 of screen height), symbol height (its size)
     CGPoint o; CGRect area;
@@ -1675,8 +1679,21 @@ static CGRect letterbox_rect(CGRect f) {
 @interface DmLetterboxView : UIView
 @property (nonatomic, strong) UIView *game;
 @end
+// 真全屏下窗口变了尺寸（iPhone Duo 展开 / 折叠）：出图尺寸换成新窗口的原生像素（超过启动预留的就等比缩进去），游戏窗口建好之后推 31 让它重读
+void dm_oe_res_changed(void);
+// 只对手机：iPad 窗口不变尺寸，Mac 上的 iOS 包窗口能拖但出图一直按屏幕原生（回归与截图闸门的口径）；DM_TEST_WINDOW_PX=1 在 Mac 上打开，拖窗口验这条路
+static void window_px(CGSize s, CGFloat k) {
+    if (!g_full || getenv("DM_GAME_RES") || s.width <= 0 || s.height <= 0 || k <= 0) return;
+    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone && !getenv("DM_TEST_WINDOW_PX")) return;
+    double w = round(fmax(s.width, s.height) * k), h = round(fmin(s.width, s.height) * k), cw = (uint32_t)g_res_cap, ch = (double)(g_res_cap >> 32), f = fmin(1, fmin(cw / w, ch / h));
+    uint64_t v = (uint64_t)((unsigned)(h * f) & ~1u) << 32 | ((unsigned)(w * f) & ~1u), old = atomic_exchange(&g_res_now, v);
+    if (old == v || !old) return;
+    LOG("画面：窗口变成 %.0fx%.0f 点 → 出图 %ux%u（原 %ux%u，启动预留 %.0fx%.0f）%s", s.width, s.height, (unsigned)v, (unsigned)(v >> 32), (unsigned)old, (unsigned)(old >> 32), cw, ch,
+        dm_uiscreen_res_live() ? "，通知游戏重读" : "，游戏窗口还没建好，建好后按新值");
+    if (dm_uiscreen_res_live()) dm_oe_res_changed();
+}
 @implementation DmLetterboxView
-- (void)layoutSubviews { [super layoutSubviews]; if (self.bounds.size.width > 0 && self.bounds.size.height > 0) self.game.frame = letterbox_rect(self.bounds);
+- (void)layoutSubviews { [super layoutSubviews]; window_px(self.bounds.size, UIScreen.mainScreen.nativeScale); if (self.bounds.size.width > 0 && self.bounds.size.height > 0) self.game.frame = letterbox_rect(self.bounds);
     { static CGRect last; CGRect g = self.game.frame; if (g_full && !CGRectEqualToRect(g, last)) { last = g; int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h); dm_screen_real(&rw, &rh); LOG("画面：游戏视图摆到 y %.0f 高 %.0f（窗口 %.0fx%.0f；真实画面 %dx%d，界面矩形 y %d 高 %d）", g.origin.y, g.size.height, self.bounds.size.width, self.bounds.size.height, rw, rh, y, h); } }
     if (g_full && g_layer.superlayer == self.layer) { [CATransaction begin]; [CATransaction setDisableActions:YES]; g_layer.frame = self.bounds;
         g_layer.drawableSize = CGSizeMake(self.bounds.size.width * g_layer.contentsScale, self.bounds.size.height * g_layer.contentsScale); [CATransaction commit]; } }
@@ -1684,6 +1701,17 @@ static CGRect letterbox_rect(CGRect f) {
 // True fullscreen: the strip above the game view has only 3D; fingers landing there are also given to the game view (negative y) -- tapping monsters / chests works as usual, and the UI and custom-drawn widgets cannot be hit
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e { UIView *h = [super hitTest:p withEvent:e]; return g_full && h == self ? self.game : h; }
 @end
+// 测试：模拟窗口变尺寸（iPhone Duo 展开 / 折叠）。Mac 上的 iOS 包窗口不能拖（要求全屏），用这个到点把最外层视图改成给定点数，走的是同一段布局代码。
+// DM_TEST_FOLD=<秒>:<宽>x<高>[,<秒>:<宽>x<高>…]，秒数从视图建好时算；配 DM_TEST_WINDOW_PX=1 让 Mac 上也跟着换出图尺寸
+static UIView *test_fold(UIView *top) {
+    const char *e = getenv("DM_TEST_FOLD"); if (!e) return top;
+    for (const char *q = e; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : NULL) {
+        double t = 0, w = 0, h = 0; if (sscanf(q, "%lf:%lfx%lf", &t, &w, &h) != 3 || w <= 0 || h <= 0) continue;
+        __weak UIView *wt = top; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(t * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIView *u = wt; if (!u) return; LOG("测试：视图改成 %.0fx%.0f 点（DM_TEST_FOLD）", w, h); u.frame = CGRectMake(0, 0, w, h); [u setNeedsLayout]; [u layoutIfNeeded]; });
+    }
+    return top;
+}
 UIView *front_ios_view(CGRect frame) {
     front_game_res(1);   // 「真全屏」开没开（g_full）是它第一次被调时按屏幕比例定的；下面摆视图要用，不能指望别处碰巧先调过 | whether "true fullscreen" is on (g_full) is decided from the screen aspect ratio the first time this is called; the view layout below needs it and cannot count on something else happening to have called it first
     CGRect full = frame; frame = letterbox_rect(frame);
@@ -1711,7 +1739,8 @@ UIView *front_ios_view(CGRect frame) {
     g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     g_layer.contentsScale = UIScreen.mainScreen.nativeScale;
     g_layer.drawableSize = CGSizeMake(frame.size.width * g_layer.contentsScale, frame.size.height * g_layer.contentsScale);
-    if (!CGRectEqualToRect(full, frame)) { DmLetterboxView *box = [[DmLetterboxView alloc] initWithFrame:full]; box.backgroundColor = UIColor.blackColor; box.game = v; [box addSubview:v];
+    // 真全屏一律套容器：窗口会变尺寸（iPhone Duo 展开 / 折叠），容器的布局回调负责跟着换出图尺寸；启动那一刻窗口碰巧是 16:9 也要套（Mac 上的场景初值 667x375）
+    if (g_full || !CGRectEqualToRect(full, frame)) { DmLetterboxView *box = [[DmLetterboxView alloc] initWithFrame:full]; box.backgroundColor = UIColor.blackColor; box.game = v; [box addSubview:v];
         if (g_full) {   // 出图层与游戏视图分离：出图层挂在容器上铺满整窗，游戏视图透明、叠在它上面 | The present layer is separated from the game view: the present layer hangs on the container and fills the whole window; the game view is transparent and stacked on top of it
             CAMetalLayer *ml = [CAMetalLayer layer]; ml.device = g_layer.device; ml.pixelFormat = MTLPixelFormatBGRA8Unorm; ml.contentsScale = g_layer.contentsScale; ml.frame = box.bounds;
             ml.drawableSize = CGSizeMake(full.size.width * ml.contentsScale, full.size.height * ml.contentsScale); [box.layer insertSublayer:ml atIndex:0];
@@ -1726,9 +1755,9 @@ void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 // 主机档 = 屏幕原生像素（界面文字原生，3D 由游戏自带的渲染比例另缩，见 hle_oe.c scale3d_tick）：
 // iPhone 17 Pro Max → 2868x1320。掌机档仍按原版高度 720 × 屏幕比例（宽取 8 的倍数，1568x720），只在 DM_OPMODE=0 / 脚本切换时用到。
 // DM_GAME_RES=宽x高（主机模式；掌机按 720/900 同比）覆盖：DM_GAME_RES=1600x900 即原版 16:9 保底（负对照），DM_GAME_RES=1952x900 即早先的缺省
-// Docked profile = native screen pixels (UI text is native; 3D is scaled separately by the game's own render scale, see hle_oe.c scale3d_tick):
-// iPhone 17 Pro Max → 2868x1320. The handheld profile still uses the original game's height 720 × screen aspect ratio (width rounded to a multiple of 8, 1568x720), and is only used with DM_OPMODE=0 / script switching.
-// DM_GAME_RES=WIDTHxHEIGHT (docked mode; handheld scales by 720/900) overrides: DM_GAME_RES=1600x900 is the original game's 16:9 floor (negative control), DM_GAME_RES=1952x900 is the earlier default
+// 窗口会变尺寸的设备（iPhone Duo 内外屏切换、展开 / 折叠时窗口当场改尺寸）：真全屏下出图尺寸跟着窗口走（window_px），
+// 推一次性能模式通知（31）让游戏重读。游戏只接受不超过启动时窗口尺寸的新值（dm_uiscreen.c 的说明），所以比 16:9 窄的手机屏
+// （只有折叠屏是这个形状）启动时按短边 2160 预留：外屏启动也装得下内屏。iPad、普通 iPhone 的窗口不变尺寸，启动值 = 屏幕原生，与原来相同。
 uint64_t front_game_res(int docked) {
     static double aspect; static unsigned fw, fh; static int dir = -1;
     if (dir != g_res_dir) {   // 方向决定整张画面的宽高（竖屏 = 短边为宽，横屏 = 长边为宽）；方向变了整个缓存重算 | the orientation decides the picture's width/height (portrait = short side is the width, landscape = long side is the width); a change recomputes the whole cache
@@ -1751,7 +1780,7 @@ uint64_t front_game_res(int docked) {
                     if (!fu || atoi(fu)) { g_full = 1; dm_uiscreen_enable(DM_UISCREEN_BOTTOM); } else { aspect = 16.0 / 9; fh = (unsigned)llround(fw * 9.0 / 16 / 2) * 2; } } }
         }
     }
-    if (fw && docked) return (uint64_t)fh << 32 | fw;
+    if (fw && docked) return dm_uiscreen_res_live() ? atomic_load(&g_res_now) : g_res_cap;
     uint64_t h = docked ? 900 : 720, w = (uint64_t)llround(h * aspect / 8) * 8;
     return h << 32 | w;
 }
@@ -2293,7 +2322,12 @@ void front_ios_lifecycle_install(void) {
     if (NSProcessInfo.processInfo.thermalState >= NSProcessInfoThermalStateSerious) thermal_apply();   // 启动时已经热 | Already hot at launch
 
     AVAudioSession *as = AVAudioSession.sharedInstance; NSError *e = nil;
-    if (![as setCategory:AVAudioSessionCategoryPlayback error:&e] || ![as setActive:YES error:&e]) LOG("前端：音频会话设置失败 %s", e.localizedDescription.UTF8String);
+    // 类别 Playback：静音开关开着也出声。带 MixWithOthers：Playback 缺省是独占的，激活会话会打断别的 App 的声音——
+    // #77：游戏在前台时 ChatGPT 实时语音 / 屏幕共享、后台音乐都被打断，切走就恢复，游戏音量调到 0 也一样（打断发生在激活会话那一下，与音量无关）
+    // Category Playback: sound plays with the silent switch on. With MixWithOthers: Playback is non-mixable by default, and activating the session interrupts other apps' audio —
+    // #77: with the game in the foreground, ChatGPT live voice / screen sharing and background music were interrupted and came back when switching away, even with the in-game volume at 0 (the interruption happens when the session is activated, regardless of volume)
+    if (![as setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:&e] || ![as setActive:YES error:&e]) LOG("前端：音频会话设置失败 %s", e.localizedDescription.UTF8String);
+    LOG("前端：音频会话 类别 %s 选项 %#lx（MixWithOthers %s）、别的 App 正在出声 %d", as.category.UTF8String, (unsigned long)as.categoryOptions, (as.categoryOptions & AVAudioSessionCategoryOptionMixWithOthers) ? "开" : "关", as.isOtherAudioPlaying);
     [nc addObserverForName:AVAudioSessionInterruptionNotification object:as queue:mq usingBlock:^(NSNotification *n) {
         AVAudioSessionInterruptionType t = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
         if (t == AVAudioSessionInterruptionTypeBegan) { LOG("前端：音频被打断"); g_audio_intr = 1; audio_apply(); return; }
@@ -2307,7 +2341,7 @@ void front_ios_lifecycle_install(void) {
     [nc addObserverForName:AVAudioSessionRouteChangeNotification object:as queue:mq usingBlock:^(NSNotification *n) {
         double mtl_link_tick_age_ms(void);
         LOG("前端：音频路由变化 原因 %lu（显示节拍上次回调 %.0f ms 前）", (unsigned long)[n.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue], mtl_link_tick_age_ms()); }];
-    LOG("前端：生命周期 / 过热 / 音频会话已接（类别 Playback）");
+    LOG("前端：生命周期 / 过热 / 音频会话已接（类别 Playback，与别的 App 混音）");
     // 测试开关 DM_TEST_AUDIO_INTERRUPT=起始秒,时长秒：按时向本进程投递音频会话打断开始 / 结束（带 ShouldResume），模拟来电 / 闹钟；
     // 结束后 2 s 打出声卡回调增量（真出声 DM_AUDIO=1 时应 > 0）
     // 测试开关 DM_TEST_BG=起始秒,时长秒[;起始秒,时长秒…]：应用内模拟「进后台 → 回前台」（可排几组）——先暂停显示节拍（模仿系统停回调），再走与真实场景事件同一个处理函数。

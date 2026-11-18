@@ -31,6 +31,16 @@ static NSString *T(const char *k) { return @(dm_ui(k)); }   // 我们自己的�
 #import <Network/Network.h>
 #include "dm_metal_cache_guard.h"
 
+#if __IPHONE_OS_VERSION_MAX_ALLOWED < 260400
+// Xcode 26.2 的 SDK 没有这两个方法的声明，这里只补声明；运行时仍要求 iOS 26.4。
+// The Xcode 26.2 SDK lacks declarations for these two methods; only the declarations are added here, and the calls still require iOS 26.4 at runtime.
+@interface BAAssetPackManager (DmIOS26_4Compatibility)
+- (BOOL)assetPackIsAvailableLocallyWithIdentifier:(NSString *)assetPackIdentifier API_AVAILABLE(ios(26.4));
+- (void)getLocalStatusOfAssetPackWithIdentifier:(NSString *)assetPackIdentifier
+                            completionHandler:(void (^)(BAAssetPackStatus status))completionHandler API_AVAILABLE(ios(26.4));
+@end
+#endif
+
 static NSString *g_mode;
 static int g_log = -1;
 static int g_log_tee;
@@ -385,6 +395,24 @@ static BOOL ba_configured(void) {
     return v;
 }
 
+// iOS 26.0–26.3 没有同步的「本地是否可用」查询；只有系统确认（状态查询为已下载 / 下载完成回调）才置这个标记，只在主线程读写。
+// iOS 26.0–26.3 has no synchronous "available locally" query; only system confirmation (status query says downloaded / download-finished callback) sets this flag, read and written only on the main thread.
+static BOOL g_pack_legacy_available;
+
+// S2Arm 推来、还没解开的资源包（Documents/资源包/.incoming/*.tar，约定见 s2a_pack_apply.c）有几批。推送端推完会带 S2A_PACK_APPLY_ONLY=1 起一次 App 解开；
+//   那一下没起成（免费 Apple ID 第一次装、开发者还没在设置里信任，电脑拉不起 App）时包就留在这里——玩家信任后点图标正常打开，资源界面就地解开（AssetVC importPack），
+//   不用再靠电脑拉起一次。推来的是更新（旧资源还在）也先解开再起游戏，免得用旧资源起
+// How many batches of resource pack S2Arm pushed but has not unpacked yet (Documents/资源包/.incoming/*.tar, convention in s2a_pack_apply.c). After pushing, the pusher
+//   launches the App once with S2A_PACK_APPLY_ONLY=1 to unpack them; when that launch fails (first install with a free Apple ID, developer not yet trusted in Settings,
+//   so the computer cannot launch the App) the batches stay here -- once the player trusts it and opens the App normally, the resource screen unpacks them in place
+//   (AssetVC importPack), with no second launch from the computer. If the push is an update (old resources still present) it is also unpacked before the game starts
+int dm_s2a_pack_apply(const char *docs);
+static int s2a_pack_pending(void) {
+    NSString *inc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0] stringByAppendingPathComponent:@"资源包/.incoming"];
+    int n = 0; for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:inc error:nil]) if ([f hasSuffix:@".tar"]) n++;
+    return n;
+}
+
 static NSString *romfs_locate(char *why, size_t n) {
     g_doc_bad = 0; g_doc_stray = 0;
     NSString *support = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES)[0];
@@ -473,6 +501,9 @@ static NSString *romfs_locate(char *why, size_t n) {
     else if (@available(iOS 26.4, *)) {
         NSError *e = nil; pack = [BAAssetPackManager.sharedManager URLForPath:@"romfs" error:&e].path; avail = [BAAssetPackManager.sharedManager assetPackIsAvailableLocallyWithIdentifier:@"romfs"];
         if (e) plog("boot: 托管资源包取路径报错：%s", e.localizedDescription.UTF8String);
+    } else if (@available(iOS 26.0, *)) {
+        NSError *e = nil; pack = [BAAssetPackManager.sharedManager URLForPath:@"romfs" error:&e].path; avail = g_pack_legacy_available;
+        if (e) plog("boot: 托管资源包路径取不到（iOS 26.4 以前的接口）：%s", e.localizedDescription.UTF8String);
     }
     if (pack) {
         NSArray *in = [fm contentsOfDirectoryAtPath:[pack stringByAppendingPathComponent:@"data"] error:nil]; BOOL there = [fm fileExistsAtPath:pack];
@@ -810,6 +841,11 @@ static void run_mode(void) {
     else if (!strcmp(m, "tsd")) probe_tsd();
     else if (!strcmp(m, "msl")) probe_msl();
     else if (!strcmp(m, "blank")) { plog("blank：空白 Metal 60 帧清屏（发热负对照）"); return; }   // 一直跑到被停 | Runs until stopped
+    else if (!strcmp(m, "s2a-pack")) {   // 只解 S2Arm 推来的资源包，解完退出（结果在 Documents/unpack.log，推送端读它） | only unpack the resource pack S2Arm pushed, then exit (result in Documents/unpack.log, read by the pusher)
+        int dm_s2a_pack_apply(const char *docs);
+        int rc = dm_s2a_pack_apply(NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0].fileSystemRepresentation);
+        plog("s2a-pack：%s", rc ? "解包失败（原因见 unpack.log）" : "解开了"); exit(rc ? 1 : 0);
+    }
     else plog("未知模式 %s", m);
     plog("DONE");
 }
@@ -831,6 +867,11 @@ static void run_boot(void);
 // on install timeout / pause / error it offers "Use direct download" (the download-site path, only offered if the package has a download address configured). packFull = the moment progress reached 100%, gone = already switched to direct download (after that, callbacks from the hosted download are only logged)
 @property (strong) UIButton *useDirect, *share; @property (strong) dispatch_source_t poll; @property (assign) CFAbsoluteTime packT, packFull, logT, testAvailAt;
 @property (assign) int64_t packBytes, packDone; @property (assign) int gone, slowShown, finished, textKind, packStop;   // packStop：系统报了暂停 / 失败，屏上留那条说明，不再换回「正在安装」 | packStop: the system reported paused / failed; the screen keeps that explanation and does not switch back to "Installing"
+@property (assign) BOOL legacyStatusPending;
+@property (assign) CFAbsoluteTime legacyStatusT;
+@property (assign) NSUInteger legacyStatus;
+@property (strong) NSError *legacyStatusError;
+@property (copy) void (^legacyStatusCompletion)(BOOL available);
 @end
 @implementation AssetVC
 - (void)netUp { if (self.netDown && self.stopped) { plog("assets: 网络通了，自动重试"); self.netDown = 0; [self start]; } else self.netDown = 0; }
@@ -875,6 +916,29 @@ static void run_boot(void);
     for (UIButton *x in row) { CGFloat bw = MAX(120, x.bounds.size.width + 24); x.frame = CGRectMake(x0, b.size.height / 2 + 50, bw, 44); x0 += bw + 16; }
 }
 - (void)showBtn:(UIButton *)x { dispatch_async(dispatch_get_main_queue(), ^{ x.hidden = NO; [self.view setNeedsLayout]; }); }
+- (void)importPack:(int)total {   // 解 S2Arm 推来的资源包（后台线程，s2a_pack_apply.c）；屏上按剩几批标进度，解完重走 start（→ romfs_locate → ready 就地起游戏） | unpack the pack S2Arm pushed (background thread); progress on screen by batches left; when done, run start again
+    static int busy; if (busy) return; busy = 1;
+    plog("assets: 「D2R Mobile」里有 S2Arm 推来没解开的资源包 %d 批，就地解开", total);
+    [self say:[NSString stringWithFormat:T("dmImportPack"), 0, total]]; self.bar.progress = 0;
+    dispatch_source_t tm = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(tm, DISPATCH_TIME_NOW, NSEC_PER_SEC / 2, NSEC_PER_SEC / 10);
+    dispatch_source_set_event_handler(tm, ^{ int done = total - s2a_pack_pending(); if (done < 0) done = 0;
+        [self say:[NSString stringWithFormat:T("dmImportPack"), done, total]]; self.bar.progress = (float)done / total; });
+    dispatch_resume(tm);
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        int rc = dm_s2a_pack_apply(docs.fileSystemRepresentation);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            dispatch_source_cancel(tm); busy = 0;
+            if (!rc) { plog("assets: 推来的资源包解开了，接着找资源"); self.bar.progress = 1; [self start]; return; }
+            NSString *lg = [NSString stringWithContentsOfFile:[docs stringByAppendingPathComponent:@"unpack.log"] encoding:NSUTF8StringEncoding error:nil] ?: @"";
+            NSString *last = [[lg stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@"\n"].lastObject ?: @"";
+            NSRange r = [last rangeOfString:@"解包失败："]; NSString *why = r.location == NSNotFound ? last : [last substringFromIndex:NSMaxRange(r)];
+            plog("assets: 推来的资源包解不开（返回 %d）：%s", rc, why.UTF8String);
+            [self say:[NSString stringWithFormat:T("dmImportFail"), why]]; [self showBtn:self.retry]; [self showBtn:self.share];
+        });
+    });
+}
 - (void)shareTap { plog("assets: 玩家点了分享诊断日志"); void dm_sharelog_share(void); dm_sharelog_share(); }
 - (void)useDirectTap {
     plog("assets: 玩家点了改用直接下载（托管已等 %.0f 秒，进度 %.2f / %.2f GB%s）", CFAbsoluteTimeGetCurrent() - self.packT, self.packDone / 1e9, self.packBytes / 1e9, self.packFull ? "，已到 100%" : "");
@@ -891,9 +955,38 @@ static int64_t free_bytes(void) {   // 给 App 用的可用空间（系统「重
     const char *t = getenv("DM_TEST_BA_FREE"); if (t) return (int64_t)(atof(t) * 1e9);
     NSURL *u = [NSURL fileURLWithPath:NSHomeDirectory()]; NSNumber *v = nil; [u getResourceValue:&v forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil]; return v.longLongValue;
 }
+- (void)legacyPackReady {
+    if (self.gone || g_host_up) return;
+    g_pack_legacy_available = YES;
+    [self ready];
+}
+- (void)queryLegacyPack:(void (^)(BOOL available))completion API_AVAILABLE(ios(26.0)) {
+    // 旧的状态接口可能联网：并发的查询合并成一次，状态全放在主线程。
+    // The old status API may use the network: concurrent queries are coalesced into one, and all state stays on the main thread.
+    self.legacyStatusCompletion = completion;
+    if (self.legacyStatusPending) return;
+    self.legacyStatusPending = YES;
+    [BAAssetPackManager.sharedManager getStatusOfAssetPackWithIdentifier:@"romfs" completionHandler:^(BAAssetPackStatus st, NSError *e) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.legacyStatusPending = NO; self.legacyStatusT = CFAbsoluteTimeGetCurrent(); self.legacyStatus = st; self.legacyStatusError = e;
+            void (^done)(BOOL) = self.legacyStatusCompletion; self.legacyStatusCompletion = nil;
+            if (self.gone || g_host_up) return;
+            // 过时的查询结果不能撤销已经收到的下载完成确认。
+            // A stale query result must not undo a download completion that has already been received.
+            if (!e && (st & BAAssetPackStatusDownloaded)) g_pack_legacy_available = YES;
+            if (e) plog("assets: 托管资源包状态查询失败（iOS 26.4 以前的接口）：%s", e.localizedDescription.UTF8String);
+            if (done) done(g_pack_legacy_available);
+        });
+    }];
+}
 - (BOOL)packAvail {
     if (getenv("DM_TEST_BA")) return self.testAvailAt > 0 && CFAbsoluteTimeGetCurrent() >= self.testAvailAt;
     if (@available(iOS 26.4, *)) return [BAAssetPackManager.sharedManager assetPackIsAvailableLocallyWithIdentifier:@"romfs"];
+    if (@available(iOS 26.0, *)) {
+        if (!g_pack_legacy_available && !self.legacyStatusPending && CFAbsoluteTimeGetCurrent() - self.legacyStatusT >= 30)
+            [self queryLegacyPack:^(BOOL available) { if (available) [self ready]; }];
+        return g_pack_legacy_available;
+    }
     return NO;
 }
 - (void)logPack:(BOOL)avail free:(int64_t)fr {
@@ -903,6 +996,9 @@ static int64_t free_bytes(void) {   // 给 App 用的可用空间（系统「重
         [BAAssetPackManager.sharedManager getLocalStatusOfAssetPackWithIdentifier:@"romfs" completionHandler:^(BAAssetPackStatus st) {
             plog("assets: 托管状态：已等 %.0f 秒，进度 %.2f / %.2f GB（100%% 后 %.0f 秒，-1 = 没到），系统说本地可用 %d，可用空间 %.2f GB；系统状态位 0x%lx（1 可下载 2 有更新 4 最新 8 过期 0x10 已撤 0x20 下载中 0x40 已下完）",
                  w, d, t, f, a, g, (unsigned long)st); }];
+    } else if (@available(iOS 26.0, *)) {
+        plog("assets: 托管资源包（iOS 26.4 以前的接口）：已等 %.0f 秒，%.2f / %.2f GB，满额已 %.0f 秒，可用 %d，可用空间 %.2f GB，状态 0x%lx，查询在途 %d，错误 %s",
+             w, d, t, f, a, g, (unsigned long)self.legacyStatus, self.legacyStatusPending, self.legacyStatusError.localizedDescription.UTF8String ?: "无");
     } else plog("assets: 托管状态：已等 %.0f 秒，进度 %.2f / %.2f GB（100%% 后 %.0f 秒，-1 = 没到），系统说本地可用 %d，可用空间 %.2f GB", w, d, t, f, a, g);
 }
 - (void)packText:(int64_t)fr {   // 100% 之后屏上那段：空间不够 > 超时 > 正在安装 | the passage on screen after 100%: not enough space > timeout > installing
@@ -958,6 +1054,7 @@ static int64_t free_bytes(void) {   // 给 App 用的可用空间（系统「重
     self.retry.hidden = YES; self.stopped = 0; self.last = 0; self.lastT = CFAbsoluteTimeGetCurrent(); self.packStop = 0; self.textKind = 0;
     char why[2048];
     if (getenv("DM_TEST_BA") && !self.gone) { if (@available(iOS 26.0, *)) [self fakeBA:@(getenv("DM_TEST_BA"))]; return; }   // 测试：造托管下载现场（fakeBA） | test: stage a hosted download scene (fakeBA)
+    { int np = s2a_pack_pending(); if (np) { [self importPack:np]; return; } }   // S2Arm 推来还没解开的资源包：先就地解开，解完重走这里 | resource pack S2Arm pushed but not yet unpacked: unpack in place first, then come back here
     if (!getenv("DM_ASSETS_TEST") && romfs_locate(why, sizeof why)) { [self ready]; return; }   // 重试时资源已到（如刚在「文件」里拷完） | Assets have already arrived on retry (e.g. just finished copying in the Files app)
     if (!getenv("DM_ASSETS_TEST") && g_doc_bad) { [self direct:@(why)]; return; }   // 有文件夹但不完整（拷到一半 / 下到一半）：不试托管下载，直接从下载站补齐；下载站走不通才报原因 | A folder exists but is incomplete (half copied / half downloaded): do not try the hosted download, fill in the rest straight from the download site; report the reason only if the download site is unreachable
     if (self.gone) { [self direct:nil]; return; }   // 玩家已选「改用直接下载」：重试仍走这条（托管的回调此后不接，回到托管会停在「正在下载」） | the player chose "Use direct download": retries keep going this way (callbacks from the hosted download are not taken from now on; going back to hosted would stay stuck at "Downloading")
@@ -970,20 +1067,30 @@ static int64_t free_bytes(void) {   // 给 App 用的可用空间（系统「重
         return;
     }
     if (!ba_configured()) { [self direct:stray]; return; }
-    if (@available(iOS 26.4, *)) {
-        [self say:T("dmDlConnecting")];
-        BAAssetPackManager *m = BAAssetPackManager.sharedManager; m.delegate = self;
-        [m getAssetPackWithIdentifier:@"romfs" completionHandler:^(BAAssetPack *pack, NSError *e) {
-            if (!pack) { plog("assets: 没有托管资源包（%s），改从下载站直接下", e.localizedDescription.UTF8String); dispatch_async(dispatch_get_main_queue(), ^{ [self direct:stray]; }); return; }   // 直装包走到这里必然失败 | A direct-install build always fails when it gets here
-            [self say:T("dmDlDownloading")];
-            plog("assets: 托管资源包 版本 %ld、%.2f GB，请系统确保本地可用（可用空间 %.2f GB）", (long)pack.version, pack.downloadSize / 1e9, free_bytes() / 1e9);
-            dispatch_async(dispatch_get_main_queue(), ^{ self.packBytes = pack.downloadSize; [self watchPack]; });
-            [m ensureLocalAvailabilityOfAssetPack:pack completionHandler:^(NSError *e2) {
-                if (e2) { self.packStop = 1; [self fail:@"下载游戏资源" error:e2]; [self offerDirect:3]; return; }
-                plog("assets: 系统「确保本地可用」完成回调到了");
-                dispatch_async(dispatch_get_main_queue(), ^{ [self ready]; });
+    if (@available(iOS 26.0, *)) {
+        void (^download)(void) = ^{
+            [self say:T("dmDlConnecting")];
+            BAAssetPackManager *m = BAAssetPackManager.sharedManager; m.delegate = self;
+            [m getAssetPackWithIdentifier:@"romfs" completionHandler:^(BAAssetPack *pack, NSError *e) {
+                if (!pack) { plog("assets: 没有托管资源包（%s），改从下载站直接下", e.localizedDescription.UTF8String); dispatch_async(dispatch_get_main_queue(), ^{ [self direct:stray]; }); return; }   // 直装包走到这里必然失败 | A direct-install build always fails when it gets here
+                [self say:T("dmDlDownloading")];
+                plog("assets: 托管资源包 版本 %ld、%.2f GB，请系统确保本地可用（可用空间 %.2f GB）", (long)pack.version, pack.downloadSize / 1e9, free_bytes() / 1e9);
+                dispatch_async(dispatch_get_main_queue(), ^{ self.packBytes = pack.downloadSize; [self watchPack]; });
+                [m ensureLocalAvailabilityOfAssetPack:pack completionHandler:^(NSError *e2) {
+                    if (e2) { self.packStop = 1; [self fail:@"下载游戏资源" error:e2]; [self offerDirect:3]; return; }
+                    plog("assets: 系统「确保本地可用」完成回调到了");
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (@available(iOS 26.4, *)) [self ready];
+                        else [self legacyPackReady];
+                    });
+                }];
             }];
-        }];
+        };
+        if (@available(iOS 26.4, *)) download();
+        else {
+            [self say:T("dmDlConnecting")];
+            [self queryLegacyPack:^(BOOL available) { if (available) [self ready]; else download(); }];
+        }
     } else [self direct:stray];
 }
 // 直装包：从我们自己的下载站把资源直接下到 Documents/D2R Mobile Resources（asset_dl.m）。下载站走不通时界面退回原来的指引（或 fallback 给的原因）
@@ -1045,7 +1152,11 @@ static int64_t free_bytes(void) {   // 给 App 用的可用空间（系统「重
 }
 - (void)downloadOfAssetPackBegan:(BAAssetPack *)p API_AVAILABLE(ios(26.0)) { plog("assets: 系统通知托管下载开始 / 继续"); self.packStop = 0; self.textKind = 0; }
 - (void)downloadOfAssetPackFinished:(BAAssetPack *)p API_AVAILABLE(ios(26.0)) {
-    plog("assets: 系统通知资源包下载完成%s", self.gone ? "（已改走直接下载，不接）" : ""); if (self.gone) return; self.finished = 1; dispatch_async(dispatch_get_main_queue(), ^{ [self ready]; }); }
+    plog("assets: 系统通知资源包下载完成%s", self.gone ? "（已改走直接下载，不接）" : ""); if (self.gone) return; self.finished = 1;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (@available(iOS 26.4, *)) [self ready];
+        else if (!p || [p.identifier isEqualToString:@"romfs"]) [self legacyPackReady];
+    }); }
 - (void)downloadOfAssetPackPaused:(BAAssetPack *)p API_AVAILABLE(ios(26.0)) {
     plog("assets: 系统通知托管下载暂停%s", self.gone ? "（已改走直接下载）" : ""); if (self.gone) return; self.packStop = 1; [self say:T("dmDlPaused")]; [self offerDirect:2]; }
 - (void)downloadOfAssetPack:(BAAssetPack *)p failedWithError:(NSError *)e API_AVAILABLE(ios(26.0)) {
@@ -1215,6 +1326,9 @@ int main(int argc, char *argv[]) {
         if (was < want) { rl.rlim_cur = want; int rc = setrlimit(RLIMIT_NOFILE, &rl); fprintf(stderr, "boot: 文件描述符软上限 %llu → %llu（%s）\n", (unsigned long long)was, (unsigned long long)want, rc ? "失败" : "已设"); g_nofile_was = (int)was; g_nofile_now = rc ? (int)was : (int)want; } else g_nofile_was = g_nofile_now = (int)was; } }
     g_mode = @"boot";   // 缺省 = 玩家点图标 = 起游戏。原缺省是早期探针 anon（匿名页写后执行），TestFlight 版点图标即被代码签名杀掉（崩溃日志 CODESIGNING Invalid Page）；探针须显式 -mode anon | Default = player taps the icon = start the game. The old default was the early probe anon (write to an anonymous page then execute); in the TestFlight build tapping the icon got it killed by code signing right away (crash log CODESIGNING Invalid Page); the probe now requires an explicit -mode anon
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-mode")) g_mode = @(argv[i + 1]);
+    // S2Arm 启动器推完资源包起一次 App 只解包（S2A_PACK_APPLY_ONLY=1，约定见 s2a_pack_apply.c）：走探针模式那条路——屏上只标一行、不起宿主，后台解完即退
+    // The S2Arm launcher launches the App once to unpack the pushed resource pack only (S2A_PACK_APPLY_ONLY=1, convention in s2a_pack_apply.c): it takes the probe-mode path -- one line on screen, no host, exits once unpacked in the background
+    { const char *pa = getenv("S2A_PACK_APPLY_ONLY"); if (pa && !strcmp(pa, "1")) g_mode = @"s2a-pack"; }
     // -mode thermal：轻探温——只读系统温控档位写一行就退出，不起宿主、不建窗口 / Metal 层（原先探温要拉起主菜单 60 帧渲染 20 s，探温本身在给手机加热）。
     // 输出到标准输出（devicectl launch --console 可见）并落 Documents/thermal.txt（整份原子替换，一行：档位 + 本次时刻）
     // -mode thermal: lightweight thermal probe; only reads the system thermal state, writes one line and exits, without starting the host or creating a window / Metal layer (the probe used to bring up the main menu rendering at 60 fps for 20 s, so the probe itself was heating the phone).
@@ -1282,6 +1396,7 @@ int main(int argc, char *argv[]) {
         if (g_block_title) {}   // 起不了游戏：不起宿主，场景里弹框（BlockVC） | The game cannot start: do not start the host; show a message in the scene (BlockVC)
         else if (g_no_bc) {}
         else if (getenv("DM_ASSETS_TEST") || getenv("DM_TEST_BA")) { g_need_assets = 1; plog("boot: DM_ASSETS_TEST——强制走资源下载界面再就地起宿主（测这条路径）"); }
+        else if (s2a_pack_pending()) { g_need_assets = 1; plog("boot: 有 S2Arm 推来没解开的资源包 %d 批，先在资源界面解开", s2a_pack_pending()); }
         else if (romfs_locate(why, sizeof why)) plog("boot: 游戏资源就绪，宿主等场景到前台再装载");
         else { g_need_assets = 1; plog("boot: 游戏资源还没到（%s），先显示资源下载界面", why); }
     } else metal_cache_report_and_clean();

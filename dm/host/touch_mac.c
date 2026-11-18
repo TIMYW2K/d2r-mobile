@@ -55,10 +55,21 @@ int dm_touch_host_world_active(void) {
 #include <stdatomic.h>
 static uint32_t g_live_tick0; static int g_live_based; static uint64_t g_live_btn; static uint32_t g_live_btn_until;
 static struct { _Atomic unsigned head, tail; struct { int op; float nx, ny; } q[64]; } g_live;
+// 悬停只留最新位置，不占点击队列；位 63 = 待处理，位 62 = 已离开画面。游戏线程才读界面树。
+// Coalesce hover positions outside the click queue; bit 63 = pending, bit 62 = outside the picture. Only the game thread reads UI widgets.
+static _Atomic uint64_t g_live_hover;
 // 世界手势从按下到抬起独占；点选答案只用于空地回退，不能让抬起再触发一次。
 // Own a world gesture from down through up; the pick result only supplies the ground fallback, never a second click on release.
 static struct { int owned, down, repeat; uint32_t last; float x, y; unsigned tap_seq; float tap_x, tap_y; } g_lm;
-void dm_touch_host_live(int op, float nx, float ny) {   // 前端线程：op 0 按下 1 移动 2 抬起；坐标 = 游戏画面归一化 [0,1] | Front-end thread: op 0 down, 1 move, 2 up; coordinates = normalized to the game picture [0,1]
+void dm_touch_host_live(int op, float nx, float ny) {   // 前端线程：op 0 按下 1 拖动 2 抬起 3 悬停；坐标 = 界面归一化，悬停可在画面外 | Front-end thread: op 0 down, 1 drag, 2 up, 3 hover; coordinates = UI-normalized, hover may be outside the picture
+    if (!g_live_on) return;
+    if (op == 3) {
+        uint64_t p = 1ull << 63;
+        if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1) p |= (uint64_t)(uint32_t)(nx * 65535 + .5f) << 16 | (uint32_t)(ny * 65535 + .5f);
+        else p |= 1ull << 62;
+        atomic_store(&g_live_hover, p); return;
+    }
+    atomic_store(&g_live_hover, 0);
     if (!g_live_on) return; unsigned t = atomic_load(&g_live.tail); if (t - atomic_load(&g_live.head) >= 64) return;
     g_live.q[t % 64].op = op; g_live.q[t % 64].nx = nx; g_live.q[t % 64].ny = ny; atomic_store(&g_live.tail, t + 1);
 }
@@ -160,7 +171,7 @@ static void *live_test_thread(void *arg) {
     char line[160]; double t0 = (double)now_ns() / 1e9; int n = 0;
     while (fgets(line, sizeof line, f)) { double sec; char op[8]; float x = 0, y = 0; if (line[0] == '#' || sscanf(line, "%lf %7s %f,%f", &sec, op, &x, &y) < 2) continue;
         double wait = sec - ((double)now_ns() / 1e9 - t0); if (wait > 0) usleep((useconds_t)(wait * 1e6));
-        dm_touch_host_live(!strcmp(op, "down") ? 0 : !strcmp(op, "move") ? 1 : 2, x / 2868, y / 1320); n++; }
+        dm_touch_host_live(!strcmp(op, "hover") ? 3 : !strcmp(op, "down") ? 0 : !strcmp(op, "move") ? 1 : 2, x / 2868, y / 1320); n++; }
     fclose(f); fprintf(stderr, "[dm] DM_TEST_LIVE：%d 条发完\n", n); return NULL;
 }
 void dm_touch_host_step(uint64_t now, uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
@@ -219,14 +230,13 @@ void dm_touch_host_step(uint64_t now, uint64_t *buttons, int32_t *lx, int32_t *l
               if (lb) { eat = 1; hold = 0; g_live_btn = lb; g_live_btn_until = touch_cur_tick() + 4; }
               else if (hk == 1) { eat = 1; hold = 1; g_live_btn = hb; g_live_btn_until = touch_cur_tick() + 30 * 600; }
               else if (hk == 2) { eat = 1; hold = 0; }
-              // 右上角小地图（同 iOS 壳）：点它顶上区域名那一条（矩形高的 1/4）= 切到全屏地图；全屏地图开着时点 HUD 以外的任何地方 = 回到小地图。只在没有面板开着时认：
+              // 右上角小地图（同 iOS 壳）：点它顶上区域名那一条（矩形高的 1/4）= 小地图 ↔ 全屏地图来回切（点别处不再退出全屏地图：点地面走路会把它切回去，#186）。只在没有面板开着时认：
               // 手势层按名单认面板，大秘境选层页这类借壳的面板不在名单里（它右上角的关闭 X 正落在地名条的范围内，点 X 变成了切地图），所以再加两条——游戏没停着、这一点不在任何面板里
-              // Top-right minimap (same as the iOS shell): clicking the area-name strip at its top (1/4 of the rectangle's height) = switch to the full-screen map; with the full-screen map open, clicking anywhere outside the HUD = back to the minimap. Recognised only when no panel is open:
+              // Top-right minimap (same as the iOS shell): clicking the area-name strip at its top (1/4 of the rectangle's height) switches between the minimap and the full-screen map (clicking elsewhere no longer leaves the full-screen map: walking by clicking turned it back, #186). Recognised only when no panel is open:
               // the gesture layer recognises panels by a list, and panels that borrow another shell, such as the Greater Rift level-selection page, are not on it (its close X at the top right falls exactly within the area-name strip, so clicking X turned into switching the map), hence two more conditions - the game is not stopped, and this point is not inside any panel
               else if (op == 0 && in && !g_touch.state.navigation_mode && !dm_game_paused() && dm_ui_item_at_now(px, py) != 0) { int dm_ui_minimap_rect(float r[4]), dm_ui_map_is_full(void); void dm_ui_map_full(int on); float mr[4];
-                  if (dm_ui_map_is_full()) { dm_ui_map_full(0); eat = 1; hold = 0; fprintf(stderr, "[dm] 鼠标：全屏地图开着，点一下 → 回到小地图\n"); }
-                  else if (dm_ui_minimap_rect(mr)) { float band = (mr[3] - mr[1]) / 4; if (band < 0.042f) band = 0.042f; if (band > (mr[3] - mr[1]) * 0.4f) band = (mr[3] - mr[1]) * 0.4f;
-                      if (px >= mr[0] && px <= mr[2] && py >= mr[1] && py <= mr[1] + band) { dm_ui_map_full(1); eat = 1; hold = 0; fprintf(stderr, "[dm] 鼠标：点在小地图顶上那一条 → 切到全屏地图\n"); } } }
+                  if (dm_ui_minimap_rect(mr)) { float band = (mr[3] - mr[1]) / 4; if (band < 0.042f) band = 0.042f; if (band > (mr[3] - mr[1]) * 0.4f) band = (mr[3] - mr[1]) * 0.4f;
+                      if (px >= mr[0] && px <= mr[2] && py >= mr[1] && py <= mr[1] + band) { const int full = dm_ui_map_is_full(); dm_ui_map_full(!full); eat = 1; hold = 0; fprintf(stderr, "[dm] 鼠标：点在小地图顶上那一条 → 切到%s\n", full ? "小地图" : "全屏地图"); } } }
               if (eat) { if (op == 2) { eat = 0; if (hold) { hold = 0; g_live_btn_until = touch_cur_tick() + 3; } } atomic_store(&g_live.head, h + 1); continue; } }
             if (!in) { static int upd_eat; int dm_update_click_at(float, float);   // 主菜单右上角的「有新版本…」那行：点它 = 打开下载页（dm_update.c），这一下从按下到抬起都不再交给界面 | the "New version..." line at the top right of the main menu: clicking it = open the download page (dm_update.c); this click is no longer passed to the interface from press to release
                 if (op == 0 && dm_update_click_at(px, py)) upd_eat = 1;
@@ -262,6 +272,14 @@ void dm_touch_host_step(uint64_t now, uint64_t *buttons, int32_t *lx, int32_t *l
           if (g_lm.down && g_lm.repeat && tk != g_lm.last && dm_ui_item_at_now(g_lm.x, g_lm.y) == 3) {
               g_lm.last = tk; dm_world_walk(g_lm.x, ui_y_to_screen(g_lm.y));
           } }
+    }
+    if (g_live_on) {
+        uint64_t h = atomic_exchange(&g_live_hover, 0);
+        if (h && getenv("DM_TEST_HOVER_LOG")) fprintf(stderr, "[dm] 鼠标悬停派发：%#llx 手势 %d 槽 %d 队列 %d/%d 脉冲 %llu\n", (unsigned long long)h, g_lm.owned, g_touch.state.pointer_slot, g_touch.next, g_touch.count, (unsigned long long)g_touch.state.pulse_button);
+        if (h && !g_live_btn && !g_lm.owned && g_touch.next == g_touch.count && g_touch.state.pointer_slot == DM_TC_NONE && !g_touch.state.buttons && !g_touch.state.pulse_button && !*buttons && !*lx && !*ly && !*rx && !*ry) {
+            float x = h & (1ull << 62) ? -1 : (float)((h >> 16) & 0xffff) / 65535, y = h & (1ull << 62) ? -1 : (float)(h & 0xffff) / 65535;
+            if (dm_ui_mouse_hover_now(x, y)) { g_touch.state.pointer_valid = 0; dm_cursor_clear(); }
+        }
     }
     if (g_live_btn) { if ((int32_t)(g_live_btn_until - touch_cur_tick()) > 0) *buttons |= g_live_btn; else g_live_btn = 0; }
     if (!g_touch.enabled || !g_touch.started) return;

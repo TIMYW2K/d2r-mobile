@@ -3,7 +3,11 @@ DM_ROOT ?= $(HOME)/dm-work
 # dm/host unit tests in one command: make -C dm/host/tests run (takes seconds; build output goes to build/ and is not committed)
 PY ?= $(DM_ROOT)/build/cache/dm/venv/bin/python
 EXEFS ?= $(DM_ROOT)/data/switch/3.3.94012/Update/ExeFS
+ROMFS ?= $(or $(DM_ROMFS_SRC),$(DM_ROOT)/data/switch/3.3.94012/Update/RomFS)
 B = build
+MOVIE_PACKAGES = libavformat libavcodec libavutil libswscale
+MOVIE_TEST_FLAGS ?= -O1
+.PHONY: movie-real
 # 依赖一行一个、按字母序（同 ../Makefile 的 SRC：免得加一个测试就整行冲突）；下面各条命令的先后不变
 # Dependencies one per line in alphabetical order (same as SRC in ../Makefile: so that adding one test does not conflict on the whole line); the order of the commands below is unchanged
 run: \
@@ -29,6 +33,7 @@ run: \
 	$(B)/t_cloudsync \
 	$(B)/t_condvar \
 	$(B)/t_condvar_old \
+	$(B)/t_crash_hang \
 	$(B)/t_doorspot \
 	$(B)/t_fs \
 	$(B)/t_fs_case \
@@ -36,10 +41,12 @@ run: \
 	$(B)/t_hid_script \
 	$(B)/t_hud_dead \
 	$(B)/t_i18n \
+	$(B)/t_legend \
 	$(B)/t_minimap_lift \
 	$(B)/t_minimap_policy \
 	$(B)/t_minimap_shift \
 	$(B)/t_loader_weak \
+	$(B)/t_mac_overlay \
 	$(B)/t_modetx \
 	$(B)/t_movie \
 	$(B)/t_namegen \
@@ -48,10 +55,12 @@ run: \
 	$(B)/t_portrait_hud \
 	$(B)/t_widestash_restore \
 	$(B)/t_rift_clock \
+	$(B)/t_rift_hud \
 	$(B)/t_rift_next \
 	$(B)/t_rift_oldrun \
 	$(B)/t_rift_wave \
 	$(B)/t_interaction_diag \
+	$(B)/t_loader_weak \
 	$(B)/t_map_diag \
 	$(B)/t_warp_diag \
 	$(B)/t_romfs_validate \
@@ -62,19 +71,28 @@ run: \
 	$(B)/t_thread_leak \
 	$(B)/t_touch \
 	$(B)/t_touch_mac \
+	$(B)/t_ui_move \
 	$(B)/t_unit_level \
+	$(B)/t_vault_icons \
+	$(B)/t_widestash_restore \
+	$(B)/t_freetp_zr \
 	$(B)/t_widget
 	python3 native_write_scan.py --selftest ..
 	python3 widget_cache_scan.py --selftest ..
 	python3 mode_scan.py ../..
 	python3 ../../ios/tools/dm_i18n.py --check
 	python3 ../../i18n/scan_literals.py
+	python3 ../../tools/tests/test_warm_seed.py
 	$(B)/t_thread_leak
 	$(B)/t_loader_weak
+	$(B)/t_mac_overlay
+	$(PY) test_mac_features.py
 	$(B)/t_rift_clock
+	$(B)/t_rift_hud
 	$(B)/t_rift_next
 	$(B)/t_rift_oldrun
 	$(B)/t_interaction_diag
+	$(B)/t_loader_weak
 	$(B)/t_map_diag
 	$(B)/t_warp_diag
 	$(B)/t_rift_wave
@@ -92,6 +110,7 @@ run: \
 	$(B)/t_audio_spsc
 	$(B)/t_swkbd
 	$(B)/t_altstack
+	$(B)/t_crash_hang
 	$(B)/t_movie
 	$(B)/t_condvar
 	$(B)/t_condvar_old
@@ -118,16 +137,21 @@ run: \
 	$(B)/t_minimap_policy
 	$(B)/t_minimap_shift
 	$(B)/t_modetx
+	$(B)/t_ui_move
+	$(B)/t_legend
+	$(B)/t_vault_icons
 	$(B)/t_padmap
 	$(B)/t_unit_level
 	$(B)/t_widget
 	$(B)/t_doorspot
 	TMPDIR="$(abspath $(B))" $(B)/t_cloudsync 2>/dev/null
-	for m in en zh none sysen systw tags game; do TMPDIR="$(abspath $(B))" $(B)/t_i18n $$m || exit 1; done
+	for m in en zh none sysen syses systw sysru sysko syspt tags game; do TMPDIR="$(abspath $(B))" $(B)/t_i18n $$m || exit 1; done
 	$(PY) movie_cut.py $(B)/main.orig.bin $(B)/subsdk0.orig.bin
 	$(PY) oe_notify.py $(B)/main.orig.bin
 $(B)/t_i18n: t_i18n.c ../dm_i18n.c ../dm_i18n.h ../dm_i18n_tab.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_i18n.c ../dm_i18n.c
+$(B)/t_mac_overlay: t_mac_overlay.m ../app_mac_overlay.h | $(B)
+	clang -O1 -Wall -Werror -fobjc-arc -framework Foundation -o $@ t_mac_overlay.m
 $(B)/t_hud_dead: t_hud_dead.c ../dm_hud.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_hud_dead.c
 $(B)/t_textbox: t_textbox.c ../dm_textbox_core.c ../dm_textbox_core.h | $(B)
@@ -176,8 +200,17 @@ $(B)/t_swkbd: t_swkbd.c ../hle_swkbd.c ../hle.h ../dm.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_swkbd.c ../hle_swkbd.c
 $(B)/t_movie: t_movie.c ../hle_movie.c ../hle.h ../dm.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_movie.c ../hle_movie.c
+$(B)/t_movie_real: t_movie_real.c ../hle_movie.c ../dm_movie_decode.c ../dm_movie_decode.h ../hle.h ../dm.h | $(B)
+	clang $(MOVIE_TEST_FLAGS) -Wall -Wno-unused-function -DDM_MOVIE_FFMPEG=1 -I.. -o $@ t_movie_real.c ../dm_movie_decode.c $(shell pkg-config --cflags --libs $(MOVIE_PACKAGES))
+movie-real: $(B)/t_movie_real
+	$(PY) movie_real.py $(B)/t_movie_real
 $(B)/t_altstack: t_altstack.c t_altstack_stub.c ../crash.c ../dm.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -o $@ t_altstack.c t_altstack_stub.c ../crash.c
+# 崩溃处理不会把崩溃变成卡死（3 秒闹钟、第一段信号安全）；安卓同一份可用 NDK 静态编（-DDM_STATIC_TEST）在电脑上经 qemu 跑
+# The crash handler never turns a crash into a hang (3-second alarm, signal-safe first part); the same file builds for Android with the NDK statically
+# (-DDM_STATIC_TEST) and runs on a PC through qemu
+$(B)/t_crash_hang: t_crash_hang.c t_altstack_stub.c ../crash.c ../dm.h | $(B)
+	clang -O1 -Wno-unused-function -I.. -o $@ t_crash_hang.c t_altstack_stub.c ../crash.c
 $(B)/%.orig.bin: $(EXEFS)/% | $(B)
 	$(PY) ../../tools/nso.py $< $@ > /dev/null
 $(B):
@@ -220,6 +253,9 @@ $(B)/t_thread_leak: t_thread_leak.c ../thread.c ../dm.h | $(B)
 
 $(B)/t_interaction_diag: t_interaction_diag.c ../dm_world.c ../dm_unit.h ../touch_mac.h | $(B)
 	clang -O1 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_interaction_diag.c
+
+$(B)/t_loader_weak: t_loader_weak.c ../loader.c ../hle.c ../dm.h ../hle.h | $(B)
+	clang -O1 -Wno-deprecated-declarations -I.. -Wl,-dead_strip -o $@ t_loader_weak.c ../hle.c
 
 $(B)/t_map_diag: t_map_diag.c ../dm_cursor.c ../dm_unit.h | $(B)
 	clang -O1 -Wno-unused-function -Wl,-dead_strip -I.. -o $@ t_map_diag.c

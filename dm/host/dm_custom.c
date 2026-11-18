@@ -15,9 +15,11 @@
 #include "dm_cursor.h"
 #include "hle.h"
 #include "dm_input.h"
+#include "dm_i18n.h"
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *const k_keys[] = { "lang_en", "auto_mana", "merc_pot", "drop_light", "map_mark", "item_notes", "icloud", "pot_pick", "drop_haptic", "gem_pick", "store_btn", "q3d", "loot_filter", "auto_buff", "touch_swap_above", "hdr", "zoom", "metalfx", "cam", "bright", "allow_portrait", "show_fps" };   // 顺序 = 自定义页从上到下的行序（touch_layout.py _CUSTOM_ROWS；show_fps 不在自定义页，排末尾、只走游戏设置页）。T18：省电模式（eco_fps）已删除，帧率只由温控决定 | order = the custom page's top-to-bottom rows (touch_layout.py _CUSTOM_ROWS; show_fps is not on the custom page, it is last and only lives on the game's settings page). T18: the power-saving mode (eco_fps) is gone; the frame rate is only capped by the thermal state
@@ -55,13 +57,22 @@ static const char *rev_box(int i) { return i == 0 ? "TouchCustom_lang_zh" : i ==
 static _Atomic int g_val[NK];        // 已生效：1 开 / 0 关 | In effect: 1 on / 0 off
 static _Atomic int g_pend[NK];       // 选项页上改了还没应用：-1 = 没改 | Changed on the options page but not applied yet: -1 = not changed
 static _Atomic int g_loaded;         // 0 没读盘 / 1 已读 | 0 not read from disk / 1 read
-// lang_en（语言开关，自定义页第一行）：勾上 = 英文界面 + 英文语音。它不是功能开关，生效方式不同——下次启动挂存档时由 hle_fs.c 按它改写原版设置文件的
-// Language / VoiceLanguage（游戏运行中自己会把内存里的语言写回设置文件，所以只能在游戏读设置之前改；见 dm_custom_lang_explicit）。
-// 文件里没有这个键（老玩家、还没点过应用）= 不动原版设置，勾选框按当前实际语言显示；「默认」不改它（按一下默认把语言切了不合适）
-// lang_en (language switch, first row of the Custom page): checked = English UI + English voice. It is not a feature switch and takes effect differently -- at the next launch, when the save is mounted, hle_fs.c rewrites the original game's settings file's
-// Language / VoiceLanguage according to it (while running, the game itself writes the in-memory language back to the settings file, so it can only be changed before the game reads its settings; see dm_custom_lang_explicit).
-// Key absent from the file (an existing player who has not yet tapped Apply) = the original settings are left alone, and the checkbox shows the actual current language; 「默认」(Default) does not change it (switching the language at one press of Default would be inappropriate)
-static _Atomic int g_lang_explicit = -1;   // 文件里写着的 lang_en：-1 没写 / 0 / 1 | lang_en as written in the file: -1 not written / 0 / 1
+// lang（语言开关，自定义页第一行）：六项单选 0 中文 / 1 English / 2 Español / 3 Русский / 4 한국어 / 5 Português（勾选框 TouchCustom_lang_zh / _en / _es / _ru / _ko / _pt 互斥）。它不是功能开关，生效方式不同——
+// 下次启动挂存档时由 hle_fs.c 按它改写原版设置文件的 Language / VoiceLanguage（游戏运行中自己会把内存里的语言写回设置文件，所以只能在游戏读设置之前改；
+// 见 dm_custom_lang_explicit）。文件里没有这个键（还没点过应用；旧版本写的布尔键 lang_en 不再读——原版设置文件里本来就记着上次选的语言）
+// = 不动原版设置，勾选框按当前实际语言显示；「默认」不改它（按一下默认把语言切了不合适）
+#define LANG_N 6
+static const char *const k_lang_box[LANG_N] = { "TouchCustom_lang_zh", "TouchCustom_lang_en", "TouchCustom_lang_es", "TouchCustom_lang_ru", "TouchCustom_lang_ko", "TouchCustom_lang_pt" };
+static const char *const k_lang_hint[LANG_N] = { "TouchCustomLangHintZh", "TouchCustomLangHintEn", "TouchCustomLangHintEs", "TouchCustomLangHintRu", "TouchCustomLangHintKo", "TouchCustomLangHintPt" };
+static const char *const k_lang_name[LANG_N] = { "zh", "en", "es", "ru", "ko", "pt" };   // 只进日志 | Log only
+static _Atomic int g_lang_explicit = -1;   // 文件里写着的 lang：-1 没写 / 0 中文 / 1 English / 2 Español / 3 Русский / 4 한국어 / 5 Português
+static int g_lang_test;   // 测试开关 DM_TEST_LANG=<0–5>：当作玩家选了这一项并应用（走 hle_fs.c 挂存档时的真实改写），但不写回 sw_custom.txt（容器各局共用）
+static int lang_running(void) { int g = dm_lang_group(); return g == DM_LG_ZH ? 0 : g == DM_LG_ES || g == DM_LG_MX ? 2 : g == DM_LG_RU ? 3 : g == DM_LG_KO ? 4 : g == DM_LG_PT ? 5 : 1; }   // 此刻实际在跑的语言落在哪一项 | Which option the currently running language falls into
+static _Atomic int g_voice_explicit = -1;   // 文件里写着的 voice：-1 没写 / 0 中文配音 / 1 英文配音
+static int g_voice_test;   // 测试开关 DM_TEST_VOICE=0|1；只用于真机回归，不写回文件
+#if VOICE_ROW
+static int voice_running(void) { return lang_running() == 0 ? 0 : 1; }   // 没单独选过时，按原来的「中文配中文、其余英文」显示
+#endif
 // merc_pot（佣兵自动喂药）原先缺省关、现在缺省开。旧文件每次存盘都把全部键写一遍，里面的 merc_pot=0 分不出「没动过」还是「自己关的」，
 // 所以另记一行 merc_pot_v2：只有在缺省改成开之后玩家自己在页上改过这一项才写。读盘时有 merc_pot_v2 以它为准；没有 = 没在新缺省下动过 → 开
 // （旧文件里的 merc_pot=1 也是开，结果一样）。merc_pot 那一行照旧写当前值，旧版本的包读它不出错
@@ -69,8 +80,6 @@ static _Atomic int g_lang_explicit = -1;   // 文件里写着的 lang_en：-1 �
 // so a separate line merc_pot_v2 is recorded: it is written only when the player has changed this item on the page after the default was changed to on. On load, if merc_pot_v2 exists it is authoritative; absent = never touched under the new default → on
 // (merc_pot=1 in an old file is also on, the same result). The merc_pot line is still written with the current value, so packages of older versions read it without error
 static _Atomic int g_merc_explicit = -1;   // 文件里写着的 merc_pot_v2：-1 没写 / 0 / 1 | merc_pot_v2 as written in the file: -1 not written / 0 / 1
-#define K_MERC 2
-int dm_lang_zh(void);
 static _Atomic int g_repaint;        // 默认 / 放弃之后：页上的勾选框按待定值 / 生效值重摆一遍 | After default / discard: lay out the checkboxes on the page again according to pending values / effective values
 
 const char *dm_save_commitdir(void);
@@ -92,8 +101,19 @@ static void load_once(void) {
     if (v[K_BRIGHT] < 0 || v[K_BRIGHT] >= BRIGHT_N) v[K_BRIGHT] = k_def[K_BRIGHT];
     if (v[K_CAM] < 0 || v[K_CAM] >= CAM_N) v[K_CAM] = 0;
     if (f) fclose(f);
-    if (lang < 0) v[0] = !dm_lang_zh();   // 没写过：按当前实际语言显示 | Never written: display according to the current actual language
+    { const char *tl = getenv("DM_TEST_LANG"); if (tl && *tl >= '0' && *tl < '0' + LANG_N) { lang = v[0] = *tl - '0'; g_lang_test = 1; LOG("自定义设置：测试开关 DM_TEST_LANG=%d（当作语言行选了 %s 并应用，不写回文件）", lang, k_lang_name[lang]); } }
+#if VOICE_ROW
+    { const char *tv = getenv("DM_TEST_VOICE"); if (tv && *tv >= '0' && *tv <= '1') { voice = v[K_VOICE] = *tv - '0'; g_voice_test = 1; LOG("自定义设置：测试开关 DM_TEST_VOICE=%d（当作配音行选了 %s 并应用，不写回文件）", voice, voice ? "English" : "中文"); } }
+#endif
+    if (lang < 0) v[0] = lang_running();   // 没写过：按当前实际语言显示 | Never written: display according to the current actual language
+#if VOICE_ROW
+    if (voice < 0) v[K_VOICE] = voice_running();
+    char vlog[32]; snprintf(vlog, sizeof vlog, " voice=%d%s", v[K_VOICE], voice < 0 ? "(auto)" : "");   // (auto) = 文件里没写、按当前语言显示
+#else
+    const char *vlog = "";
+#endif
     atomic_store(&g_lang_explicit, lang);
+    atomic_store(&g_voice_explicit, voice);
     v[K_MERC] = merc < 0 ? k_def[K_MERC] : merc; atomic_store(&g_merc_explicit, merc);
     if (v[K_Q3D] < 0) v[K_Q3D] = 0;
     if (v[K_Q3D] > 2) v[K_Q3D] = 2;   // 迁移：旧配置只有 0/1，1 保持画质优先 | migration: old files only have 0/1; 1 stays quality first
@@ -133,7 +153,7 @@ int dm_fps_setting(void) {   // 帧率上限：温控决定，但性能模式「
 static void save(void) {
     char p[1100], t[1120]; if (!file_path(p, sizeof p)) { LOG("【红】自定义设置：存档目录没挂上，没存盘"); return; }
     snprintf(t, sizeof t, "%s.tmp", p); FILE *f = fopen(t, "w"); int ok = f != NULL;
-    for (int i = 0; ok && i < NK; i++) { if (i == 0 && atomic_load(&g_lang_explicit) < 0) continue; ok = fprintf(f, "%s=%d\n", k_keys[i], atomic_load(&g_val[i])) > 0; }   // lang_en 只在玩家真改过之后才写进文件 | lang_en is written to the file only after the player has actually changed it
+    for (int i = 0; ok && i < NK; i++) { if (i == 0 && (atomic_load(&g_lang_explicit) < 0 || g_lang_test)) continue; if (i == K_VOICE && (atomic_load(&g_voice_explicit) < 0 || g_voice_test)) continue; ok = fprintf(f, "%s=%d\n", k_keys[i], atomic_load(&g_val[i])) > 0; }   // lang / voice 只在玩家真改过之后才写进文件
     if (ok && atomic_load(&g_merc_explicit) >= 0) ok = fprintf(f, "merc_pot_v2=%d\n", atomic_load(&g_merc_explicit)) > 0;
     if (f) ok = fclose(f) == 0 && ok;
     if (ok) ok = rename(t, p) == 0;   // 先写临时文件再换名：写到一半被杀也不会留下半个文件 | Write a temporary file first and then rename: being killed halfway through the write does not leave half a file behind
@@ -265,13 +285,13 @@ void dm_custom_ui_pump(unsigned long long root) {
         int on = TOGGLED(w), pd = atomic_load(&g_pend[i]), shown = pd >= 0 ? pd : atomic_load(&g_val[i]);
         if (z) {   // 点没选中的那一项 = 选它；点已选中的那一项不变（摆回勾上） | Tapping the item that is not selected = select it; tapping the one already selected changes nothing (it is put back to checked)
             int zon = TOGGLED(z), to = on != shown ? (on ? 1 : shown) : zon != !shown ? (zon ? 0 : shown) : shown;
-            if (to != shown) { atomic_store(&g_pend[i], to); if (i == 0) LOG("自定义设置：语言 → %s（点「应用」生效）", to ? "English" : "中文"); else LOG("自定义设置：%s → %d（点「应用」生效）",k_keys[i],to); }
+            if (to != shown) { atomic_store(&g_pend[i], to); LOG("自定义设置：%s → %d（点「应用」生效）",k_keys[i],to); }
             if (TOGGLED(w) != to) set_toggle(w, to); if (TOGGLED(z) != !to) set_toggle(z, !to); continue; }
         if (on != shown) { atomic_store(&g_pend[i], on); LOG("自定义设置：%s 勾选框 → %s（点「应用」生效）", k_keys[i], on ? "勾上" : "取消"); } }
     // 语言那一行下面的「点应用后把 App 关掉重开」提示（TouchCustomLangHint，布局里先放在屏外）：勾选框此刻显示的值与正在跑的语言不一致时挪到标签正下方（横坐标取标签的）
     // The "tap Apply, then close and reopen the app" hint under the language row (TouchCustomLangHint, placed off screen in the layout): moved right under the label (taking the label's x) when the value the checkboxes currently show differs from the language now running
-    { uint64_t lw = find_w(sp, "TouchCustom_lang_en_Text", 0); int pd = atomic_load(&g_pend[0]), shown = pd >= 0 ? pd : atomic_load(&g_val[0]), diff = shown != !dm_lang_zh();
-      for (int k = 0; k < 2 && lw; k++) { uint64_t hw = find_w(sp, k ? "TouchCustomLangHintEn" : "TouchCustomLangHintZh", 0); if (!hw) continue;   // 提示用「选中的那种语言」写：选了中文显示中文那句，选了 English 显示英文那句 | The hint is written in "the language that was chosen": choosing 中文 shows the Chinese sentence, choosing English shows the English one
+    { uint64_t lw = find_w(sp, "TouchCustom_lang_Text", 0); int pd = atomic_load(&g_pend[0]), shown = pd >= 0 ? pd : atomic_load(&g_val[0]), diff = shown != lang_running();
+      for (int k = 0; k < LANG_N && lw; k++) { uint64_t hw = find_w(sp, k_lang_hint[k], 0); if (!hw) continue;   // 提示用「选中的那种语言」写：选了哪种语言就显示哪种语言的那句 | Write the hint in "the selected language": whichever language is selected, show that language's sentence
           int x = diff && shown == k ? ((int32_t *)(lw + 0x70))[0] : 99999; int32_t *r = (int32_t *)(hw + 0x70);
           if (r[0] != x) { r[0] = x; ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)hw + 0x10))(hw); } } }
     // 「应用 / 放弃」亮不亮（自定义页改了勾选，「应用」仍是灰的）：原版各选项子页的每帧更新 main+0xae5f28 把自己 +0x1a0「有未应用的改动」

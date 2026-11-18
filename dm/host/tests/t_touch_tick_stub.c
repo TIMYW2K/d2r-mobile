@@ -17,6 +17,7 @@ uint64_t dm_runeword_pad_filter(uint64_t b) { return b; }   // 手柄模式符�
 uint64_t dm_padmode_page_filter(uint64_t b) { return b; }   // 手柄模式我们自己的页（dm_padmode.c）：不吃键 | Our own pages in controller mode (dm_padmode.c): swallow no buttons
 void dm_cam_remap_stick(int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) { (void)lx; (void)ly; (void)rx; (void)ry; }
 int dm_padmode_input_gate(uint64_t *b) { (void)b; return 0; }   // 手柄 / 触屏切换事务的输入闸（dm_padmode.c）：没在切 | Input gate of the controller / touch switch transaction (dm_padmode.c): not switching
+void dm_cam_remap_stick(int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) { (void)lx; (void)ly; (void)rx; (void)ry; }   // 镜头实验的摇杆换算（dm_cam.c）：镜头关着，原样不动 | stick conversion of the camera experiment (dm_cam.c): camera off, unchanged
 int dm_padmode_current(void) { return 0; }   // 手柄 / 触屏模式（dm_padmode.c）：触屏 | Controller / touch mode (dm_padmode.c): touch
 uint64_t dm_padmode_page_keys(uint64_t m) { (void)m; return 0; } void dm_padmode_legend_hide(const char *l, int a) { (void)l; (void)a; } int dm_padmode_busy(void) { return 0; } uint64_t dm_padmode_page_held(void) { return 0; } void dm_padmode_page_pulse(uint64_t m) { (void)m; } void dm_padmode_ident_hint(int on) { (void)on; } void dm_padmode_legend(int a, const char *t) { (void)a; (void)t; } const char *dm_str(uint8_t *b, const char *k) { (void)b; return k; }   // 手柄页键 / 提示条 / 取串的桩（个人仓库手柄翻页用，触屏下不走） | Stubs for controller page keys / button legend / string fetch (used by controller paging of the personal stash, not reached under touch)
 int dm_swapskill_wset(void) { return -1; }
@@ -50,6 +51,7 @@ int dm_ui_hover_now(int x, int y) { (void)x; (void)y; return 0; }
 void dm_item_compare(int on) { (void)on; }
 void dm_belt_expand(int on) { (void)on; }
 void dm_inv_sort(int page) { (void)page; }
+void dm_inv_sort_grid(uint32_t owner, uint32_t type, int page) { (void)owner; (void)type; (void)page; }   // 长按空格按物品格自己的属主排序（dm_actions.c） | long press on an empty cell sorts by the grid's own owner (dm_actions.c)
 int dm_diag_difficulty(void) { return -1; }
 uint64_t dm_fs_commit_count(void) { return 0; }
 void dm_held_equip(int bodyloc) { (void)bodyloc; }

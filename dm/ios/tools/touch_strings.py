@@ -51,15 +51,9 @@ TABLE = {
     },
 }
 
-# 英文列（英文版）：同一批键的 enUS 改成触摸说法；口径同上（空串 = 这句不要）。不在这里的键英文照原版。
-# 人物页「%s\n命中值」那两条是中文大字号排版问题，英文不动。别的语言列不改（产品只做中英，别的语言我们自己的字按英文）
+# 英文列（英文版）：同一批键的 enUS 改成触摸说法；口径同上（空串 = 这句不要）。不在这里的键英文照原版。俄语列见下面 RU，韩语列见下面 KO，葡语列见下面 PT。
+# 人物页「%s\n命中值」那两条是中文大字号排版问题，英文不动。西语两列见下面 ES / MX；别的语言列不改（我们自己的字只做中英西俄韩葡，别的语言按英文）
 # 与中文表同一写法：原文只存校验（SHA-1 前 8 位），表里不存原版文字
-# English column (English version): enUS for the same set of keys is changed to touch wording; same rules as above (empty string = this sentence is
-# dropped). Keys not listed here keep the original English.
-# The two character-sheet entries of the form "%s, newline, Attack Rating" are a layout issue of the large Chinese font and are left alone in English.
-# Other language columns are not changed (the product covers only Chinese and English; in other languages our own text uses English)
-# Written the same way as the Chinese table: for the source text only a check is stored (first 8 characters of the SHA-1), and the original game's text
-# is not stored in the table
 EN = {
     'ui-controller.json': {
         'UseItemController': ('3c07d84d', 'Double-tap to Use'),
@@ -92,6 +86,170 @@ EN = {
     },
 }
 
+# 西语两列（西语版）：同一批键的 esES / esMX 各改成触摸说法，口径同英文（空串 = 这句不要）；原版两列用词不同（Acto I / Acto 1、búsqueda / gesta），各存各的原文校验
+# Two Spanish columns (Spanish version): esES / esMX of the same set of keys each changed to touch wording, same policy as English (empty string = drop this sentence); the two original columns use different wording (Acto I / Acto 1, búsqueda / gesta), each stores its own original-text check
+ES = {
+    'ui-controller.json': {
+        'UseItemController': ('b3c337b6', 'Toca dos veces para usar'),
+        'OpenHoradricCubeController': ('316e4f76', 'Toca dos veces para abrir'),
+        'ReadScrollController': ('9f9ebb2f', 'Toca dos veces para leer'),
+        'UsePotionOfLifeController': ('8261013a', 'Toca dos veces para conseguir 20 p. de vida permanentes'),
+        'UseBookOfSkillController': ('9b9ad5b4', 'Toca dos veces para aprender una habilidad'),
+        'UseScrollOfResistanceController': ('2347c7a9', 'Toca dos veces para lanzar'),
+        'UseTokenOfAbsolutionController': ('cce00a79', 'Toca dos veces para reiniciar los puntos de estadísticas/habilidades'),
+        'UseTerrorTokenAct1Controller': ('9c7bb697', 'Toca dos veces para aterrorizar el Acto I'),
+        'UseTerrorTokenAct2Controller': ('f46a3882', 'Toca dos veces para aterrorizar el Acto II'),
+        'UseTerrorTokenAct3Controller': ('773c665e', 'Toca dos veces para aterrorizar el Acto III'),
+        'UseTerrorTokenAct4Controller': ('19ba4849', 'Toca dos veces para aterrorizar el Acto IV'),
+        'UseTerrorTokenAct5Controller': ('7dffa819', 'Toca dos veces para aterrorizar el Acto V'),
+        'comparisonTooltipController': ('c84875e2', ''),
+        'hireComparisonTooltipController': ('c84875e2', ''),
+        'StrYouDiedConsole': ('c2b02f82', 'Has muerto'),
+        'ControllerInteractButton': ('54234e14', ''),
+        'ControllerTitleScreenPrompt': ('885ef015', 'Toca la pantalla para empezar'),
+        'EnterCharacterName': ('be6e6664', ''),
+        'ControllerCycleComparisonTooltips': ('1b3ed98b', 'Toca de nuevo para comparar con el otro'),
+        'SelectButtonNoteText': ('c037151e', ''),
+        'MoviePlaybackHoldToSkip_switch': ('a6b6a532', ''),
+    },
+    'ui.json': {
+        'LevelUpStatsNotificationController': ('cbd9f839', 'Has subido de nivel.'),
+        'LevelUpNotificationController': ('4b4b08fe', 'Has subido de nivel.'),
+        'QuestLogNotificationController': ('13cf1af4', 'Se ha actualizado la búsqueda.'),
+        'MoviePlaybackHoldToSkip': ('a6b6a532', ''),
+    },
+}
+
+MX = {
+    'ui-controller.json': {
+        'UseItemController': ('b3c337b6', 'Toca dos veces para usar'),
+        'OpenHoradricCubeController': ('316e4f76', 'Toca dos veces para abrir'),
+        'ReadScrollController': ('9f9ebb2f', 'Toca dos veces para leer'),
+        'UsePotionOfLifeController': ('c7d42535', 'Toca dos veces para agregar 20 a tu vida permanentemente'),
+        'UseBookOfSkillController': ('906ec564', 'Toca dos veces para aprender una habilidad a elección'),
+        'UseScrollOfResistanceController': ('76a87c82', 'Toca dos veces para activar'),
+        'UseTokenOfAbsolutionController': ('5f21cbbb', 'Toca dos veces para restablecer los puntos de atributo/habilidad'),
+        'UseTerrorTokenAct1Controller': ('37fbf40e', 'Toca dos veces para aterrorizar el Acto 1'),
+        'UseTerrorTokenAct2Controller': ('a23ab72a', 'Toca dos veces para aterrorizar el Acto 2'),
+        'UseTerrorTokenAct3Controller': ('65e32c9e', 'Toca dos veces para aterrorizar el Acto 3'),
+        'UseTerrorTokenAct4Controller': ('0217c37c', 'Toca dos veces para aterrorizar el Acto 4'),
+        'UseTerrorTokenAct5Controller': ('0478c1a6', 'Toca dos veces para aterrorizar el Acto 5'),
+        'comparisonTooltipController': ('c84875e2', ''),
+        'hireComparisonTooltipController': ('c84875e2', ''),
+        'StrYouDiedConsole': ('0cd61240', 'Has muerto'),
+        'ControllerInteractButton': ('54234e14', ''),
+        'ControllerTitleScreenPrompt': ('3db5d4d5', 'Toca la pantalla para comenzar'),
+        'EnterCharacterName': ('53243134', ''),
+        'ControllerCycleComparisonTooltips': ('43363ba3', 'Toca de nuevo para comparar con el otro'),
+        'SelectButtonNoteText': ('483ba8e7', ''),
+        'MoviePlaybackHoldToSkip_switch': ('a6b6a532', ''),
+    },
+    'ui.json': {
+        'LevelUpStatsNotificationController': ('c6faf1bb', 'Subiste de nivel.'),
+        'LevelUpNotificationController': ('582b5596', 'Subiste de nivel.'),
+        'QuestLogNotificationController': ('b9ebf5ae', 'Se actualizó la gesta.'),
+        'MoviePlaybackHoldToSkip': ('a6b6a532', ''),
+    },
+}
+# 俄语列（俄语版）：同一批键的 ruRU 改成触摸说法，口径同英文（空串 = 这句不要）；原版俄文的原文校验各自单独存
+# Russian column (Russian version): the same keys' ruRU changed to touch wording, same rules as English (empty string = drop the sentence); the original Russian checksums are stored separately
+RU = {
+    'ui-controller.json': {
+        'UseItemController': ('7474c613', 'Двойной тап — использовать'),
+        'OpenHoradricCubeController': ('b702fc29', 'Двойной тап — открыть'),
+        'ReadScrollController': ('1aca2594', 'Двойной тап — прочитать'),
+        'UsePotionOfLifeController': ('1fc240c4', 'Двойной тап — +20 к запасу здоровья'),
+        'UseBookOfSkillController': ('3230fdd2', 'Двойной тап — выучить умение'),
+        'UseScrollOfResistanceController': ('a21bc33d', 'Двойной тап — применить'),
+        'UseTokenOfAbsolutionController': ('62799712', 'Двойной тап — сбросить очки характеристик и умений'),
+        'UseTerrorTokenAct1Controller': ('767eaea7', 'Двойной тап — ввергнуть ужас в 1-й акт'),
+        'UseTerrorTokenAct2Controller': ('7e2b5ab4', 'Двойной тап — ввергнуть ужас во 2-й акт'),
+        'UseTerrorTokenAct3Controller': ('cbfd42bc', 'Двойной тап — ввергнуть ужас в 3-й акт'),
+        'UseTerrorTokenAct4Controller': ('5839a722', 'Двойной тап — ввергнуть ужас в 4-й акт'),
+        'UseTerrorTokenAct5Controller': ('f8700dbe', 'Двойной тап — ввергнуть ужас в 5-й акт'),
+        'comparisonTooltipController': ('0d40bbad', ''),
+        'hireComparisonTooltipController': ('f42afaf2', ''),
+        'StrYouDiedConsole': ('2bf9961e', 'Вы погибли'),
+        'ControllerInteractButton': ('54234e14', ''),
+        'ControllerTitleScreenPrompt': ('1b3b06b3', 'Коснитесь экрана, чтобы начать'),
+        'EnterCharacterName': ('74790c9d', ''),
+        'ControllerCycleComparisonTooltips': ('3f128d2b', 'Коснитесь снова, чтобы сравнить с другим'),
+        'SelectButtonNoteText': ('f2040580', ''),
+        'MoviePlaybackHoldToSkip_switch': ('08664e40', ''),
+    },
+    'ui.json': {
+        'LevelUpStatsNotificationController': ('96716426', 'Уровень повышен.'),
+        'LevelUpNotificationController': ('96716426', 'Уровень повышен.'),
+        'QuestLogNotificationController': ('aad0ef25', 'Задание обновлено.'),
+        'MoviePlaybackHoldToSkip': ('8f05e751', ''),
+    },
+}
+# 韩语列（韩语版）：同一批键的 koKR 改成触摸说法，口径同英文（空串 = 这句不要）；用词跟原版韩文（「길게 눌러」换成「두 번 탭하여」，其余照原句）；原版韩文的原文校验各自单独存
+KO = {
+    'ui-controller.json': {
+        'UseItemController': ('9f6ea691', '두 번 탭하여 사용'),
+        'OpenHoradricCubeController': ('395d1d8b', '두 번 탭하여 열기'),
+        'ReadScrollController': ('10a460a7', '두 번 탭하여 읽기'),
+        'UsePotionOfLifeController': ('4a202757', '두 번 탭하여 생명력 영구적으로 20 추가하기'),
+        'UseBookOfSkillController': ('f4d729a8', '두 번 탭하여 원하는 기술 습득하기'),
+        'UseScrollOfResistanceController': ('097b145c', '두 번 탭하여 시전'),
+        'UseTokenOfAbsolutionController': ('26eaa9f9', '두 번 탭하여 능력치/기술 포인트 초기화'),
+        'UseTerrorTokenAct1Controller': ('389c4cc6', '두 번 탭하여 1막에 공포의 마수 뻗기'),
+        'UseTerrorTokenAct2Controller': ('7a18b7cd', '두 번 탭하여 2막에 공포의 마수 뻗기'),
+        'UseTerrorTokenAct3Controller': ('5d603b60', '두 번 탭하여 3막에 공포의 마수 뻗기'),
+        'UseTerrorTokenAct4Controller': ('72a0b14d', '두 번 탭하여 4막에 공포의 마수 뻗기'),
+        'UseTerrorTokenAct5Controller': ('fa51c7d5', '두 번 탭하여 5막에 공포의 마수 뻗기'),
+        'comparisonTooltipController': ('d111fdb3', ''),
+        'hireComparisonTooltipController': ('d111fdb3', ''),
+        'StrYouDiedConsole': ('bc6a629b', '죽었습니다.'),
+        'ControllerInteractButton': ('54234e14', ''),
+        'ControllerTitleScreenPrompt': ('95b73988', '화면을 탭하여 시작'),
+        'EnterCharacterName': ('6046f65e', ''),
+        'ControllerCycleComparisonTooltips': ('a1ce13cb', '다시 탭하여 다른 아이템과 비교'),
+        'SelectButtonNoteText': ('7f42b887', ''),
+        'MoviePlaybackHoldToSkip_switch': ('9c102e1d', ''),
+    },
+    'ui.json': {
+        'LevelUpStatsNotificationController': ('615ba7bd', '레벨이 올랐습니다.'),
+        'LevelUpNotificationController': ('5f712271', '레벨이 올랐습니다.'),
+        'QuestLogNotificationController': ('62166da0', '퀘스트가 갱신되었습니다.'),
+        'MoviePlaybackHoldToSkip': ('9c102e1d', ''),
+    },
+}
+# 葡语列（葡语版）：同一批键的 ptBR 改成触摸说法，口径同英文（空串 = 这句不要）；用词跟原版葡语（「Segure」换成「Toque duas vezes」，其余照原句）；原版葡语的原文校验各自单独存
+PT = {
+    'ui-controller.json': {
+        'UseItemController': ('fe58f6b2', 'Toque duas vezes para usar'),
+        'OpenHoradricCubeController': ('afa25395', 'Toque duas vezes para abrir'),
+        'ReadScrollController': ('436612cb', 'Toque duas vezes para ler'),
+        'UsePotionOfLifeController': ('d25575ff', 'Toque duas vezes para adicionar 20 pontos de vida permanentemente'),
+        'UseBookOfSkillController': ('1c65ad05', 'Toque duas vezes para aprender uma habilidade à sua escolha'),
+        'UseScrollOfResistanceController': ('9e729a79', 'Toque duas vezes para lançar'),
+        'UseTokenOfAbsolutionController': ('10c01129', 'Toque duas vezes para redefinir pontos de habilidades/atributos'),
+        'UseTerrorTokenAct1Controller': ('b74b6353', 'Toque duas vezes para aterrorizar o Ato 1'),
+        'UseTerrorTokenAct2Controller': ('055782ed', 'Toque duas vezes para aterrorizar o Ato 2'),
+        'UseTerrorTokenAct3Controller': ('9c07fd7c', 'Toque duas vezes para aterrorizar o Ato 3'),
+        'UseTerrorTokenAct4Controller': ('7a53f852', 'Toque duas vezes para aterrorizar o Ato 4'),
+        'UseTerrorTokenAct5Controller': ('45b4825a', 'Toque duas vezes para aterrorizar o Ato 5'),
+        'comparisonTooltipController': ('6ec5c0d6', ''),
+        'hireComparisonTooltipController': ('6ec5c0d6', ''),
+        'StrYouDiedConsole': ('5205feea', 'Você morreu'),
+        'ControllerInteractButton': ('54234e14', ''),
+        'ControllerTitleScreenPrompt': ('2bcda740', 'Toque na tela para começar'),
+        'EnterCharacterName': ('d8fc6117', ''),
+        'ControllerCycleComparisonTooltips': ('138181e2', 'Toque de novo para comparar com o outro'),
+        'SelectButtonNoteText': ('42e98096', ''),
+        'MoviePlaybackHoldToSkip_switch': ('b4969597', ''),
+    },
+    'ui.json': {
+        'LevelUpStatsNotificationController': ('1f8aa3c8', 'Você subiu de nível.'),
+        'LevelUpNotificationController': ('2801d211', 'Você subiu de nível.'),
+        'QuestLogNotificationController': ('a9e68f30', 'A missão foi atualizada.'),
+        'MoviePlaybackHoldToSkip': ('b4969597', ''),
+    },
+}
+EXTRA = (('enUS', EN), ('esES', ES), ('esMX', MX), ('ruRU', RU), ('koKR', KO), ('ptBR', PT))   # 中文以外改的列 | Columns changed besides Chinese
+
 # 手柄支持：手柄说法 ↔ 触摸说法按模式切，不再改字符串文件——build_sidecar 出旁路表，宿主触屏模式把串表里这几个键的串换成触摸说法、
 # 手柄模式换回原文（dm/host/dm_padmode.c）。只有下面这两条是排版用的（大字号，两种模式都要），照旧改文件
 # Controller support: controller wording ↔ touch wording is switched by mode and the string files are no longer modified. build_sidecar emits a sidecar table;
@@ -113,6 +271,7 @@ def build_sidecar(romfs):
     for name, items in TABLE.items():
         path, text = touch_layout.read_layout(romfs, None, suffix='/lng/strings/' + name)
         for key, (old, new) in items.items():
+            if key.startswith('MoviePlaybackHoldToSkip') and os.environ.get('MOVIE_FFMPEG') == '1': continue
             if key in FILE_ONLY: continue
             m = re.search(r'"Key":\s*"%s",.*?"zhCN":\s*("(?:[^"\\]|\\.)*")' % re.escape(key), text, re.S)
             if not m: raise SystemExit('touch_strings：%s 里没有键 %s' % (name, key))
@@ -147,6 +306,7 @@ def build(romfs, outdir):
         path, text = touch_layout.read_layout(romfs, None, suffix='/lng/strings/' + name)
         if not any(k in FILE_ONLY for k in items): continue
         for key, (old, new) in items.items():
+            if key.startswith('MoviePlaybackHoldToSkip') and os.environ.get('MOVIE_FFMPEG') == '1': continue
             if key not in FILE_ONLY: continue
             m = re.search(r'"Key":\s*"%s",.*?"zhCN":\s*("(?:[^"\\]|\\.)*")' % re.escape(key), text, re.S)
             if not m: raise SystemExit('touch_strings：%s 里没有键 %s' % (name, key))

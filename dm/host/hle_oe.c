@@ -189,19 +189,28 @@ static const float g_s3_levels[] = {0.70f, 0.65f, 0.60f, 0.55f, 0.50f};
 //   降：最近 5 窗（10 秒）掉帧率 > 5%（快：重场景一来就降），或最近 30 窗（60 秒）掉帧率 > 1.5%（慢：长期小掉帧也降）→ 降一档，停判 3 秒、窗记录清空。
 //   升：连续 15 窗（30 秒）一帧不掉 → 升一档；升上去 15 秒内又被打回，下一次升要连续 45 窗（90 秒）。
 //   阈值按实玩记录定：实玩第二段（帧率 59+、偶发卡顿）最坏 10 秒 3.7%、每分钟 0.97% / 0.47% / 0.39%，两条都不触发；v1.0.15 热机重场景 12.6% 触发。
+//   一段连续掉帧只计前 3 帧，除非这段连续满 1 秒（此后每帧都计）：截图、存盘、系统通知这类偶发卡顿，降分辨率也没用（2026-10-20 Redmi 上测试脚本每 10 秒截图一次，
+//   每次连掉约 20 帧，旧计法一路降到 0.60）；持续吃紧（长段，或频繁的短段）照常计。
 // 旧规则（窗帧率 < 目标 × 0.92 才降、只有 0.72 / 0.70 两档）在重场景降到 0.70 就到底了，热机稳态仍掉 12.6%（Hc 局）。
 // Pure-function controller (the unit test t_oe.c feeds it sequences directly): level 0 = configured value, higher = lower. The criterion counts only actual on-screen presentation:
-//   Dropped frame = present interval > 1.5 × target period (25 ms at 60 fps), or discarded by the system (−1); one window every 2 s, recording the frames and dropped frames in it, keeping the last 30 windows (60 s).
-//   Lower: dropped-frame rate over the last 5 windows (10 s) > 5% (fast: lower as soon as a heavy scene arrives), or over the last 30 windows (60 s) > 1.5% (slow: also lower on long-term minor drops) → down one level, pause judging for 3 s, clear window records.
-//   Raise: 15 consecutive windows (30 s) without a dropped frame → up one level; if knocked back within 15 s of being raised, the next raise needs 45 consecutive windows (90 s).
-//   Thresholds set from real-play recordings: real-play segment 2 (59+ fps, occasional stutter) worst 10 s 3.7%, per minute 0.97% / 0.47% / 0.39%, triggering neither rule; v1.0.15 warm-device heavy scene 12.6% triggers.
+// Dropped frame = present interval > 1.5 × target period (25 ms at 60 fps), or discarded by the system (−1); one window every 2 s, recording the frames and dropped frames in it, keeping the last 30 windows (60 s).
+// Lower: dropped-frame rate over the last 5 windows (10 s) > 5% (fast: lower as soon as a heavy scene arrives), or over the last 30 windows (60 s) > 1.5% (slow: also lower on long-term minor drops) → down one level, pause judging for 3 s, clear window records.
+// Raise: 15 consecutive windows (30 s) without a dropped frame → up one level; if knocked back within 15 s of being raised, the next raise needs 45 consecutive windows (90 s).
+// Thresholds set from real-play recordings: real-play segment 2 (59+ fps, occasional stutter) worst 10 s 3.7%, per minute 0.97% / 0.47% / 0.39%, triggering neither rule; v1.0.15 warm-device heavy scene 12.6% triggers.
+// A run of consecutive dropped frames counts only its first 3, unless the run lasts 1 s (from then on every frame counts): one-off stalls such as a
+// screenshot, a save or a system notification are not helped by a lower resolution (on 2026-10-20 the Redmi test harness's screenshot every 10 s dropped
+// about 20 frames in a row each time, and the old count stepped down to 0.60); sustained load (long runs, or frequent short ones) still counts.
 // Old rule (lower only when the window frame rate < target × 0.92, only two levels 0.72 / 0.70) bottomed out at 0.70 in heavy scenes, and warm steady state still dropped 12.6% (Hc run).
 typedef struct { int level, max_level; double period_ms; uint64_t hold_until, last_up; double win_ms; unsigned win_n, win_d;
-                 uint16_t wn[30], wd[30]; int nw; int good_run, need_good; double last_r10, last_r60; } scale3d_ctl;
+                 uint16_t wn[30], wd[30]; int nw; int good_run, need_good; double last_r10, last_r60; unsigned run_n; double run_ms; } scale3d_ctl;
 #define S3_SEC 1000000000ull
+// 连续掉帧：只计前 S3_BURST_FRAMES 帧，连续满 S3_BURST_MS 之后才每帧都计
+// Runs of dropped frames: only the first S3_BURST_FRAMES count until the run has lasted S3_BURST_MS
+#define S3_BURST_FRAMES 3u
+#define S3_BURST_MS 1000.0
 static void scale3d_ctl_hold(scale3d_ctl *c, uint64_t now, uint64_t ns) {   // 停判一段时间（进局 / 回前台 / 换级之后）：窗与历史清零 | Pause judging for a while (after entering a game / returning to foreground / changing level): clear windows and history
     if (now + ns > c->hold_until) c->hold_until = now + ns;
-    c->win_ms = 0; c->win_n = c->win_d = 0; c->nw = 0; c->good_run = 0;
+    c->win_ms = 0; c->win_n = c->win_d = 0; c->nw = 0; c->good_run = 0; c->run_n = 0; c->run_ms = 0;
 }
 static double s3_rate(const scale3d_ctl *c, int k) {   // 最近 k 窗的掉帧率（窗不足 k 个按已有的算；没有窗返回 0） | Dropped-frame rate over the last k windows (fewer than k windows: compute over those present; no windows returns 0)
     unsigned n = 0, d = 0; for (int i = 0; i < k && i < c->nw; i++) { n += c->wn[i]; d += c->wd[i]; } return n ? (double)d / n : 0;
@@ -209,7 +218,11 @@ static double s3_rate(const scale3d_ctl *c, int k) {   // 最近 k 窗的掉帧�
 static int scale3d_ctl_step(scale3d_ctl *c, double iv_ms, uint64_t now) {   // 返回当前级 | returns the current level
     if (now < c->hold_until || iv_ms == 0) return c->level;   // 停判中 / 无读数（0） | Judging paused / no reading (0)
     double per = c->period_ms > 0 ? c->period_ms : 1000.0 / 60;
-    c->win_n++; if (iv_ms < 0 || iv_ms > per * 1.5) c->win_d++;   // 被丢弃（−1）也算掉帧 | Discarded (−1) also counts as a dropped frame
+    // 被丢弃（−1）也算掉帧；连续掉帧的计法见上
+    // Discarded (−1) also counts as a dropped frame; how runs of dropped frames count: see above
+    c->win_n++;
+    if (iv_ms < 0 || iv_ms > per * 1.5) { c->run_n++; c->run_ms += iv_ms > 0 ? iv_ms : per; if (c->run_n <= S3_BURST_FRAMES || c->run_ms >= S3_BURST_MS) c->win_d++; }
+    else { c->run_n = 0; c->run_ms = 0; }
     c->win_ms += iv_ms > 0 ? iv_ms : per;
     if (c->win_ms < 2000) return c->level;
     memmove(c->wn + 1, c->wn, sizeof c->wn - sizeof c->wn[0]); memmove(c->wd + 1, c->wd, sizeof c->wd - sizeof c->wd[0]);
@@ -237,9 +250,66 @@ int dm_3d_quality_mode_get(void) { return atomic_load(&g_3d_quality_mode); }
 int dm_3d_quality_force_get(void) { return atomic_load(&g_3d_quality_mode) >= 2; }   // 1 = 强制画质（q3d=2）：忽略过热降档 | 1 = forced quality (q3d=2): ignore the thermal downgrade
 static _Atomic int g_scale3d_level;
 static _Atomic int g_scale3d_resumed;
+static _Atomic float g_s3g_scale;
+// 自定义页「3D 清晰度」（dm_custom.c 键 scale3d，#149）：0 省电 0.60 / 1 均衡 = 本平台缺省（缺省档；安卓 0.85，别的手机 0.75）/ 2 清晰 1.00。读盘与点「应用」时调；只在手机上生效，DM_3D_SCALE 仍优先。
+// 换了档：两个动态控制器的档清零，从新配置值重新往下判（scale3d_tick 下一次取系统通知时按新比例重建 3D 目标）
+// The Custom page "3D resolution" (dm_custom.c key scale3d, #149): 0 power saver 0.60 / 1 balanced = the platform default (the default level; 0.85 on
+// Android, 0.75 on other phones) / 2 sharp 1.00. Called on load and on Apply;
+// takes effect on phones only, and DM_3D_SCALE still wins. On a level change both dynamic controllers go back to level 0 and judge again downwards from the
+// new configured value (scale3d_tick rebuilds the 3D targets at the new scale the next time system notifications are fetched)
+void dm_3d_scale_level_set(int level) {
+    const float k[3] = {0.60f, s3_phone_default(), 1.00f};
+    if (level < 0 || level > 2) level = 1;
+    if (!DM_PHONE) { static int said; if (!said++) LOG("3D 比例：Mac 宿主不按自定义页的档（配置 %.2f）", s3_cfg()); return; }
+    float old = atomic_exchange(&g_s3_set, k[level]);
+    if (old == k[level]) return;
+    atomic_store(&g_scale3d_level, 0); atomic_store(&g_s3g_scale, 0.0f);
+    LOG("3D 比例：档 %d → 配置 %.2f%s", level, k[level], getenv("DM_3D_SCALE") ? "（DM_3D_SCALE 优先，档不生效）" : "");
+}
 void dm_3d_scale_resumed(void) { atomic_store(&g_scale3d_resumed, 1); }   // 前端：刚回前台。回来头几秒的慢帧是恢复（表面重建、缓存变冷），不是 GPU 吃紧：停判 3 秒 | front end: just returned to foreground. Slow frames in the first few seconds back are recovery (surface rebuild, caches gone cold), not GPU pressure: suspend judging for 3 seconds
+// 按 GPU 耗时的动态 3D 比例（DM_3D_SCALE_GPU=1，鸿蒙缺省开）：上面的控制器按「60 帧、超 25 ms 算掉帧」判，帧率在 30 上下时一进局就降到底，且档位是绝对值。
+// 这里每 2 秒看一次：帧时间 > 35 ms 且 GPU 占帧时间 ≥ 85%（卡在 GPU，发热后常见）→ 降一档；GPU 只占 < 75%（有富余）连续 10 秒 → 升一档。档位 = 配置值 × 系数，
+// 下限 DM_3D_SCALE_GPU_FLOOR（缺省 0.40）。卡在 CPU 时不降（降分辨率不省 CPU）。
+// GPU-time-driven dynamic 3D scale (DM_3D_SCALE_GPU=1, on by default on HarmonyOS): the controller above judges by "60 fps, > 25 ms is a drop", so around 30 fps it hits the bottom as soon as
+// a run starts, and its levels are absolute. Here, every 2 s: frame time > 35 ms with the GPU at >= 85% of it (GPU-bound, common once hot) -> one level down; GPU below 75% (headroom)
+// for 10 s in a row -> one level up. Level = configured value x factor, floor DM_3D_SCALE_GPU_FLOOR (default 0.40). CPU-bound frames do not lower it (resolution does not save CPU).
+static const float g_s3g_mult[] = {0.92f, 0.85f, 0.78f, 0.72f, 0.66f, 0.60f};
+// g_s3g_scale（定义在上面 dm_3d_scale_level_set 前）> 0：覆盖动态档（scale3d_tick）
+// g_s3g_scale (defined above, before dm_3d_scale_level_set) > 0: overrides the dynamic level (scale3d_tick)
+__attribute__((weak)) double xbg_recent_gpu_ms(void) { return -1; }   // 空的弱定义（不是弱声明）：苹果链接器要求弱引用链接时有定义；Vulkan 后端 / 鸿蒙平台层给强定义 | empty weak definitions (not declarations): Apple's linker needs a weak reference to resolve; the Vulkan backend / HarmonyOS platform give the strong ones
+static int s3g_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_3D_SCALE_GPU"); on = e && *e == '1'; } return on; }
+// GPU 控制器的配置值：手机同 s3_cfg（DM_3D_SCALE / 自定义页的档 / 0.75）；Mac 宿主照旧 DM_3D_SCALE 或 0.75
+// The GPU controller's configured value: on phones the same as s3_cfg (DM_3D_SCALE / the Custom page level / 0.75); the Mac host as before, DM_3D_SCALE or 0.75
+static float s3g_cfg(void) {
+    if (DM_PHONE) return s3_cfg();
+    static float v = -1; if (v < 0) { const char *e = getenv("DM_3D_SCALE"); v = e ? strtof(e, NULL) : 0.75f; }
+    return v;
+}
+static void s3g_feed(double iv_ms) {
+    static double acc; static unsigned n; static uint64_t hold; static int lv, good, maxlv, was_in; static float cfg = -1, fl = -1;
+    if (fl < 0) { const char *f = getenv("DM_3D_SCALE_GPU_FLOOR"); fl = f ? strtof(f, NULL) : 0.40f; }
+    // 配置值变了（第一次，或自定义页换档）：重算最多降几档，档回到 0
+    // The configured value changed (first time, or a Custom page level change): recompute how many levels it may go down, back to level 0
+    { float c3 = s3g_cfg();
+      if (c3 != cfg) { cfg = c3; lv = 0; good = 0; atomic_store(&g_s3g_scale, 0.0f);
+          maxlv = 0; for (int k = 0; k < (int)(sizeof g_s3g_mult / sizeof g_s3g_mult[0]); k++) if (cfg * g_s3g_mult[k] >= fl - 1e-4f) maxlv = k + 1;
+          LOG("3D 比例控制（按 GPU 耗时）：配置 %.2f，最多降 %d 档（最低 %.2f）", cfg, maxlv, maxlv ? cfg * g_s3g_mult[maxlv - 1] : cfg); } }
+    uint64_t now = now_ns();
+    if (!dm_ingame_now()) { was_in = 0; acc = 0; n = 0; return; }
+    if (!was_in) { was_in = 1; hold = now + 20 * S3_SEC; }   // 刚进局的 20 秒是装载 | the first 20 s of a run are loading
+    if (iv_ms > 0) { acc += iv_ms; n++; }
+    if (acc < 2000 || !n) return;
+    double fr = acc / n, g = xbg_recent_gpu_ms ? xbg_recent_gpu_ms() : -1; acc = 0; n = 0;
+    if (now < hold || g <= 0) return;
+    int old = lv;
+    if (fr > 35.0 && g >= 0.85 * fr && lv < maxlv) { lv++; good = 0; }
+    else if (lv > 0 && g < 0.75 * fr) { if (++good >= 5) { lv--; good = 0; } }
+    else good = 0;
+    if (lv != old) { hold = now + 4 * S3_SEC; atomic_store(&g_s3g_scale, lv ? cfg * g_s3g_mult[lv - 1] : 0.0f);
+        LOG("3D 比例控制（按 GPU 耗时）：帧 %.1f ms、GPU %.1f ms → %s到第 %d 档（3D 比例 %.2f）", fr, g, lv > old ? "降" : "升", lv, lv ? cfg * g_s3g_mult[lv - 1] : cfg); }
+}
 void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_perf_present 转来）：实际上屏间隔 ms，−1 = 被丢弃，0 = 无读数 | called by the present thread every frame (forwarded from diag.c dm_perf_present): actual present interval in ms, −1 = dropped, 0 = no reading
-    static scale3d_ctl c; static int on = -1; static long inj0 = -1, inj1 = -1;
+    static scale3d_ctl c; static int on = -1; static long inj0 = -1, inj1 = -1; static float fl, mcfg = -1;
     if (on < 0) { const char *e = getenv("DM_3D_SCALE_DYN"), *j = getenv("DM_3D_SCALE_DYN_INJECT"); on = !(e && !strcmp(e, "0")) && !getenv("DM_THERMAL_NOFALLBACK");
         if (j) { inj0 = atol(j); inj1 = strchr(j, '-') ? atol(strchr(j, '-') + 1) : inj0; }
         const char *fe = getenv("DM_3D_SCALE_FLOOR"); float fl = fe ? strtof(fe, NULL) : S3_FLOOR_DEF;   // 下限：档位表里不低于它的最深一档 | Floor: the deepest level in the level table that is not below it
@@ -264,7 +334,7 @@ void dm_3d_scale_feed(double iv_ms) {   // 出图线程每帧调（diag.c dm_per
     if (inj0 >= 0) { long f = (long)dm_nvn_frame_count(); double per = c.period_ms > 0 ? c.period_ms : 1000.0 / 60; iv_ms = f >= inj0 && f <= inj1 ? 2 * per : per; }   // 注入：段内每帧当掉一帧（两个周期） | Injection: every frame within the segment counts as a dropped frame (two periods)
     int was = c.level, lv = scale3d_ctl_step(&c, iv_ms, now);
     if (lv != was) LOG("3D 比例控制：最近 10 秒掉帧 %.1f%%、60 秒 %.1f%% → %s到第 %d 档（3D 比例 %.2f）%s", c.last_r10 * 100, c.last_r60 * 100, lv > was ? "降" : "升", lv,
-                       lv ? g_s3_levels[lv - 1] : -1.0f, c.need_good ? "（刚升又掉：下次升档要 90 秒）" : "");
+                       s3_level_scale(s3_cfg(), lv), c.need_good ? "（刚升又掉：下次升档要 90 秒）" : "");
     atomic_store(&g_scale3d_level, lv);
 }
 void dm_3d_scale_hot(int hot) { dm_perf_thermal_set(hot ? 1 : 0); }   // 旧的过热接口（前端不再用）：转发到新的温控降档 API，语义 = 严重档 | legacy overheating entry (the front end no longer uses it): forwarded to the new thermal API, meaning the serious level

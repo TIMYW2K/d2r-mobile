@@ -1,11 +1,14 @@
 """现有自定义页中两位置换组开关的跨语言契约。 | Cross-language contract for the two-position switch in the existing Custom page. | Cross-language contract for the two-position switch in the existing Custom page."""
+import importlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
 
 root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / 'ios/tools'))
+os.environ.pop('MOVIE_FFMPEG', None)   # 缺省包的自定义页（「配音」行只在 MOVIE_FFMPEG=1 时有，下面另核）
 import touch_layout as layout
 
 out, _ = layout._custom_page('"name": "VideoOptionsPanel", "name": "OptionsTable"')

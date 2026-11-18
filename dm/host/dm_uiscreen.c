@@ -167,6 +167,24 @@ void dm_uiscreen_res_reread(void) { uint8_t *b0 = main_base();   // 31 取走的
 // When handling 31 (main+0xe10df0–0xe10e0c) the game only accepts new values where "both width and height do not exceed the size at window initialization [main+0x211da30]": the window texture is created once from the startup parameter slot, and afterwards only the render region inside it changes.
 // So give the screen's native value (the largest one) at startup, and switch to the front end's 16:9 once window initialization is done and the per-frame UI site first runs.
 static _Atomic int g_world, g_res_live;
+int dm_uiscreen_res_live(void) { return atomic_load(&g_res_live); }
+// 游戏对「界面高」有个下限：界面（HUD / 面板）按 720p 设计，写进去的高小于 720 时游戏仍按 720 排版（实测 3.3.94012：
+// 写 684 / 756 / 792 三档，HUD 球心间距依次 481 / 504 / 529 游戏像素 = 0.667×{720, 756, 792}，684 那档被抬成了 720），
+// 于是界面比我们算的 16:9 条带高、底边溢出到画面外，覆盖层按 684 摆就错位。这里把写进去的高按同一个下限抬齐，
+// 纵向偏移、覆盖层视图矩形、界面字/点按换算就都跟着游戏真正的界面矩形走。
+// The game floors its "UI height": the UI (HUD / panels) is designed at 720p, so a written height below 720 is laid out as 720 anyway
+// (measured on 3.3.94012: writing 684 / 756 / 792 gave HUD orb-centre gaps of 481 / 504 / 529 game pixels = 0.667x{720, 756, 792},
+// i.e. the 684 case was raised to 720). The UI is then taller than the 16:9 strip we computed and its bottom edge spills off the frame,
+// so an overlay placed for 684 sits wrong. Raise the written height by the same floor here; the vertical offset, the overlay's view
+// rectangle and the UI-text / tap conversions then all follow the game's real UI rectangle.
+// DM_UI_MIN_H overrides the floor (0 = no floor) for other game builds / resolutions.
+static int ui_floor(int uh, int rh) {
+    static int once, min_h = -1;
+    if (!once) { once = 1; const char *e = getenv("DM_UI_MIN_H"); min_h = e ? atoi(e) : 720; if (min_h < 0) min_h = 0; }
+    if (min_h && uh < min_h) uh = min_h < rh ? min_h : rh;   // 抬到下限，但绝不超过画面高（720p 出图时下限就是整屏） | raise to the floor, but never past the frame height (at 720p output the floor is the whole frame)
+    if (uh > rh) uh = rh;
+    return uh;
+}
 uint64_t dm_game_res(int docked) { uint64_t r = front_game_res(docked); uint32_t w = (uint32_t)r, h = (uint32_t)(r >> 32);   // 先问前端：iOS 前端在第一次被问时才决定开不开真全屏 | Ask the front end first: the iOS front end only decides whether to turn on true fullscreen the first time it is asked
     if (atomic_load(&g_res_live) && mode() != DM_UISCREEN_OFF && !atomic_load(&g_portrait) && !atomic_load(&g_world) && (uint64_t)w * 9 < (uint64_t)h * 16) h = (uint32_t)((uint64_t)w * 9 / 16) & ~1u;   // 竖屏不压 16:9：画面与界面都用屏幕原生比例 | Portrait: no 16:9 squeeze, picture and UI both use the screen's native ratio
     return (uint64_t)h << 32 | w; }
