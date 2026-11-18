@@ -322,8 +322,8 @@ void dm_tc_pointer_item(dm_tc_state *s, int kind) {
     s->pointer_slow_button = kind == 12;   /* 12 仍按普通按钮处理，只放宽松手时限 | Kind 12 remains an ordinary button, with only its release deadline relaxed */
     if (kind == 7) { s->pointer_shop = 1; kind = 1; }
     s->pointer_lock = kind == 10; if (kind == 10) kind = 1;
-    /* 12 = 雇佣名单的一行：点按照面板内其它控件，只有按住不同（见 dm_tc_tick） | 12 = a row of the hire list: a tap follows other widgets inside the panel, only holding differs (see dm_tc_tick) */
-    s->pointer_merc = kind == 12; if (kind == 12) kind = 0;
+    /* 13 = 雇佣名单的一行：点按照面板内其它控件，只有按住不同（见 dm_tc_tick） | 13 = a row of the hire list: a tap follows other widgets inside the panel, only holding differs (see dm_tc_tick) */
+    s->pointer_merc = kind == 13; if (kind == 13) kind = 0;
     s->pointer_stack = kind == 8; if (kind == 8) kind = 1;   /* 8 = 高级仓库的成叠格：照物品区，只有双击不同 | 8 = stacked cell of the advanced stash: follows the item area, only double tap differs */   /* 7 = 商人货架上的货：别的都照物品区，只有起拖不同 | 7 = goods on the vendor shelf: everything else follows the item area, only drag start differs */
     s->pointer_item = (kind >= 1 && kind <= 3) || kind == 6 || kind == 11 ? kind : 0;   /* 11 = 这一下不点（底下是被盖住的按钮），但可以起滚动手势（设置页列表里的文字 / 空处） | 11 = this tap does not click (a covered button is underneath), but it may start a scroll gesture (text / empty space in the settings page list) */
     if (s->mouse_click_mode && s->pointer_slot >= 0 && s->pointer_slot < DM_TC_MAX_TOUCH && s->finger[s->pointer_slot].active && !s->finger[s->pointer_slot].pointer_dragged) {
@@ -443,7 +443,7 @@ void dm_tc_cancel_finger(dm_tc_state *s, int slot) {
     s->finger[slot] = (dm_tc_finger){.target=DM_TC_NONE};
     if (slot == s->joy_slot) { s->joy_slot = DM_TC_NONE; s->joy_origin_x = s->joy_origin_y = 0; }
     if (slot == s->aim_slot) s->aim_slot = DM_TC_NONE;
-    if (slot == s->pointer_slot) { s->pointer_item = 0; s->pointer_slow_button = 0; s->pointer_shop = 0; s->pointer_stack = 0; s->pointer_lock = 0; s->pointer_slot = DM_TC_NONE; s->pointer_valid = 0; }
+    if (slot == s->pointer_slot) { s->pointer_item = 0; s->pointer_slow_button = 0; s->pointer_merc = 0; s->pointer_shop = 0; s->pointer_stack = 0; s->pointer_lock = 0; s->pointer_slot = DM_TC_NONE; s->pointer_valid = 0; }
     update(s);
 }
 void dm_tc_cancel_portal(dm_tc_state *s) {
@@ -545,7 +545,7 @@ void dm_tc_begin_at(dm_tc_state *s, int slot, float x, float y, double now_s) {
     /* 禁用圆仍阻止落入左摇杆区，防止隐藏回城触点变成移动。 | A disabled circle still blocks falling through into the left stick area, preventing a hidden town-portal touch point from turning into movement. */
     if (s->navigation_mode && hit == DM_TC_NONE && s->pointer_slot == DM_TC_NONE) {
         s->pointer_slot = slot;
-        s->pointer_item = 0; s->pointer_slow_button = 0;
+        s->pointer_item = 0; s->pointer_slow_button = 0; s->pointer_merc = 0;
         /* 鼠标点击模式下，手柄光标只跟「落在物品区的手指」走（前端答出命中后调 dm_tc_pointer_item）：
            光标是靠推摇杆走的，在没有自由光标的页面（选项、暂停菜单、小站）推摇杆 = 改当前选项 / 挪焦点（点页签顺带改了「显示物品」）
            In mouse click mode the controller cursor follows only "a finger that landed in the item area" (the front end calls dm_tc_pointer_item once it has the hit answer):
@@ -684,7 +684,7 @@ void dm_tc_end_at(dm_tc_state *s, int slot, double now_s) {
                 s->mouse_click_x = done.aim_origin_x; s->mouse_click_y = done.aim_origin_y; ++s->mouse_click_seq;
             } else pointer_pulse_start(s, done.aim_origin_x, done.aim_origin_y, 2);
         }
-        s->pointer_item = 0; s->pointer_slow_button = 0; s->pointer_release_item = 1; s->pointer_shop = 0; s->pointer_stack = 0; s->pointer_lock = 0;
+        s->pointer_item = 0; s->pointer_slow_button = 0; s->pointer_merc = 0; s->pointer_release_item = 1; s->pointer_shop = 0; s->pointer_stack = 0; s->pointer_lock = 0;
         s->pointer_slot = DM_TC_NONE;
         s->finger[slot] = (dm_tc_finger){.target=DM_TC_NONE};
         update(s);

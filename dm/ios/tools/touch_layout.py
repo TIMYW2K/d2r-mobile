@@ -1582,31 +1582,6 @@ def _custom_toggle_row(i, key, label):
             '            "untoggledFrame": 0, "untoggledPressedFrame": 1, "untoggledHoveredFrame": 3, "untoggledDisabledFrame": 2,\n'
             '            "toggledFrame": 4, "toggledPressedFrame": 5, "toggledHoveredFrame": 6,\n'
             '            "onClickMessage": "PanelManager:ClosePanel:TouchCustom_%s" } },\n') % (key, y, h, label, key, y + (h - 70) // 2, key)
-# 语言开关（第一行）：六项单选「中文 / English / Español / Русский / 한국어 / Português」，下次启动生效（宿主 dm_custom.c 的 lang、hle_fs.c settings_lang_apply）。
-# 六项一排放不下（葡萄牙语一项就要约 280 宽），所以排成两行、每行三项。下面 60 留给「重启游戏后生效」那句（先放屏外，勾选与当前语言不一致时宿主摆到这一行下半，横坐标取标签的）
-_CUSTOM_LANG_HINT = ''.join('        { "type": "TextBoxWidget", "name": "TouchCustomLangHint%s", "fields": { "rect": { "x": 99999, "y": %d, "width": 1400, "height": 60 }, "text": "@dmCustomLangHint%s", "style": "$StyleSettingsText", "style/fontFace": "BlizzardGlobal" } },\n'
-                            % (n, _CUSTOM_Y[0] + _LANG_TOP + 2 * _LANG_OPT_H, n) for n in ('Zh', 'En', 'Es', 'Ru', 'Ko', 'Pt'))   # 六句各一个控件，宿主按选中的语言摆其中一句（贴在第二行选项下面）
-# 语言那一行是两行三列的六个选项「中文 / English / Español / Русский / 한국어 / Português」（单选：宿主 dm_custom.c 让六个勾选框互斥，存的是 lang 一个键）。
-# 这一行的字各界面都要写汉字、韩文和葡语重音：别的界面缺省的 Formal 字体没有这些字形（缺字画不出），所以这几个文字控件指定原版的全球字体 BlizzardGlobal
-# （原版标题页、队伍名等同样按控件指定它）。选项自己说明是选语言，不写「语言」标签字。每项勾选框在前、字在后：文字框比字宽出来的那一截落在两项之间当间隔，
-# 勾选框紧挨着自己的字（字在前时那一截落在字与自己的勾选框之间，勾选框看着像下一项的，真包截图）。
-# 标签控件 TouchCustom_lang_Text 仍在、不写字、盖住两行：宿主拿它定提示那句的横坐标、手柄选中框按它与最后一个勾选框取并框住整行
-_LANG_OPTS = (('Zh', 'zh', 'dmCustomLangZh', 38, 131, 0), ('En', 'en', 'dmCustomLangEnOpt', 249, 196, 0), ('Es', 'es', 'dmCustomLangEsOpt', 525, 213, 0),
-              ('Ru', 'ru', 'dmCustomLangRuOpt', 38, 221, 1), ('Ko', 'ko', 'dmCustomLangKoOpt', 380, 166, 1), ('Pt', 'pt', 'dmCustomLangPtOpt', 650, 290, 1))   # （控件名后缀，勾选框后缀，文字键，勾选框 x，文字框宽，行号）；字在勾选框右边 10，宽 = 实宽 + 30
-_LANG_ROW_W = 1385   # 到各行勾选框那一列的右沿（x 1315 + 70）
-def _custom_lang_row():
-    y = _CUSTOM_Y[0]
-    def text(name, x, yy, w, key): return ('        { "type": "TextBoxWidget", "name": "%s", "fields": { "rect": { "x": %d, "y": %d, "width": %d, "height": %d }, "text": "@%s", "style": "$StyleSettingsText", "style/fontFace": "BlizzardGlobal" } },\n' % (name, x, yy, w, _LANG_OPT_H, key))
-    def box(name, x, yy): return ('        { "type": "ToggleButtonWidget", "name": "%s", "fields": {\n'
-            '            "rect": { "x": %d, "y": %d, "width": 70, "height": 70 }, "sound": "cursor_menu_select_hd",\n'
-            '            "focusIndicatorPadding": "$OptionsToggleFocusIndicatorPadding", "focusIndicatorFilename": "$OptionsToggleFocusIndicatorFilename", "focusIndicatorOffset": { "x": 0, "y": -4 },\n'
-            '            "filename": "Lobby\\\\CreateGame\\\\CreateGame_AdvancedCheckbox",\n'
-            '            "untoggledFrame": 0, "untoggledPressedFrame": 1, "untoggledHoveredFrame": 3, "untoggledDisabledFrame": 2,\n'
-            '            "toggledFrame": 4, "toggledPressedFrame": 5, "toggledHoveredFrame": 6,\n'
-            '            "onClickMessage": "PanelManager:ClosePanel:%s" } },\n') % (name, x, cy, name)
-    return (text('TouchCustom_lang_en_Text', 0, 700, 'dmCustomLang')
-            + text('TouchCustomLangZh_Text', _LANG_ZH_X[0], _LANG_ZH_X[1] - _LANG_ZH_X[0] - 10, 'dmCustomLangZh') + box('TouchCustom_lang_zh', _LANG_ZH_X[1])
-            + text('TouchCustomLangEn_Text', _LANG_EN_X[0], _LANG_EN_X[1] - _LANG_EN_X[0] - 10, 'dmCustomLangEnOpt') + box('TouchCustom_lang_en', _LANG_EN_X[1]))
 # 「性能模式」三选一（每项标题 + 一行说明小字）：流畅优先（缺省，60 帧 + 掉帧自动降 3D）、画质优先（60 帧 + 保持画质，过热仍自动降档）、
 # 画质优先（强制）（60 帧 + 固定画质，忽略过热降档）。存一个键 q3d = 0/1/2；三个勾选框 TouchCustom_q3d_smooth（0）/ TouchCustom_q3d（1）/
 # TouchCustom_q3d_force（2），宿主 dm_custom.c 做三框互斥。TouchCustom_q3d_Text 是空字、高度盖住三项的框（手柄选中框框住整行用）。

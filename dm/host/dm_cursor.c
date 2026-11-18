@@ -1347,7 +1347,7 @@ int dm_ui_item_at_now(float nx, float ny) {   // 只许游戏主线程调（Mac 
     char hit[40]; g_cls_out = UI_OUT(nx, ny); int r = ui_classify(m, root, (int)(nx * w), (int)(ny * h), hit, sizeof hit);
     if (r == 9) return 6;
     if (r == 1 && imbue_locked(m, root)) return 10;
-    if (r == 0 && hire_row(root, (int)(nx * w), (int)(ny * h))) return 12;
+    if (r == 0 && hire_row(root, (int)(nx * w), (int)(ny * h))) return 13;
     return r == 1 && g_slot_panel && !strcmp(g_slot_panel, "VendorPanelLayout") && dm_shop_open() ? 7 : r;
 }
 // 拖放落点怎么处理（物品画在手指上方约 40 点处，玩家有的对着物品放、有的对着手指放——手指对准武器槽松手，抬起点落在槽外的背景上，被当成拖出面板丢到了地上）：
@@ -1712,10 +1712,10 @@ static void ui_item_pump(uint64_t root, int width, int height) {
     // Locked cells show the unlock hint as usual; with an item held in hand it is not blocked (placing goes through the release drop point path). Result 6 = the gesture layer does not tap
     if (r == 1 && dm_wref_get(&g_slot) && !strncmp(hit, "slot_", 5) && *(uint32_t *)(dm_wref_get(&g_slot) + 0x5c8) == 1) { dm_hud_info hh; dm_hud_get(&hh); int dm_rift_merc_slot_empty(int);
         if (!(hh.valid && hh.holding) && (merc_lock_hit(hit) || dm_rift_merc_slot_empty(*(int32_t *)(dm_wref_get(&g_slot) + 0x5d8)))) { r = 6; snprintf(hit + strlen(hit), sizeof hit - strlen(hit), "（佣兵空格）"); } }
-    if (r == 0 && hire_row(root, x, y)) r = 12;
+    if (r == 0 && hire_row(root, x, y)) r = 13;
     atomic_store(&g_iq_res, r); atomic_store(&g_iq_done, seq);
     if (r == 1) merc_lock_hit(hit);
-    if (hit_log_ok(hit)) { LOG("界面命中：(%d,%d) → %s%s", x, y, r == 1 ? "物品区 " : r == 10 ? "物品区（单件槽占用，不动）" : r == 8 ? "成叠格 " : r == 7 ? "货架 " : r == 2 ? "" : r == 3 ? "面板外" : r == 6 ? "" : r == 12 ? "雇佣名单的一行" : "面板内控件", hit); }
+    if (hit_log_ok(hit)) { LOG("界面命中：(%d,%d) → %s%s", x, y, r == 1 ? "物品区 " : r == 10 ? "物品区（单件槽占用，不动）" : r == 8 ? "成叠格 " : r == 7 ? "货架 " : r == 2 ? "" : r == 3 ? "面板外" : r == 6 ? "" : r == 13 ? "雇佣名单的一行" : "面板内控件", hit); }
 }
 // 本地改动：单击常驻说明框（改的是本函数下面的两处）。原版说明框是即时式的 —— 悬停着的控件每帧重新提交、
 // 画完就清；而本函数原来只在「按住 / 有待发事件」时每帧补发 MouseMove，抬手后就不再发，说明框于是一闪而过。
@@ -2478,12 +2478,12 @@ static void ui_npcdlg_pump(uint64_t root) {
     LOG("NPC 对话菜单：经典坐标 (%d,%d) → (%d,%d)（应有位置 真实画面 y %.0f）", f[0], f[1], nx, ny, ly * H / 600.0); f[0] = ox = nx; f[1] = oy = ny; dm_wref_set(&pw, p); *(uint8_t *)(p + 0x239) = 1;
 }
 // 游戏态点世界的入口（前端每次点世界都走这里）：先看这一下是不是点在左上角佣兵头像上——是 = 开佣兵页（新入口），这一下不再交给世界点选；
-// 开法 = 替玩家按 + 开功能页、再按 R 翻到佣兵页签（ui_mercpg_pump）。不调原版键鼠的「切换佣兵页」0x36a190：它开出来的是键鼠版独立面板，没有页签条、点面板外不关（本机实测）
+// 开法 = 替玩家按 + 开功能页，再切到有效的佣兵页签（ui_mercpg_pump）。不调用键鼠版的独立面板。
 // 不是 = 原样转给 dm_world_tap。命中照原版右键点头像那段（main+0x3a3744–0x3a3768）：头像没被隐藏（[0x2d58cb0] != 2）、头像控件 [HireablesPanel+0x1c8] 的命中函数认这个点。
 // u = 界面坐标（游戏视图归一化），各 16 位有符号、单位 1/8192（范围 ±4）：iPad 真全屏下头像随贴顶上提（ui_lift_pump）挪到游戏视图上方，u 的 y 是负的，
 // 夹到 [0,1] 就点不中（iPad 全屏下实测）；w = 世界点选用的出图归一化坐标，各 15 位
 // Entry point for tapping the world in the game state (every world tap from the front end goes through here): first check whether this tap is on the mercenary portrait at the top left - if yes = open the mercenary page (new entry) and this tap is not passed on to world selection;
-// how it opens = press + for the player to open the function page, then press R to flip to the mercenary tab (ui_mercpg_pump). The original game's keyboard-mouse "toggle mercenary page" 0x36a190 is not called: what it opens is the keyboard-mouse standalone panel, with no tab bar and not closing on a tap outside the panel (measured on the local machine)
+// Press + to open the function pages, then select the mercenary tab if available (ui_mercpg_pump).
 // if no = forward unchanged to dm_world_tap. Hit testing follows the original game's right-click-on-portrait code (main+0x3a3744–0x3a3768): the portrait is not hidden ([0x2d58cb0] != 2) and the hit-test function of the portrait widget [HireablesPanel+0x1c8] accepts this point.
 // u = UI coordinates (normalized to the game view), each 16-bit signed, in units of 1/8192 (range ±4): in iPad true fullscreen the portrait moves above the game view with the top-lift (ui_lift_pump), so u's y is negative,
 // and clamping to [0,1] makes the tap miss (measured in iPad fullscreen); w = normalized render coordinates used for world selection, 15 bits each
@@ -2512,51 +2512,90 @@ static void ui_wtap_pump(module_t *m, uint64_t root, int width, int height) {   
               LOG("界面命中：(%d,%d) → 讲话文字框 %s@ScrollSpeechPanel（单独开着），送界面点击关它", x, y, part[k]); return; } } }
     unsigned dm_world_tap(float, float); dm_world_tap((v >> 15 & 0x7fff) / 32767.0f, (v & 0x7fff) / 32767.0f);
 }
-// 开佣兵页：按 + 开功能页，再按 R 翻到佣兵页签（开关位 main+0x2d5ff66 = 1 为到位）。每一下按完看反馈再按下一下，同技能绑定「开技能树」那段
-// Open the mercenary page: press + to open the function page, then press R to flip to the mercenary tab (toggle flag main+0x2d5ff66 = 1 means arrived). After each press, check the feedback before pressing the next, same as the "open skill tree" part of skill binding
-static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
-    static int on, tries, page; static uint64_t pressed, missing_until;
-    if (atomic_exchange(&g_mercpg, 0) && !on) { on = 1; tries = 0; page = -1; pressed = 0; missing_until=0; }
-    if (!on) return;
-    if (*(uint8_t *)(m->base + 0x2d5ff66)) { LOG("佣兵页：已开（按键 %d 次）", tries); on = 0; return; }
-    // 本地改动：原来 9 次就放弃 —— 连按 R 时按键可能被游戏丢掉，9 次只走了三页，人停在上一页（技能树），
-    // 玩家看到的就是「双击佣兵头像跳到了技能树」。改成 24 次，并在放弃时把停在哪页记下来。
-    // Local change: it used to give up after 9 presses -- some presses get dropped by the game, so 9 presses could be
-    // only three pages and the player was left one page short (the skill tree), which reads as "double-tapping the
-    // mercenary portrait jumps to the skill tree". Now 24 presses, and the page it stopped on is logged.
-    if (tries >= 24) { int dm2 = bd_open(root, "UISwitcher"), cur2 = dm2 ? bd_top_tab(root) : -1;
-        LOG("【红】佣兵页：按了 %d 次键还没翻到，放弃（现停在页 %d）", tries, cur2); on = 0; return; }
-    int dm = bd_open(root, "UISwitcher"), cur = dm ? bd_top_tab(root) : -1;
-    // 本地改动：原来 7 / 24 帧一按，玩家看到的是「一页一页翻过去」；每 1–2 帧按一次，四页约 0.1 秒到位
-    // Local change: 7 / 24 frames per press made it visibly walk page by page; one press every 1-2 frames covers four pages in about 0.1 s
-    // 本地改动（已撤回）：上一版每 1-2 帧按一次，22.1 的日志证明按键会被游戏丢掉 ——按了 24 次只到第 4 页（技能树）。节奏退回作者调过的 7 / 24 帧。
-    // Local change (reverted): 1-2 frames per press made the game drop presses (24 presses reached only
-    // page 4 = the skill tree in the 22.1 log). Back to the author's tuned 7 / 24 frames.
-    if (tries) { uint64_t dt = fr - pressed; int moved = dm && cur >= 0 && cur != page; if (!((moved && dt >= 7) || dt >= 24)) return; }
-    // 本地改动：先直接切到佣兵页，切不动才退回走按键。玩家自己点页签的记录（22.1 日志）显示「页号 = 第几个页签」：
-    // 六个页签时 佣兵 = 第 5 个 = 页数 − 1（最后一个是选项）。直接调页签条自己的选页（0xad9b80）+ 页面切换（0x405898）。
-    // Local change: switch to the mercenary page directly first, only falling back to key walking if that does not take.
-    // The player's own tab taps (the 22.1 log) show page number = 1-based tab position: with six tabs the mercenary page is
-    // the 5th = page count - 1 (the last is Options). The tab bar's own selection (0xad9b80) plus one page switch
-    // (0x405898) gets there in one step, without depending on key presses.
-    // 本地改动（修 bug）：原来直接切页之后**又无条件按了一下 R**（下面那行），于是刚切到佣兵页就被翻走，
-    // 接着还一路按到 24 次 —— 玩家看到的就是「单击佣兵头像进不去佣兵页，只能从装备栏跳过去」。
-    // 现在：直接切页成功就**结束**；只有找不到页签条、切不动时，才退回按 R 翻页。
-    // Local change (bug fix): the direct switch was followed by an unconditional R press, which flipped the page
-    // straight back off the mercenary page and then kept pressing up to 24 times. Now a successful direct switch
-    // finishes the job; the key walk is only used when the tab bar cannot be found at all.
-    {
-        uint64_t us = ui_find(root, "UISwitcher", 0), tb = ui_find(root, "UISwitcherTabs", 0);
-        if (us && *(uint8_t *)(us + 0x50)) { int n = *(int32_t *)(us + 0x188), to = n >= 3 ? n - 1 : 5, cur0 = *(int32_t *)(us + 0x1b8);
-            if (tb && *(uint64_t *)tb == (uint64_t)m->base + 0x20ba3a8) ((void (*)(uint64_t, int, int))(m->base + 0xad9b80))(tb, to, 0);
-            if (*(int32_t *)(us + 0x1b8) != to) ((void (*)(uint64_t, int, int))(m->base + 0x405898))(us, to, 1);
-            LOG("佣兵页：直接切到第 %d 页（共 %d 页，原在 %d）—— 不再按键", to, n, cur0);
-            on = 0; return; }                                            // 切页已交给游戏，收工
-        if (tries && !dm) { if (!missing_until) missing_until=fr+90; if(fr<missing_until) return; }
-        else missing_until=0;
-        if (!tries) LOG("佣兵页：等待功能页创建，先发送打开按键");
+// UISwitcher holds native panel IDs at +0x168; hidden pages still occupy their slots.
+enum { UI_MERC_PANEL_ID = 0x1e };
+static int ui_merc_page(uint64_t us) {
+    int n = *(int32_t *)(us + 0x188);
+    if (n <= 0 || n > 8) return -1;   // Eight entries before the page count.
+    for (int i = 0; i < n; i++)
+        if (*(uint32_t *)(us + 0x168 + 4 * i) == UI_MERC_PANEL_ID) return i;
+    return -1;
+}
+
+static int ui_tab_enabled(uint64_t tabs, int page) {
+    return page >= 0 && page < 32 && page < *(int32_t *)(tabs + 0x558)
+        && *(uint8_t *)(tabs + 0xe88 + page);
+}
+
+// Same owner/type/active-entry checks as native UISwitcher; also reject a unit in its death animation.
+static int ui_merc_available(module_t *m) {
+    const uint8_t *b = m->base;
+    uint64_t game = *(uint64_t *)(b + 0x2d20b80);
+    if (game && *(uint8_t *)(game + 0x5c) == 1) return 0;
+    uint64_t pl = ((uint64_t (*)(uint32_t))(b + 0x45f9d0))(*(uint32_t *)(b + 0x2d20e4c));
+    if (!pl) return 0;
+    uint32_t owner = *(uint32_t *)(pl + 8);
+    for (uint64_t e = *(uint64_t *)(b + 0x2d33528); e; e = *(uint64_t *)(e + 0x30)) {
+        if (*(uint32_t *)(e + 4) != 7 || *(uint32_t *)(e + 0xc) != owner || *(uint32_t *)(e + 0x20)) continue;
+        uint32_t id = *(uint32_t *)(e + 8);
+        if (id == UINT32_MAX) return 0;
+        uint64_t u = ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))(b + 0x45f5f0))((uint64_t)(uintptr_t)(b + 0x2d607a0), id & 0x7f, id, 1);
+        if (!u) return 1;   // A live mercenary may be outside the loaded client rooms.
+        uint32_t mode = *(uint32_t *)(u + 0xc);
+        return mode != 0 && mode != 12;
     }
-    page = cur; pressed = fr; dm_ui_key_pulse(dm ? DM_BTN_R : DM_BTN_PLUS, 4); tries++;
+    return 0;
+}
+
+static void ui_mercpg_pump(module_t *m, uint64_t root, uint64_t fr) {
+    static uint64_t expires;
+    static int closing;
+    int request = atomic_exchange(&g_mercpg, 0);
+    uint64_t us = ui_panel(root, "UISwitcher"), merc = ui_panel(root, "HirelingInventoryPanel");
+    int switcher = us && *(uint8_t *)(us + 0x50) && *(uint64_t *)us
+        && *(uint64_t *)(*(uint64_t *)us + 0x28) == (uint64_t)m->base + 0x404fd8;
+    int page = switcher ? ui_merc_page(us) : -1;
+    int selected = page >= 0 && *(int32_t *)(us + 0x1b8) == page;
+    int open = merc && *(uint8_t *)(merc + 0x50);
+    if (!open && !selected) closing = 0;
+    if (!request && !expires && !selected && !open) return;
+    if (!dm_uiscreen_ingame()) { expires = 0; closing = 0; return; }
+    if (expires && fr >= expires) expires = 0;
+    uint64_t tabs = page >= 0 ? ui_find(root, "UISwitcherTabs", 0) : 0;
+    int tabs_ready = tabs && *(uint8_t *)(tabs + 0x50) && dm_widget_is(m->base, tabs, DM_VT_TABBAR)
+        && page < *(int32_t *)(tabs + 0x558);
+    if ((tabs_ready && !ui_tab_enabled(tabs, page)) || !ui_merc_available(m)) {
+        int close_switcher = selected || (switcher && (open || expires));
+        expires = 0;
+        if (!closing && (close_switcher || open)) {
+            closing = 1;
+            if (close_switcher) fe_send("PanelManager", "ClosePanel", "UISwitcher");
+            // The keyboard/controller path can leave a standalone hireling panel.
+            merc = ui_panel(root, "HirelingInventoryPanel");
+            if (merc && *(uint8_t *)(merc + 0x50))
+                fe_send("PanelManager", "ClosePanel", "HirelingInventoryPanel");
+            LOG("佣兵页：佣兵已不可用，关闭面板");
+        }
+        return;
+    }
+    closing = 0;
+    if (open || selected) { expires = 0; return; }
+    if (!switcher) {
+        if (request && !expires) {
+            expires = fr + 90;
+            dm_ui_key_pulse(DM_BTN_PLUS, 4);
+        }
+        return;
+    }
+    if ((!request && !expires) || !tabs_ready) return;
+    expires = 0;
+    int cur = *(int32_t *)(us + 0x1b8);
+    ((void (*)(uint64_t, int, int))(m->base + 0x405898))(us, page, page > cur);
+    // Re-find the tab strip after native page switching; it can rebuild widgets.
+    tabs = ui_find(root, "UISwitcherTabs", 0);
+    if (tabs && *(uint8_t *)(tabs + 0x50) && dm_widget_is(m->base, tabs, DM_VT_TABBAR) && ui_tab_enabled(tabs, page)
+        && bd_open(root, "HirelingInventoryPanel"))
+        ((void (*)(uint64_t, int, int))(m->base + 0xad9b80))(tabs, page, 0);
 }
 // 个人仓库页码（个人仓库 2–5 页，dm_pages.c）：写在自己的文字控件 TouchPgPage_Text 里（布局 wide_stash.py），文字照原版共享页页码的写法：
 // 原版写共享页页码（0x3963e4 内 0x397098–0x39714c）= 格式串 0x7f5630({"SharedStashPage", 15}) → 0x399130(缓冲, 格式, 第几页, 共几页) → 0x136e5c(文字控件 +0x88, 缓冲, 长) → 0xadc434(文字控件) 重排；
@@ -4591,7 +4630,10 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
               int cur = *(int32_t *)(us + 0x1b8), n = *(int32_t *)(us + 0x188), to = g_tab_k; if (to < 0) to = 0; if (n > 0 && to >= n) to = n - 1;   // 页号 = 页签的第 K 个（隐藏的佣兵页也占一页），不能用可见页签数推：没佣兵时从选项往回点物品栏会多走一页 | page number = the Kth tab (the hidden mercenary page also takes up a page); it cannot be derived from the visible tab count: without a mercenary, tapping back from options to the inventory panel would go one page too far
               // Function pages and the tab strip keep separate indices: switch the page first, then sync the strip.
               // 功能页与页签条分别保存当前项：先装载目标页，再同步页签条。
-              if (tw && *(uint64_t *)tw == (uint64_t)sm->base + 0x20ba3a8 && *(uint8_t *)(tw + 0x50)) {
+              if (tw && dm_widget_is(sm->base, tw, DM_VT_TABBAR) && *(uint8_t *)(tw + 0x50)) {
+                  if (to == ui_merc_page(us) && (!ui_tab_enabled(tw, to) || !ui_merc_available(sm))) {
+                      dm_wref_set(&g_tab_ref, 0); atomic_store(&g_tab_have, 0); return;
+                  }
                   if (cur != to) ((void (*)(uint64_t, int, int))(sm->base + 0x405898))(us, to, to > cur);
                   ((void (*)(uint64_t, int, int))(sm->base + 0xad9b80))(tw, to, 0); int selected = TAB_SEL(tw);
                   LOG("界面页签：功能页第 %d → 第 %d 页；页签记录同步到 %d%s", cur, to, selected, selected == to ? "" : "（目标页签未选中）"); }
@@ -4613,13 +4655,15 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
           int page = *(int32_t *)(us + 0x1b8), pages = *(int32_t *)(us + 0x188), selected = TAB_SEL(tw);
           if (page < 0 || pages <= 0 || page >= pages) last_page = -1;
           else if (page != last_page) { last_page = page; repair_at = fr + 2; }
-          else if (selected != page && fr >= repair_at) {
+          else if (selected != page && fr >= repair_at &&
+                   (page != ui_merc_page(us) || (ui_tab_enabled(tw, page) && ui_merc_available(tm)))) {
               ((void (*)(uint64_t, int, int))(tm->base + 0xad9b80))(tw, page, 0);
               repair_at = fr + 3;
               if (TAB_SEL(tw) == page) LOG("界面页签：按当前功能页 %d 修复页签高亮", page);
           }
       } else last_page = -1;
     }
+    ui_hire_focus_pump();
     { static uint64_t tnext; if (fr >= tnext) { if (atomic_load(&g_tab_left) > 0) { atomic_fetch_sub(&g_tab_left, 1); ui_auto_key(atomic_load(&g_tab_mask)); tnext = fr + 2; }
         else { uint64_t th = atomic_exchange(&g_tab_then, 0);
             // 对话菜单：按确认键之前核一遍菜单自己记的选中行是不是点的那一行；不是就补挪（至多两轮），还不对就不按——宁可这一下没反应，也不替玩家选错项
@@ -4632,7 +4676,7 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
                 else fix = 0; }
             if (th) { ui_auto_key(th); tnext = fr + 8; } } } }
     { module_t *pm = main_module(); uint64_t proot = 0; if (pm) { memcpy(&proot, pm->base + 0x2f05458, 8); int32_t pw = *(int32_t *)(pm->base + 0x211da38), phh = *(int32_t *)(pm->base + 0x211da3c);
-        static uint64_t pf = UINT64_MAX; if (proot && pw > 0 && phh > 0 && pf != fr) { pf = fr; { static int dd; const char *dn; if (!dd && (dn = getenv("DM_UI_DUMP")) && atomic_load(&g_taps_base) && fr >= atomic_load(&g_taps_base) + (getenv("DM_UI_DUMP_AT") ? atoi(getenv("DM_UI_DUMP_AT")) : 45)) { dd = 1; ui_dump(proot, 0, dn, 0, pm); } } int tm = ui_touch_mode(); if (tm) ui_wtap_pump(pm, proot, pw, phh); if (tm) ui_long_pump(); ui_target_pump(pm, fr); if (tm) ui_use_pump(); if (tm) ui_buy_pump(pw, phh); ui_item_pump(proot, pw, phh); ui_ptr_pump(pm, proot, pw, phh); if (tm) ui_drag_pump(pm, proot, pw, phh); UI_MOUSE_ITEM_PUMPS(pm, proot, pw, phh); { int lu = atomic_load(&g_load_up); dm_uiscreen_set_ingame(ui_panel(proot, "HUDPanel") && !(lu < 0 ? ui_find(proot, "LoadScreenPanel", 0) != 0 : lu)); } ui_safe_pump(pm, proot, fr); ui_lift_pump(proot, fr); ui_note_dock_pump(proot); ui_trove_tabs_pump(pm, proot, fr); ui_minimap_pump(pm, proot, pw, phh, fr); ui_map_pump(pm, proot); ui_map_geom_pump(pm, proot); ui_boss_pct_pump(pm, proot); ui_npcdlg_pump(proot); ui_map_center(pm, proot, *(volatile int32_t *)(pm->base + 0x2d5c748)); if (tm) ui_bind_pump(proot, fr); if (tm) swaptab_pump(proot); if (tm) ui_mercpg_pump(pm, proot, fr); ui_widestash_pump(proot); mv_audit_pump(proot, fr); ui_pages_pump(pm, proot); } } }
+        static uint64_t pf = UINT64_MAX; if (proot && pw > 0 && phh > 0 && pf != fr) { pf = fr; { static int dd; const char *dn; if (!dd && (dn = getenv("DM_UI_DUMP")) && atomic_load(&g_taps_base) && fr >= atomic_load(&g_taps_base) + (getenv("DM_UI_DUMP_AT") ? atoi(getenv("DM_UI_DUMP_AT")) : 45)) { dd = 1; ui_dump(proot, 0, dn, 0, pm); } } int tm = ui_touch_mode(); if (tm) ui_wtap_pump(pm, proot, pw, phh); if (tm) ui_long_pump(); ui_target_pump(pm, fr); if (tm) ui_use_pump(); if (tm) ui_buy_pump(pw, phh); ui_item_pump(proot, pw, phh); ui_ptr_pump(pm, proot, pw, phh); if (tm) ui_drag_pump(pm, proot, pw, phh); UI_MOUSE_ITEM_PUMPS(pm, proot, pw, phh); { int lu = atomic_load(&g_load_up); dm_uiscreen_set_ingame(ui_panel(proot, "HUDPanel") && !(lu < 0 ? ui_find(proot, "LoadScreenPanel", 0) != 0 : lu)); } ui_safe_pump(pm, proot, fr); ui_lift_pump(proot, fr); ui_note_dock_pump(proot); ui_trove_tabs_pump(pm, proot, fr); ui_minimap_pump(pm, proot, pw, phh, fr); ui_map_pump(pm, proot); ui_map_geom_pump(pm, proot); ui_boss_pct_pump(pm, proot); ui_npcdlg_pump(proot); ui_map_center(pm, proot, *(volatile int32_t *)(pm->base + 0x2d5c748)); if (tm) ui_bind_pump(proot, fr); if (tm) swaptab_pump(proot); ui_mercpg_pump(pm, proot, fr); ui_widestash_pump(proot); mv_audit_pump(proot, fr); ui_pages_pump(pm, proot); } } }
     if (atomic_load(&g_fe_name_open) && atomic_load(&g_ut_phase) == 2) {   // 起名页：点输入框（底板 / 文本框）= 重新弹系统键盘，不发鼠标点击 | naming page: tapping the input box (backplate / text box) = pop up the system keyboard again, no mouse click is sent
         module_t *nm = main_module(); uint64_t nroot = 0; if (nm) memcpy(&nroot, nm->base + 0x2f05458, 8); uint64_t pn = nroot ? ui_find(nroot, "CharacterCreateNamePanel", 0) : 0;
         if (pn && nm) { int32_t w = *(int32_t *)(nm->base + 0x211da38), h = *(int32_t *)(nm->base + 0x211da3c); uint64_t v = atomic_load(&g_ut_xy);

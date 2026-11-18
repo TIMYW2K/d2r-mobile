@@ -103,6 +103,16 @@ __attribute__((weak)) uint64_t dm_tg_portal_mask(const dm_tg_snapshot *s,uint64_
 
 static CAMetalLayer *g_layer;
 
+// 选角等前端画面可能在 drawable 边缘露出清屏色。遮边随出图层布局，不依赖前端已隐藏的触屏控件。
+// Cover the front-end clear-color sliver on the drawable itself, independently of the hidden touch controls.
+static void front_edge_guard(CAMetalLayer *layer, BOOL frontend) {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    layer.borderColor = UIColor.blackColor.CGColor;
+    layer.borderWidth = frontend ? 2.0 : 0.0;
+    [CATransaction commit];
+}
+
 // 仅诊断；复用 HLE 的宿主单调时钟 now_ns()，不使用可冻结的 guest_now_ns()。
 // Diagnostics only; reuses HLE's host monotonic clock now_ns(), not the freezable guest_now_ns().
 static BOOL touch_control_log_enabled(void) {
@@ -532,7 +542,7 @@ static void apply_touch_overrides(dm_tc_state *s) { s->layout.target[DM_TC_PORTA
 // 前端页面（主菜单 / 选角 / 建角 / 读取画面，即不在局内）：不显示摇杆与技能圆钮，触点直接当原生点击交给游戏界面（dm_ui_touch → 鼠标消息，dm_cursor.c）
 // Front-end pages (main menu / character select / character creation / loading screen, i.e. not in a run): no stick or round skill buttons shown; touch points are given straight to the game UI as native clicks (dm_ui_touch → mouse messages, dm_cursor.c)
 - (void)padMode:(BOOL)pad { _padMode=pad; _overlay.hidden=_feMode || pad; _info.hidden=_feMode; if(_verLabel) _verLabel.hidden=!_feMode; if(pad) { _pinching=NO; _palTouch=nil; _tipUntil=-2; dm_tc_cancel_all(&_controls); [self pushFrom:"padmode" phase:"none"]; } }   // 手柄模式藏触屏控件层（dm_gamepad.m 回调） | Controller mode hides the touch controls layer (dm_gamepad.m callback)
-- (void)frontendMode:(BOOL)fe { _feMode=fe; _overlay.hidden=fe || _padMode; _info.hidden=fe; if(_verLabel) _verLabel.hidden=!fe; if(fe) { _pinching=NO; _pendEnd=nil; _finalAsked=NO; _palTouch=nil; for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:"frontend" phase:"none"]; } }   // 版本号只在前端页显示 | version label only on front-end pages
+- (void)frontendMode:(BOOL)fe { _feMode=fe; front_edge_guard(g_layer, fe); _overlay.hidden=fe || _padMode; _info.hidden=fe; if(_verLabel) _verLabel.hidden=!fe; if(fe) { _pinching=NO; _pendEnd=nil; _finalAsked=NO; _palTouch=nil; for(int i_=0;i_<16;i_++) _slot[i_]=nil; dm_tc_cancel_all(&_controls); [self pushFrom:"frontend" phase:"none"]; } }   // 版本号只在前端页显示 | version label only on front-end pages
 - (void)navigationMode:(int)n {
     if (n) { _pinching=NO; _palTouch=nil; }
     if (_navigation==n) return;
@@ -1745,8 +1755,12 @@ UIView *front_ios_view(CGRect frame) {
             CAMetalLayer *ml = [CAMetalLayer layer]; ml.device = g_layer.device; ml.pixelFormat = MTLPixelFormatBGRA8Unorm; ml.contentsScale = g_layer.contentsScale; ml.frame = box.bounds;
             ml.drawableSize = CGSizeMake(full.size.width * ml.contentsScale, full.size.height * ml.contentsScale); [box.layer insertSublayer:ml atIndex:0];
             v.opaque = NO; v.layer.opaque = NO; v.backgroundColor = UIColor.clearColor; g_layer = ml; mtl_set_ui_rect_fn(ui_rect_frac);
-            LOG("画面：窗口 %.0fx%.0f 比 16:9 窄 → 真全屏已开：出图层铺满整窗；游戏视图跟宿主的界面矩形走（局内贴底、局外居中），启动先按居中的 %.0fx%.0f 摆", full.size.width, full.size.height, frame.size.width, frame.size.height); return box; }
-        LOG("画面：窗口 %.0fx%.0f 与游戏画面比例不同 → 游戏视图 %.0fx%.0f 居中（左右各留 %.0f 点、上下各留 %.0f 点）", full.size.width, full.size.height, frame.size.width, frame.size.height, frame.origin.x - full.origin.x, frame.origin.y - full.origin.y); return box; }
+            LOG("画面：窗口 %.0fx%.0f 比 16:9 窄 → 真全屏已开：出图层铺满整窗；游戏视图跟宿主的界面矩形走（局内贴底、局外居中），启动先按居中的 %.0fx%.0f 摆", full.size.width, full.size.height, frame.size.width, frame.size.height);
+        } else LOG("画面：窗口 %.0fx%.0f 与游戏画面比例不同 → 游戏视图 %.0fx%.0f 居中（左右各留 %.0f 点、上下各留 %.0f 点）", full.size.width, full.size.height, frame.size.width, frame.size.height, frame.origin.x - full.origin.x, frame.origin.y - full.origin.y);
+        front_edge_guard(g_layer, atomic_load(&g_touch_frontend));
+        return box;
+    }
+    front_edge_guard(g_layer, atomic_load(&g_touch_frontend));
     if (g_portrait) LOG("画面：竖屏 %.0fx%.0f → 3D 铺满整窗，界面矩形按 1950:2160 贴底 / 局外居中（出图层整窗）", full.size.width, full.size.height);
     return v;
 }

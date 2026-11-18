@@ -50,6 +50,7 @@ enum { FMT_PCM16 = 2, STATE_STARTED = 0, STATE_STOPPED = 1, RATE = 48000 };
 typedef struct { void *ptr; uint64_t cap, size; } gbuf;     // 写进客体 AudioOutBuffer 的前 24 字节 | The first 24 bytes written into the guest AudioOutBuffer
 #define QMAX 64
 #define RELMAX QMAX                    // 已释放最多 = 在途缓冲数（游戏收回缓冲才能再追加），与待播同上限 | Released max = number of in-flight buffers (the game must take a buffer back before it can append again), same limit as pending
+enum sink { SINK_NONE, SINK_AUDIO_UNIT, SINK_SILENT };
 typedef struct {
     pthread_mutex_t m;
     void *event;                       // 客体 SystemEvent：有缓冲被释放就触发 | Guest SystemEvent: signaled whenever a buffer is released
@@ -59,6 +60,7 @@ typedef struct {
     gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // 已释放：出声端写，游戏侧读 | Released: written by the output side, read by the game side
     uint64_t pos;                      // 当前块已播字节 | Bytes already played of the current block
     dm_audev au;                       // 声卡；NULL = 没开成（走静音接收端） | Sound card; NULL = not opened (the silent sink is used)
+    enum sink sink;                    // 当前队列消费者，仅在 g_aos_lock 下读写 | Active queue consumer, guarded by g_aos_lock
     int mix;                           // 1 = 游戏给 5.1（6 声道），交给 CoreAudio 前我们自己下混成双声道（au_render） | 1 = the game gives 5.1 (6 channels), downmixed to stereo by us before handing to CoreAudio (au_render)
     int16_t *mixbuf;                   // 下混用的 6 声道暂存（MIXMAX 帧） | 6-channel staging for the downmix (MIXMAX frames)
     pthread_t null_th; _Atomic int null_run;
@@ -356,10 +358,46 @@ static void *null_sink(void *p) {
     uint64_t bytes = (uint64_t)RATE / 200 * 2 * a->ch, t = now_ns();
     while (atomic_load_explicit(&a->null_run, memory_order_acquire)) {
         t += 5000000; uint64_t now = now_ns(); if (t > now) usleep((useconds_t)((t - now) / 1000));
+        if (!atomic_load_explicit(&a->null_run, memory_order_acquire)) break;
         pull(a, scratch, bytes);
     }
     return NULL;
 }
+// 切换时先等旧消费者退出，再启动新的；pull 始终只有一个调用方。
+// Stop and drain the old consumer before starting a new one: pull is single-consumer.
+static void stop_sink(aout *a) {
+    if (a->sink == SINK_AUDIO_UNIT) {
+        dev_stop(a);
+    } else if (a->sink == SINK_SILENT) {
+        atomic_store_explicit(&a->null_run, 0, memory_order_release);
+        pthread_join(a->null_th, NULL);
+    }
+    a->sink = SINK_NONE;
+}
+
+// Called with g_aos_lock held. A failed resume can be retried for this stream alone.
+static void update_sink(aout *a) {
+    enum sink next = atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED
+        ? SINK_NONE : a->au && !g_suspended ? SINK_AUDIO_UNIT : SINK_SILENT;
+    if (a->sink == next) return;
+    stop_sink(a);
+    if (next == SINK_AUDIO_UNIT) {
+        int st = dev_start(a);
+        if (!st) { a->sink = SINK_AUDIO_UNIT; return; }
+        LOG("【红】AudioUnit 启动失败（状态 %d）：暂用静音接收端，下次恢复时重试", (int)st);
+        next = SINK_SILENT;
+    }
+    if (next == SINK_SILENT) {
+        atomic_store_explicit(&a->null_run, 1, memory_order_release);
+        int err = pthread_create(&a->null_th, NULL, null_sink, a);
+        if (!err) a->sink = SINK_SILENT;
+        else {
+            atomic_store_explicit(&a->null_run, 0, memory_order_release);
+            LOG("【红】静音接收端启动失败（%d）", err);
+        }
+    }
+}
+
 static int real_audio(void) { const char *e = getenv("DM_AUDIO"); return e ? atoi(e) != 0 : DM_PHONE; }
 
 // AudioOutParameter = { int32 sampleRate; uint16 channelCount; uint16 _r; ... }，0 = 系统默认（48 kHz / 2 声道）
@@ -385,41 +423,41 @@ HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKN
     a->notify_sem = sem_new();
     pthread_create(&a->notify_th, NULL, event_notify, a);
     if (ev) hle_bind_system_event(ev, 1);   // 缓冲释放事件：客体线程上绑内核事件（自动清除），之后由音频线程触发 | Buffer release event: bind a kernel event on the guest thread (auto-clear), afterwards signaled by the audio thread
-    objmap_put(g, a);
+    if (real_audio()) au_open(a);  // Fully initialize the output before publishing it.
+    LOG("audio::OpenAudioOut %s 声道 %d %s", name ? name : "(默认)", ch, a->au ? "真出声" : "静音接收端");
     pthread_mutex_lock(&g_aos_lock);
     int slot = -1; for (int i = 0; i < AOMAX; i++) if (!g_aos[i]) { slot = i; break; }
     if (slot < 0) die("AudioOut 同时打开超过 %d 个", AOMAX);
     g_aos[slot] = a;
+    objmap_put(g, a);
     pthread_mutex_unlock(&g_aos_lock);
-    LOG("audio::OpenAudioOut %s 声道 %d %s", name ? name : "(默认)", ch, real_audio() ? "真出声" : "静音接收端");
-    if (real_audio()) au_open(a);   // 开不了就 a->au 为空，开始播放时走静音接收端 | if it cannot be opened, a->au is null, and playback goes to the silent sink when it starts
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "开始播放", Result, h_au_Start, void *g) {
+    pthread_mutex_lock(&g_aos_lock);
     aout *a = ao(g);
-    pthread_mutex_lock(&a->m); int was = atomic_load_explicit(&a->state, memory_order_relaxed); atomic_store_explicit(&a->state, STATE_STARTED, memory_order_release); pthread_mutex_unlock(&a->m);
-    if (was == STATE_STARTED) return RES_OK;
-    if (a->au && !g_suspended && dev_start(a)) { LOG("【红】声卡启动失败：这一路改用静音接收端（不出声）"); dev_close(a); }
-    if (!a->au || g_suspended) { atomic_store_explicit(&a->null_run, 1, memory_order_release); pthread_create(&a->null_th, NULL, null_sink, a); }
+    atomic_store_explicit(&a->state, STATE_STARTED, memory_order_release);
+    update_sink(a);
+    pthread_mutex_unlock(&g_aos_lock);
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE", "停止播放", void, h_au_Stop, void *g) {
+    pthread_mutex_lock(&g_aos_lock);
     aout *a = ao(g);
-    pthread_mutex_lock(&a->m); int was = atomic_load_explicit(&a->state, memory_order_relaxed); atomic_store_explicit(&a->state, STATE_STOPPED, memory_order_release); pthread_mutex_unlock(&a->m);
-    if (was != STATE_STARTED) return;
-    pthread_mutex_lock(&g_aos_lock); int susp = g_suspended; pthread_mutex_unlock(&g_aos_lock);
-    if (a->au && !susp) dev_stop(a);
-    else { atomic_store_explicit(&a->null_run, 0, memory_order_release); pthread_join(a->null_th, NULL); }   // 静音接收端（含暂停期间接手的） | Silent sink (including one that took over during suspension)
+    atomic_store_explicit(&a->state, STATE_STOPPED, memory_order_release);
+    update_sink(a);
+    pthread_mutex_unlock(&g_aos_lock);
 }
 HLE_FORCE("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", "关闭音频输出", void, h_au_Close, void *g) {
-    h_au_Stop(g);
+    pthread_mutex_lock(&g_aos_lock);
     aout *a = objmap_del(g);
+    atomic_store_explicit(&a->state, STATE_STOPPED, memory_order_release);
+    update_sink(a);
+    for (int i = 0; i < AOMAX; i++) if (g_aos[i] == a) g_aos[i] = NULL;
+    pthread_mutex_unlock(&g_aos_lock);
     atomic_store_explicit(&a->notify_run, 0, memory_order_release);
     sem_up(a->notify_sem);
     pthread_join(a->notify_th, NULL);
-    pthread_mutex_lock(&g_aos_lock);
-    for (int i = 0; i < AOMAX; i++) if (g_aos[i] == a) g_aos[i] = NULL;
-    pthread_mutex_unlock(&g_aos_lock);
     if (a->au) dev_close(a);
     sem_free(a->notify_sem);
     free(a->mixbuf); pthread_mutex_destroy(&a->m); free(a);
@@ -466,22 +504,11 @@ HLE_FORCE("_ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE", "取已播�
 // The front end calls with 1 on going to background / interruption began, and with 0 on returning to foreground / interruption ended (shouldResume).
 void dm_audio_suspend(int on) {
     pthread_mutex_lock(&g_aos_lock);
-    if (g_suspended != on) {
-        g_suspended = on; int failed = 0;
-        for (int i = 0; i < AOMAX; i++) {
-            aout *a = g_aos[i];
-            if (!a || !a->au || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) continue;
-            // 暂停期间改由静音接收端按实时消耗：否则缓冲不再释放，FMOD 输出线程永久等待、游戏音频节奏卡死（来电打断同理）
-            // While suspended the silent sink consumes in real time instead: otherwise buffers are no longer released, the FMOD output thread waits forever and the game's audio pacing stalls (same for an incoming call interruption)
-            if (on) { dev_stop(a); atomic_store_explicit(&a->null_run, 1, memory_order_release); pthread_create(&a->null_th, NULL, null_sink, a); }
-            else { atomic_store_explicit(&a->null_run, 0, memory_order_release); pthread_join(a->null_th, NULL);
-                   int st = dev_start(a);
-                   if (st) {   // 会话还被别人占着（通话没挂就切回游戏、打断结束时人还在别的 App）：不致命，继续由静音接收端顶着，等下一次恢复再试 | The session is still held by someone else (switched back to the game with a call not yet hung up, or the user is still in another app when the interruption ends): not fatal, the silent sink keeps covering, and we retry at the next resume
-                       LOG("【红】声卡恢复失败（状态 %d）：保持静音接收端，等下次恢复重试", st);
-                       atomic_store_explicit(&a->null_run, 1, memory_order_release); pthread_create(&a->null_th, NULL, null_sink, a); failed = 1; } }
-        }
-        if (failed) g_suspended = 1;   // 没恢复成：状态留在「暂停」，下次调 0 会再试 | Resume did not succeed: the state stays "suspended", and the next call with 0 will retry
-        LOG("audio %s", on ? "暂停（切后台 / 被打断）" : failed ? "恢复未成" : "恢复（回前台 / 打断结束）");
-    }
+    int changed = g_suspended != on;
+    g_suspended = on;
+    // Keep retries per output: a failed start must not mark other outputs as suspended.
+    for (int i = 0; i < AOMAX; i++)
+        if (g_aos[i]) update_sink(g_aos[i]);
+    if (changed) LOG("audio %s", on ? "暂停（切后台 / 被打断）" : "尝试恢复（回前台 / 打断结束）");
     pthread_mutex_unlock(&g_aos_lock);
 }
